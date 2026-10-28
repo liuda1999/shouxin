@@ -95,9 +95,36 @@ POST /api/memory/add
 ## 6. 联系人
 
 - 从对话中识别人名（LLM 判定 + 正则兜底 + 昵称规则）；
+  **新增硬性校验：姓名或其别名必须逐字出现在对话原文中**，否则丢弃
+  （防止小模型照抄提示词 few-shot 示例里的人名，凭空造出"李总的女儿""张总的秘书"）。
 - 维护联系人档案：最近互动时间、关联事件、称呼变体；
 - **虚拟联系人**（`/api/virtual_entities`）：为智能体扮演的角色维护人设资料；
 - 联系人同样走热冷分层。
+
+### 6.1 画像（人设）与关系是怎么自动生成的
+
+由**心跳**驱动（`HeartbeatAnalyzer::analyze_contact_relations` → `generate_contact_profile`）：
+
+1. 选人：`background` 为空、7 天内有互动、非自身/非归档/非虚拟的联系人，每轮最多 3 个；
+2. 取证：该联系人的事件摘要 + **最近含其姓名/别名的 3 段对话原文**
+   （`get_recent_conversations_for_owner`，不区分抽取状态 —— 注意
+   `get_conversations_since_v2` 只返回 pending/failed，不能拿来做历史召回）；
+3. 生成：LLM 输出联系人画像 JSON（`personal_info` / `social_relations` / `major_events` /
+   `objective_evaluation` / `potential_relations`）。提示词要求 **key 保持英文、value 用中文**，
+   否则模型会把 key 也翻译掉，导致解析全空；
+4. 落库：
+   - 整份画像 → `contact_index.background`（JSON）
+   - `social_relations[].relation_type` → `contact_index.relationship_tags`
+   - `social_relations[].related_contact_name` → 在同一 owner 内解析成 ID →
+     `contact_index.related_contact_ids`（跨 owner 不解析，避免误关联）
+5. 频率：单联系人每天 ≤ 2 次、间隔 ≥ 8 小时。
+
+检索侧（`POST /api/memory/search/contacts`）返回的 `aliases` 是
+`contact_index.aliases` 与 `contact_alias_index` 的**并集**，
+`related_contacts` 已把 ID 解析为姓名。
+
+> 早期版本这条链路有 6 处断点（读取硬编码空值、模板/提示词不匹配、关系列从不写等），
+> 表现为"接口永远返回空"，详见 [../CHANGELOG.md](../CHANGELOG.md) 的 C1–C7。
 
 ---
 

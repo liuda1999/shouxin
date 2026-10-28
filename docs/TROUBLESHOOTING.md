@@ -163,6 +163,45 @@ curl -X POST http://127.0.0.1:3000/api/events/pending_merges/<id>/resolve \
 
 ---
 
+### 4.5 联系人的人设/别名/关系一直是空的
+
+按顺序检查（这四项分别由不同环节产出）：
+
+```bash
+# ① 库里到底有没有（判断是"没生成"还是"没读出"）
+python - <<'PY'
+import sqlite3
+c=sqlite3.connect('file:data/shouxin.db?mode=ro', uri=True)
+for r in c.execute("select name,length(coalesce(background,'')),relationship_tags,related_contact_ids,aliases "
+                   "from contact_index order by last_interaction_at desc limit 5"):
+    print(r)
+PY
+```
+
+- 库里有内容、接口是空 → 读取路径问题（历史 bug，见 CHANGELOG C1/C2）
+- 库里也是空 → 继续：
+
+```bash
+# ② 画像生成有没有真的跑起来
+grep -iE "Failed to parse profile|画像|contacts updated" .server.log | tail
+# ③ 心跳是否被频率限制挡住（每天 2 次、间隔 8h）
+grep -i "Profile update blocked" .server.log | tail
+```
+
+- 出现 `Failed to parse profile`：模型没按 JSON 输出，确认提示词里"key 保持英文"的约束是否生效
+- 想立刻重跑：`POST /api/heartbeat/trigger {"maintenance_only": false}`
+- 关系（`relationship_tags` / `related_contact_ids`）需要画像里的 `social_relations` 非空；
+  若模型只回"未知"，说明**提示词里缺少关系证据** —— 检查该联系人的对话原文是否被召回
+  （需要同 owner 下存在包含其姓名/别名的对话）
+
+### 4.6 联系人列表里出现没说过的人名
+
+小模型会照抄提示词 few-shot 示例里的人名（"李总的女儿""张总的秘书"）。
+现在过滤规则会要求姓名逐字出现在对话原文中，若仍出现，检查 `.server.log` 里
+`[Contact Filter] Removed ... 对话原文中未出现` 是否生效。
+
+---
+
 ## 5. 收集诊断信息
 
 ```bash
