@@ -35,6 +35,7 @@
 - `src/bin/bench_gguf.rs`：纯推理基准工具（可扫线程数），配 `scripts/bench_cpu.sh`
 - `scripts/download_gguf.py`：分段并行 + 断点续传下载，结束校验文件长度
 - `scripts/check_env.sh`：部署前环境自检
+- `scripts/dev_env.sh`：导出 MSVC/Ninja/AVX2 环境，使任意 `cargo` 命令（含 `cargo test --features gguf`）可用
 - `scripts/llama_cpu_toolchain.cmake`：MSVC 下强制 AVX2 + 正确架构
 - `docs/`：`MODEL_SETUP` / `BUILD` / `PERFORMANCE` / `TROUBLESHOOTING` / `API` / `ARCHITECTURE`
 - `GET /api/events/pending_merges`、`POST /api/events/pending_merges/{id}/resolve`
