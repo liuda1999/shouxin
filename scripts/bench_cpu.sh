@@ -44,5 +44,5 @@ for T in 4 8 16 32; do
 done
 
 echo ""
-echo "参考：Ryzen 9 9950X / 3B Q5_K_M / 16 线程 ≈ 24 tok/s；"
+echo "参考：Ryzen 9 9950X / Ministral-3B Q8_0 / 16 线程 ≈ 15 tok/s；Gemma-E4B ≈ 16 tok/s；"
 echo "低于 5 tok/s 说明指令集没生效，见 docs/PERFORMANCE.md"

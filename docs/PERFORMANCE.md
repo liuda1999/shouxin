@@ -13,8 +13,28 @@
 | 修 AVX2 编译标志 | ~3.8 tok/s | 100–600 s | 有效但远远不够 |
 | **修 `GGML_CPU_GENERIC`（根因）** | **~24 tok/s** | **≈70 s** | 达到预期 |
 
-硬件：AMD Ryzen 9 9950X（16 核 / 32 线程）、61.6 GB DDR5、模型 `Llama-3.2-3B-Instruct-Q5_K_M`（2.3 GB）、
+硬件：AMD Ryzen 9 9950X（16 核 / 32 线程）、61.6 GB DDR5、
 `llama.cpp` 由 `llama-cpp-sys-2 0.1.146` 静态编译、纯 CPU、无 GPU 参与。
+
+> 事故复现时用的模型是 `Llama-3.2-3B-Instruct-Q5_K_M`（2.3 GB）。
+> 该模型**已退役**，项目现在使用 Gemma-4-E4B（标准档）与 Ministral-3-3B（低配档），
+> 见下方"当前模型基准"。
+
+---
+
+## 1.5 当前模型基准（v0.5.0 交付口径）
+
+修复后在同一台机器上实测（16 线程、ctx 4096、纯 CPU、**服务未运行**）：
+
+| 模型 | 体积 | 生成速度 | 单次抽取端到端 | 备注 |
+|------|------|----------|----------------|------|
+| `gemma-4-E4B-it-Q4_K_M`（标准档） | 4.6 GB | ≈ 16 tok/s | ≈ 33 s | 默认配置 |
+| `Ministral-3-3B-Reasoning-2512-Q8_0`（低配 3B） | 3.4 GB | ≈ 15.4 tok/s | ≈ 41 s | `config.3b.toml` |
+| `Llama-3.2-3B-Instruct-Q5_K_M`（已退役） | 2.3 GB | ≈ 24 tok/s | ≈ 70 s | 仅作历史对照 |
+
+> ⚠️ **跑基准前先停掉服务**。服务端心跳会周期性调用 LLM，
+> 两个进程各开 16 线程抢同一批核心时，生成吞吐会塌陷（实测 64 token 从 5 s 恶化到超时），
+> 很容易误判成"模型有问题"。
 
 ---
 
@@ -29,7 +49,7 @@ SHOUXIN_BIN=bench_gguf bash scripts/build_gguf.sh
 
 # 跑（线程数可任意指定）
 ./target/debug/bench_gguf.exe \
-  --model models/Llama-3.2-3B-Instruct-Q5_K_M.gguf \
+  --model models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf \
   --threads 16 --ctx 4096 --max-tokens 128 --runs 1
 ```
 
@@ -59,7 +79,7 @@ INFO [GGUF] 生成 166 tokens / 7.33s = 22.6 tok/s (context=4096)
 
 ### 3.1 症状
 
-- 16 核跑满，但 3B Q5_K_M 只有 **3.8 tok/s**（同机 LM Studio 有 20 tok/s）；
+- 16 核跑满，但 3B Q5_K_M（已退役的 Llama 模型）只有 **3.8 tok/s**（同机 LM Studio 有 20 tok/s）；
 - 生成 139 token 用了 36 s，prompt 处理又吃掉 65 s；
 - 线程数从 4 加到 32，速度几乎不变。
 

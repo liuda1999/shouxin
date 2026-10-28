@@ -150,6 +150,16 @@ cargo test --tests
 集成测试需要 `.fastembed_cache/` 里已有嵌入模型；没有时会走哈希降级（结果仍可通过，
 但语义检索类断言会退化）。
 
+**全量 API 冒烟**（覆盖 `routes.rs` 注册的全部端点，需先启动服务）：
+
+```bash
+bash scripts/api_smoke_test.sh
+# 指定地址与隔离用户
+BASE=http://127.0.0.1:3001 USER_ID=smoke bash scripts/api_smoke_test.sh
+```
+
+当前基线：`PASS=35  FAIL=0  SKIP=0`（Gemma 与 Ministral 两套配置均通过）。
+
 > ⚠️ **踩过的坑：`cargo test` 会用「默认特性」重编二进制，把 `target/debug/shouxin-server`
 > 覆盖成不带 `gguf` 的版本**，之后再启动就会报：
 > `GGUF 后端未编译。请使用 cargo build --features gguf 启用`。

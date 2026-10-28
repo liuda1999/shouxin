@@ -1,0 +1,103 @@
+# ShouXin v0.5.0 GGUF 模型测试配置
+
+[llm]
+primary = "gguf"
+secondary = "none"
+temperature = 0.7
+max_tokens = 1024
+timeout_secs = 1800
+
+[llm.gguf]
+model_path = "./models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf"
+context_size = 4096
+threads = 16
+batch_size = 2048
+# LLM 推理使用 CPU（模型加载到内存，不做 GPU 卸载）
+# 纯 CPU 推理：模型加载到内存，不做 GPU 卸载
+n_gpu_layers = 0
+use_gpu = false
+offload_kv_cache = false
+
+[llm.ollama]
+model = "llama3.2:3b"
+endpoint = "http://localhost:11434"
+timeout_secs = 300
+max_retries = 2
+
+[llm.api]
+endpoint = "https://api.openai.com/v1"
+api_key = ""
+model = "gpt-3.5-turbo"
+timeout_secs = 60
+max_retries = 2
+
+[llm.heartbeat]
+backend = "gguf"
+model = "./models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf"
+endpoint = "gguf://localhost"
+temperature = 0.3
+max_tokens = 500
+
+[embedder]
+model_path = ".fastembed_cache"
+model = "intfloat/multilingual-e5-base"
+# 模型缺失时降级为离线哈希嵌入，避免服务起不来
+fallback_to_hash = true
+
+[heartbeat]
+enabled = true
+base_interval_secs = 60
+min_interval_secs = 30
+max_interval_secs = 120
+adaptive = true
+idle_threshold_secs = 30
+maintenance_timeout_secs = 30
+llm_timeout_secs = 120
+memory_threshold_mb = 4096
+max_consecutive_skips = 3
+
+[storage]
+data_dir = "./data"
+dictionary_dir = "dictionary"
+relational_dir = "relational"
+vector_dir = "vector_store"
+relational_db_file = "relational.db"
+vector_index_file = "vectors.hnsw"
+question_pool_dir = "heartbeat/questions"
+
+[logging]
+level = "info"
+dir = "./logs"
+max_file_size_mb = 10
+
+[agent]
+primary_agent_id = "primary_agent_default"
+# internal_api_token 必须通过环境变量 SHOUXIN_AGENT__INTERNAL_API_TOKEN 或 config.local.toml 设置
+internal_api_token = ""
+
+[server]
+host = "127.0.0.1"
+port = 3000
+# internal_api_token 必须通过环境变量 SHOUXIN_SERVER__INTERNAL_API_TOKEN 或 config.local.toml 设置
+internal_api_token = ""
+
+[event]
+long_term_hot_limit = 200
+short_term_hot_limit = 100
+
+[extraction]
+# 单次 LLM 提取超时（秒）。超时后自动降级为正则提取。
+timeout_secs = 1800
+# 启动时"多旧的 prepared 写入意图"视为崩溃残留（秒）
+intent_grace_secs = 300
+
+[todo]
+# 待办生命周期策略（替代代码里写死的 30/50）
+# 待办数量超过该值时，心跳会归档最旧的一批
+max_pending_before_archive = 50
+# 归档时保留的 pending 数量
+archive_keep_count = 50
+# 待办数量超过该值时，心跳生成"任务提醒"
+reminder_threshold = 30
+# 超过该天数未更新视为陈旧，可被归档
+archive_after_days = 30

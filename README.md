@@ -49,21 +49,39 @@
 - **C++ 工具链**：Windows 需 VS 2022 Build Tools；Linux 需 `build-essential`
 - **CMake** ≥ 3.20 + **Ninja**
 
-### 1. 准备模型（约 5.7 GB，必须手动下载）
+### 1. 准备模型（必须手动下载，不进 Git）
 
-模型体积大，不进 Git 仓库。**推理模型**和**嵌入模型**要分别下载：
+模型体积大，不进 Git 仓库。**推理模型**和**嵌入模型**要分别下载。推理模型提供两档：
+
+| 档位 | 模型 | 体积 | 特点 |
+|------|------|------|------|
+| **默认（标准）** | `gemma-4-E4B-it-Q4_K_M` | 4.6 GB | 抽取质量更好，推荐 |
+| **低配 3B** | `Ministral-3-3B-Reasoning-2512-Q8_0` | 3.4 GB | 更省内存、更快起步，用 `config.3b.toml` 启用 |
 
 ```bash
 mkdir -p models
 
-# 推理模型 4.6 GB（国内建议用内置分段下载脚本，直连单线程常被限速到几十 KB/s）
+# ① 默认推理模型 4.6 GB（国内建议用内置分段下载脚本，直连单线程常被限速到几十 KB/s）
 python scripts/download_gguf.py \
   "https://hf-mirror.com/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf" \
   "models/gemma-4-E4B-it-Q4_K_M.gguf" 32
 
-# 嵌入模型 1.1 GB
+# ② 嵌入模型 1.1 GB（必需）
 bash scripts/fetch_embedding_model.sh
 ```
+
+**低配 3B 方案**（可选，二选一）：
+
+```bash
+python scripts/download_gguf.py \
+  "https://hf-mirror.com/unsloth/Ministral-3-3B-Reasoning-2512-GGUF/resolve/main/Ministral-3-3B-Reasoning-2512-Q8_0.gguf" \
+  "models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf" 32
+
+# 用低配配置启动（模型路径已指向 Ministral）
+SHOUXIN_CONFIG=./config.3b.toml ./target/release/shouxin-server
+```
+
+> 视觉塔 `mmproj` 目前不加载（抽取为纯文本），仅在需要多模态时预留。
 
 详细说明（含校验、目录布局、离线降级）见 **[docs/MODEL_SETUP.md](docs/MODEL_SETUP.md)**。
 
@@ -158,14 +176,15 @@ fallback_to_hash = true          # 模型缺失时降级，不阻塞启动
 
 | 指标 | 数值 | 备注 |
 |------|------|------|
-| 生成速度 · Gemma-4-E4B Q4_K_M（默认模型） | **≈ 16 tok/s** | 模型 4.6 GB |
-| 生成速度 · Llama-3.2-3B Q5_K_M | ≈ 24 tok/s | 模型 2.3 GB，越小越快 |
+| 生成速度 · Gemma-4-E4B Q4_K_M（默认模型，4.6 GB） | **≈ 16 tok/s** | 抽取质量更好 |
+| 生成速度 · Ministral-3-3B Q8_0（低配 3B，3.4 GB） | **≈ 15 tok/s** | 显存/内存占用更小 |
 | 生成速度 · ctx 8192 | 同上 | 短提示下与 4K 无差异；上下文填满时注意力开销会上升 |
-| 单次抽取端到端（3 人 + 多待办 + 多事件） | **≈ 33 s**（Gemma）/ 70 s（3B） | 含 1 次主抽取 + 多轮人名校验 |
+| 单次抽取端到端（3 人 + 多待办 + 多事件） | **≈ 33–41 s** | 含 1 次主抽取 + 多轮人名校验 |
 | 单次抽取（走正则降级） | ≈ 10 s | 无 LLM 调用 |
 | 嵌入（e5-base, 768 维） | 毫秒级 | ONNX CPU |
 
-> 数字会随 CPU、模型大小、量化方式变化。基准工具：`cargo run --release --features gguf --bin bench_gguf -- --threads 16`
+> 数字会随 CPU、模型大小、量化方式变化。基准工具：
+> `bash scripts/bench_cpu.sh`（注意：**不要在服务运行中跑基准**，两者会抢 CPU 导致数字失真）。
 > 方法论与踩坑记录见 **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**。
 
 ---
@@ -204,6 +223,10 @@ fallback_to_hash = true          # 模型缺失时降级，不阻塞启动
 ```bash
 cargo test --lib      # 69 项单元测试（快，不加载模型）
 cargo test --tests    # 91 项集成测试（会加载真实 ONNX 嵌入模型）
+
+# 全量 API 冒烟（覆盖 routes.rs 里注册的全部 35 个端点，需先启动服务）
+bash scripts/api_smoke_test.sh
+BASE=http://127.0.0.1:3001 USER_ID=smoke bash scripts/api_smoke_test.sh   # 指定地址/隔离用户
 ```
 
 当前基线：**160 passed / 0 failed**。

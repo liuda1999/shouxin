@@ -7,6 +7,9 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# 支持校验非默认配置（如 config.3b.toml）：SHOUXIN_CONFIG=./config.3b.toml bash scripts/check_env.sh
+CFG="${SHOUXIN_CONFIG:-config.toml}"
+
 OK=0
 WARN=0
 FAIL=0
@@ -25,7 +28,7 @@ cfg() { # cfg <section> <key>
       gsub(/"/, "");
       print; exit
     }
-  ' config.toml 2>/dev/null
+  ' "$CFG" 2>/dev/null
 }
 
 echo "== 1. 工具链 =="
@@ -88,8 +91,8 @@ else
 fi
 
 echo "== 4. 配置一致性 =="
-if [ -f config.toml ]; then
-  ok "config.toml 存在"
+if [ -f "$CFG" ]; then
+  ok "$CFG 存在"
   PRIMARY=$(cfg "llm" "primary")
   echo "         LLM primary = ${PRIMARY:-未设置}"
   if [ "$(cfg "llm.gguf" "use_gpu")" = "false" ]; then
@@ -106,7 +109,7 @@ if [ -f config.toml ]; then
     warn "n_gpu_layers 非 0"
   fi
 else
-  fail "缺少 config.toml"
+  fail "缺少配置文件：$CFG"
 fi
 
 echo "== 5. 端口 =="

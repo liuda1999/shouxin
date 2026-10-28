@@ -1,7 +1,10 @@
 # HTTP API
 
 所有接口返回 JSON。`owner` 相关接口需要 `scope` + `user_id`（或 `owner_type` + `owner_id`）定位命名空间，
-跨命名空间访问一律返回"不存在"。
+跨命名空间访问一律返回"不存在"（不泄露资源是否存在）。
+
+**错误表达约定**：业务错误大多走 **HTTP 200 + `{"success": false, "error": "..."}`**，
+而不是靠 HTTP 状态码。只有参数校验失败、路由不存在、请求超时等框架级错误才用 4xx/5xx。
 
 基础地址：`http://127.0.0.1:3000`
 
@@ -177,7 +180,7 @@ GET /api/files/:file_id/text?scope=user&user_id=default_user    # 提取的文�
 DELETE /api/files/:file_id?scope=user&user_id=default_user      # 删除
 ```
 
-他人的文件返回 **不存在**（不泄露存在性）。
+他人的文件返回 `{"success": false, "error": "文件不存在"}`（HTTP 200，不泄露存在性）。
 
 ---
 
@@ -216,6 +219,6 @@ POST /api/vector/search         # 原始向量检索（不走业务层）
 | HTTP | 场景 |
 |------|------|
 | 400 | 请求体字段缺失/类型不符 |
-| 404 | 资源不存在，**或跨命名空间访问** |
+| 404 | 路由或资源不存在（跨命名空间访问通常仍是 200 + `success:false`） |
 | 408 | 请求处理超时（`timeout` 中间件） |
 | 500 | 内部错误，响应体含错误信息 |

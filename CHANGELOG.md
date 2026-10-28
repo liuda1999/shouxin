@@ -1,5 +1,42 @@
 # 变更记录
 
+## [未发布] 2026-10-29 — 推理模型换挡：下线 Llama-3.2，新增 Ministral-3B 低配档
+
+### 模型
+
+| 项 | 变化 |
+|----|------|
+| 退役 | `Llama-3.2-3B-Instruct-Q5_K_M` **不再使用**，配置/脚本/文档中的引用全部移除 |
+| 新增低配档 | `Ministral-3-3B-Reasoning-2512-Q8_0.gguf`（3.4 GB）+ `mmproj-BF16.gguf`（0.78 GB） |
+| 标准档 | 不变，仍为 `gemma-4-E4B-it-Q4_K_M`（默认 `config.toml`） |
+| 新增配置 | `config.3b.toml` —— 指向 Ministral，`SHOUXIN_CONFIG=./config.3b.toml` 即可切档 |
+| 架构兼容 | Ministral 为 `mistral3`，`llama-cpp-sys-2 0.1.146` 已支持；对话模板从 GGUF 正常读取（`[INST]`） |
+
+实测（16 线程 / ctx 4096 / 纯 CPU / 服务未运行）：
+
+| 模型 | 生成速度 | 单次抽取端到端 |
+|------|----------|----------------|
+| Gemma-4-E4B Q4_K_M | ≈ 16 tok/s | ≈ 33 s |
+| Ministral-3-3B Q8_0 | ≈ 15.4 tok/s | ≈ 41 s |
+
+### 新增
+
+- `scripts/api_smoke_test.sh`：**全量 API 冒烟测试**，覆盖 `routes.rs` 注册的全部 35 个端点
+  （记忆写入/状态/重放、四类检索、待办 CRUD、事件合并、文件上传与越权、心跳、
+  虚拟角色 CRUD、向量检索），自带数据隔离与结果汇总。
+  当前基线：`PASS=35 FAIL=0 SKIP=0`，Gemma 与 Ministral 两套配置均通过。
+- `config.3b.toml`：低配 3B 档配置模板。
+
+### 修正
+
+- `scripts/check_env.sh` 支持 `SHOUXIN_CONFIG`，可校验非默认配置（如 `config.3b.toml`）；
+- 文档中"跨 owner 访问返回 404"更正为**实际行为**：HTTP 200 + `{"success":false,...}`
+  （不泄露资源是否存在）；
+- 明确记录一个测量陷阱：**服务运行中跑基准会因 CPU 争抢导致数字严重失真**
+  （64 token 从 5 s 恶化到超时），已在 PERFORMANCE.md 标注。
+
+---
+
 ## [未发布] 2026-10-29 — 联系人画像与关系自动生成（专项）
 
 针对"联系人的人设/别名/社会关系/联系人之间关系能否自动生成"做了完整排查，
