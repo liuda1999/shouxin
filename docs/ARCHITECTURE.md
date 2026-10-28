@@ -155,6 +155,34 @@ POST /api/memory/add
 
 ---
 
+## 8.5 资源占用原则（后台服务）
+
+守心与其它服务共存，资源策略是**硬约束**，不是建议：
+
+| 资源 | 策略 | 实现位置 |
+|------|------|----------|
+| **显存** | **默认完全不用**。`use_gpu` 在配置缺省与代码缺省下均为 `false`，`n_gpu_layers` 恒为 0；只有显式 `use_gpu = true` 且以 `--features gguf-cuda` 编译才会卸载到 GPU | `config/settings.rs::default_gguf_use_gpu`、`llm/gguf.rs` |
+| **CPU（GPU 模式）** | 线程数硬性上限 = `核心数 × gpu_max_cpu_percent%`（默认 60%，向下取整，最少 1）。32 核机器最多 19 线程 | `llm/gguf.rs::resolve_threads` / `cap_threads_for_gpu` |
+| **CPU（纯 CPU 模式）** | 用配置的 `threads`，且不超过核心数 | 同上 |
+| 内存 | 模型 mmap 驻留，受 `[heartbeat].memory_threshold_mb` 保护，超阈值跳过心跳 | `service/heartbeat*` |
+
+判定逻辑（单测覆盖）：
+
+```rust
+resolve_threads(configured, cores, gpu_enabled, percent)
+  = gpu_enabled ? min(max(configured,1), max(1, cores*percent/100))
+                : min(max(configured,1), max(cores,1))
+```
+
+日志证据（启动时一行即可确认）：
+
+```
+[GGUF] 初始化: GPU=false, n_gpu_layers=0, context=4096, threads=16（核心 32，GPU 上限 60%）
+[GGUF] GPU 模式限制 CPU 占用：threads 32 -> 19（核心 32，上限 60%）   # GPU 模式且被压制时
+```
+
+---
+
 ## 9. 降级与可观测
 
 系统有多层降级，**每一层都必须留下明确日志**，否则会静默劣化：

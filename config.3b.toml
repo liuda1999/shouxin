@@ -15,7 +15,10 @@ batch_size = 2048
 # LLM 推理使用 CPU（模型加载到内存，不做 GPU 卸载）
 # 纯 CPU 推理：模型加载到内存，不做 GPU 卸载
 n_gpu_layers = 0
+# 后台服务原则：默认纯 CPU，不占显存；确需 GPU 时改成 true
 use_gpu = false
+# 仅 GPU 模式生效：线程数硬性压在 核心数 × 该百分比 以内（后台服务不吃满 CPU）
+gpu_max_cpu_percent = 60
 offload_kv_cache = false
 
 [llm.ollama]

@@ -3718,6 +3718,7 @@ dependencies = [
  "llama-cpp-2",
  "lru",
  "md5",
+ "num_cpus",
  "once_cell",
  "pdf-extract",
  "rand 0.8.6",

@@ -1,5 +1,57 @@
 # 变更记录
 
+## [未发布] 2026-10-29 — 资源占用硬约束：默认不占显存 + GPU 模式 CPU ≤ 60%
+
+背景：守心是**后台服务**，必须与其它进程共存。显存是稀缺资源，CPU 也不能被吃满。
+
+### 变更
+
+| 项 | 变化 |
+|----|------|
+| **默认纯 CPU** | `use_gpu` 的**代码缺省值从 `true` 改为 `false`**（配置缺省与 `GgufClient` 内部缺省一致），`n_gpu_layers` 恒为 0。不显式打开就绝不占显存 |
+| **新增 `gpu_max_cpu_percent`** | `[llm.gguf]` 新配置项，默认 **60**。GPU 模式实际线程数 = `min(threads, **物理核数** × 百分比%)`，向下取整、最少 1 |
+| 纯 CPU 模式 | 线程数沿用 `threads`，且不超过核心数 |
+| 心跳客户端 | 固定纯 CPU（`use_gpu=false`），不占显存 |
+
+### 实现
+
+```rust
+// src/llm/gguf.rs
+pub(crate) fn resolve_threads(configured, cores, gpu_enabled, percent) -> usize {
+    let cores = cores.max(1);
+    if gpu_enabled { cap_threads_for_gpu(configured, cores, percent) }
+    else { configured.max(1).min(cores) }
+}
+```
+
+- 基准取**物理核心数**（`num_cpus::get_physical()`），不是逻辑核 ——
+  否则 32 线程（16 物理核 + 超线程）× 60% = 19 会超过物理核数，反而造成超载；
+- GPU 模式被压制时打日志：`[GGUF] GPU 模式限制 CPU 占用：threads 32 -> 19（核心 32，上限 60%）`；
+- 启动日志新增核心数与上限信息，一眼可核对：
+  `[GGUF] 初始化: GPU=false, n_gpu_layers=0, context=4096, threads=16（物理核 16，GPU 上限 60%）`；
+- **未编译 CUDA 却写了 `use_gpu=true`** 时明确告警并回退纯 CPU（避免"以为用了 GPU、实际既没加速也没省事"）：
+  `配置要求 GPU 推理（use_gpu=true），但当前二进制未编译 CUDA 后端…本次将回退纯 CPU 运行`。
+
+### 测试
+
+- 新增 5 个单元测试（`thread_cap_tests`）：60% 折算、配置低于上限时不干预、
+  下限为 1、百分比越界夹取、CPU 分支不叠加限制；
+- `cargo test --features gguf --lib`：**74 passed**（原 69 + 5）；
+- `cargo test --features gguf --tests`：**91 passed**；
+- `bash scripts/api_smoke_test.sh`：**PASS=35 FAIL=0 SKIP=0**（Ministral 3B 配置实跑）。
+
+GPU 模式的线程压制已在运行时实测（用 `use_gpu=true` 的临时配置启动）：
+
+```
+[GGUF] GPU 模式限制 CPU 占用：threads 16 -> 9（核心 16，上限 60%）
+[GGUF] 初始化: GPU=false, n_gpu_layers=0, threads=9（物理核 16，GPU 上限 60%）
+[GGUF] 配置要求 GPU 推理（use_gpu=true），但当前二进制未编译 CUDA 后端…回退纯 CPU 运行
+```
+
+即：16 物理核 → 最多 9 线程（≤60%），且因为本机是纯 CPU 构建，显存占用为 0。
+
+---
+
 ## [未发布] 2026-10-29 — 推理模型换挡：下线 Llama-3.2，新增 Ministral-3B 低配档
 
 ### 模型

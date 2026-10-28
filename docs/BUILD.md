@@ -2,15 +2,19 @@
 
 守心是纯 Rust 项目，但 `gguf` 特性会把 `llama.cpp`（C/C++）一起编进来，因此需要 C++ 工具链。
 
-| 构建目标 | 命令 | 依赖 |
-|----------|------|------|
-| 默认（仅 HTTP + 嵌入，无本地 LLM） | `cargo build --release` | Rust |
-| **本地 GGUF 推理（推荐）** | `cargo build --release --features gguf` | Rust + MSVC/Clang + CMake + Ninja |
-| GPU 卸载（可选） | `cargo build --release --features gguf-cuda` | 上面 + CUDA Toolkit |
+| 构建目标 | 命令 | 依赖 | 资源占用 |
+|----------|------|------|----------|
+| 默认（仅 HTTP + 嵌入，无本地 LLM） | `cargo build --release` | Rust | 不加载 LLM |
+| **本地 GGUF 推理（推荐）** | `cargo build --release --features gguf` | Rust + MSVC/Clang + CMake + Ninja | **纯 CPU，不占显存** |
+| GPU 卸载（可选） | `cargo build --release --features gguf-cuda` | 上面 + CUDA Toolkit | 占显存；CPU 线程 ≤ 60% |
 
-> 当前项目定位是**纯 CPU 推理**（`[llm.gguf].use_gpu = false`）。
-> `gguf` 特性刻意**不编译 CUDA 后端**：二进制更小、构建快 10 倍、运行时不依赖 `cublas64_12.dll`。
-> 确实需要 GPU 时再用 `gguf-cuda`。
+> 项目默认**纯 CPU 推理**：`gguf` 特性刻意**不编译 CUDA 后端**，
+> 二进制更小、构建快约 10 倍、运行时不依赖 `cublas64_12.dll`。
+>
+> 这是有意的资源策略 —— 守心是后台服务，**显存是稀缺资源，默认一律不占用**：
+> `use_gpu` 在配置缺省与代码缺省下都是 `false`，`n_gpu_layers` 恒为 0。
+> 确实需要 GPU 时才用 `gguf-cuda` 编译，并显式 `use_gpu = true`；
+> 此时线程数会被硬性限制在 `核心数 × gpu_max_cpu_percent%`（默认 60%）以内。
 
 ---
 

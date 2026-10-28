@@ -101,7 +101,7 @@ impl GgufClient {
             .and_then(|v| v.as_u64())
             .unwrap_or(2048) as usize;
 
-        let threads = config
+        let mut threads = config
             .extra_params
             .get("threads")
             .and_then(|v| v.as_u64())
@@ -125,14 +125,25 @@ impl GgufClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // 是否允许 GPU 推理（use_gpu=false 时纯 CPU，模型全部驻留内存）
+        // 是否允许 GPU 推理。
+        // 缺省为 **false**：本项目是后台服务，显存是稀缺资源，必须显式 opt-in 才用 GPU。
         let use_gpu = config
             .extra_params
             .get("use_gpu")
             .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+            .unwrap_or(false);
 
-        let gpu_enabled = use_gpu && is_gpu_available();
+        // 未编译 CUDA 后端时，llama.cpp 无法真正卸载层到 GPU。
+        // 此时即使配置写了 use_gpu=true，也只能跑在 CPU 上，必须明确告警，
+        // 否则用户会误以为已经用上 GPU（而实际上既没加速，也没占显存）。
+        if use_gpu && !cfg!(feature = "gguf-cuda") {
+            tracing::warn!(
+                "[GGUF] 配置要求 GPU 推理（use_gpu=true），但当前二进制未编译 CUDA 后端\
+                 （需 cargo build --features gguf-cuda），本次将回退纯 CPU 运行"
+            );
+        }
+
+        let gpu_enabled = use_gpu && cfg!(feature = "gguf-cuda") && is_gpu_available();
         let n_gpu_layers = if gpu_enabled {
             if configured_gpu_layers > 0 {
                 configured_gpu_layers.min(40)
@@ -143,13 +154,47 @@ impl GgufClient {
             0
         };
 
+        // GPU 模式下的 CPU 占用上限
+        //
+        // 原则：本项目是后台服务，不能把 CPU 核心吃满。
+        // 即使推理主要跑在 GPU 上，llama.cpp 仍会开多个线程做数据搬运/采样，
+        // 因此这里把线程数硬性压到"核心数 × gpu_max_cpu_percent%"以内。
+        let gpu_max_cpu_percent = config
+            .extra_params
+            .get("gpu_max_cpu_percent")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60) as u32;
+
+        // 用**物理核心数**做配额基准。
+        // 若按逻辑核（含超线程）算，32 线程 × 60% = 19 会超过 16 个物理核，
+        // 反而造成超载 —— 与"不吃满 CPU"的初衷相反。
+        let cores = physical_cores();
+
+        // 注意：这里用 `use_gpu`（配置意图）而不是 `gpu_enabled`（硬件探测结果）。
+        // 只要配置声明要用 GPU，就按"GPU 模式"限制线程数；
+        // 即使本机没装 CUDA（gpu_enabled=false），保守收紧也不会造成问题。
+        let effective_threads =
+            resolve_threads(threads, cores, use_gpu, gpu_max_cpu_percent);
+        if use_gpu && effective_threads != threads {
+            tracing::info!(
+                "[GGUF] GPU 模式限制 CPU 占用：threads {} -> {}（核心 {}，上限 {}%）",
+                threads,
+                effective_threads,
+                cores,
+                gpu_max_cpu_percent
+            );
+        }
+        threads = effective_threads;
+
         tracing::info!(
-            "[GGUF] 初始化: GPU={}, n_gpu_layers={}, offload_kv_cache={}, context={}, threads={}",
+            "[GGUF] 初始化: GPU={}, n_gpu_layers={}, offload_kv_cache={}, context={}, threads={}（物理核 {}，GPU 上限 {}%）",
             gpu_enabled,
             n_gpu_layers,
             offload_kv_cache,
             context_size,
-            threads
+            threads,
+            cores,
+            gpu_max_cpu_percent
         );
 
         Self {
@@ -681,5 +726,90 @@ impl GgufClient {
                 fact
             })
             .collect())
+    }
+}
+
+/// 取物理核心数（拿不到时退回逻辑核数，最少 1）
+pub(crate) fn physical_cores() -> usize {
+    let phys = num_cpus::get_physical();
+    if phys > 0 {
+        return phys;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// 根据运行模式决定实际线程数
+///
+/// * 纯 CPU：按配置值，但不超过核心数（后台服务原则：不主动开超线程以外的额外并发）
+/// * GPU：再叠加"最多占用 N% 核心"的硬性上限
+pub(crate) fn resolve_threads(
+    configured: usize,
+    cores: usize,
+    gpu_enabled: bool,
+    percent: u32,
+) -> usize {
+    let cores = cores.max(1);
+    if gpu_enabled {
+        cap_threads_for_gpu(configured, cores, percent)
+    } else {
+        configured.max(1).min(cores)
+    }
+}
+
+/// GPU 模式下按"最多占用 N% 核心"折算线程数
+///
+/// 取向下取整，保证**不会超过**给定比例；同时至少为 1，避免算出 0 线程。
+pub(crate) fn cap_threads_for_gpu(configured: usize, cores: usize, percent: u32) -> usize {
+    let pct = percent.clamp(1, 100) as usize;
+    let cores = cores.max(1);
+    let allowed = ((cores * pct) / 100).max(1);
+    configured.max(1).min(allowed)
+}
+
+#[cfg(test)]
+mod thread_cap_tests {
+    use super::{cap_threads_for_gpu, resolve_threads};
+
+    #[test]
+    fn cpu_mode_uses_configured_threads_up_to_cores() {
+        // 纯 CPU：配置 16、32 核 → 16；配置 64 → 夹到 32
+        assert_eq!(resolve_threads(16, 32, false, 60), 16);
+        assert_eq!(resolve_threads(64, 32, false, 60), 32);
+        assert_eq!(resolve_threads(0, 32, false, 60), 1);
+    }
+
+    #[test]
+    fn gpu_mode_is_capped_to_percent() {
+        // 本机物理 16 核：16 × 60% = 9，配置 32 也要被压到 9
+        assert_eq!(resolve_threads(32, 16, true, 60), 9);
+        // 配置本来就低时不受影响
+        assert_eq!(resolve_threads(4, 16, true, 60), 4);
+        // 8 核 × 60% = 4
+        assert_eq!(resolve_threads(8, 8, true, 60), 4);
+    }
+
+    #[test]
+    fn caps_to_60_percent_of_cores() {
+        // 16 核 × 60% = 9 核（向下取整）
+        assert_eq!(cap_threads_for_gpu(16, 16, 60), 9);
+        assert_eq!(cap_threads_for_gpu(32, 16, 60), 9);
+        // 配置本来就低于上限时不受影响
+        assert_eq!(cap_threads_for_gpu(4, 16, 60), 4);
+    }
+
+    #[test]
+    fn never_below_one_thread() {
+        assert_eq!(cap_threads_for_gpu(1, 1, 60), 1);
+        assert_eq!(cap_threads_for_gpu(8, 1, 60), 1);
+    }
+
+    #[test]
+    fn percent_is_clamped() {
+        // 0% / 超过 100% 都会被夹到合法区间
+        assert_eq!(cap_threads_for_gpu(16, 8, 0), 1);
+        assert_eq!(cap_threads_for_gpu(16, 8, 200), 8);
     }
 }

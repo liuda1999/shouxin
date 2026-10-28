@@ -91,6 +91,11 @@ fn build_client(
                         "use_gpu".to_string(),
                         serde_json::Value::Bool(gguf.use_gpu),
                     );
+                    // GPU 模式下的 CPU 核心占用上限（默认 60%）
+                    params.insert(
+                        "gpu_max_cpu_percent".to_string(),
+                        serde_json::Value::Number(gguf.gpu_max_cpu_percent.into()),
+                    );
                     params
                 },
             };
@@ -293,6 +298,11 @@ pub fn build_heartbeat_client(
                         params.insert(
                             "use_gpu".to_string(),
                             serde_json::Value::Bool(false),
+                        );
+                        // 心跳客户端强制纯 CPU（不占显存），GPU 上限参数用默认 60 即可
+                        params.insert(
+                            "gpu_max_cpu_percent".to_string(),
+                            serde_json::Value::Number(60.into()),
                         );
                         params
                     },

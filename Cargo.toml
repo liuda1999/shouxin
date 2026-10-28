@@ -18,6 +18,8 @@ reqwest = { version = "0.12", features = ["json"] }
 fastembed = { version = "4.9.1", features = ["ort-download-binaries"] }
 sled = "0.34"
 hnsw_rs = "0.3"
+# 用于取物理核心数：GPU 模式的 CPU 上限按物理核计算，避免超线程把额度放大
+num_cpus = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 config = "0.14"

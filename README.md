@@ -155,8 +155,9 @@ model_path   = "./models/gemma-4-E4B-it-Q4_K_M.gguf"
 context_size = 4096
 threads      = 16        # 建议 = 物理核心数
 batch_size   = 2048      # prompt 分块预填充的块大小
-use_gpu      = false     # false = 纯 CPU（内存驻留，不卸载到 GPU）
+use_gpu      = false     # 默认纯 CPU（内存驻留，不卸载到 GPU）
 n_gpu_layers = 0
+gpu_max_cpu_percent = 60 # 仅 GPU 模式生效：CPU 占用上限（核心数百分比）
 
 [embedder]
 model_path       = ".fastembed_cache"
@@ -167,6 +168,23 @@ fallback_to_hash = true          # 模型缺失时降级，不阻塞启动
 
 > **`threads` 建议设为物理核心数**（超线程对 llama.cpp 通常无益甚至更慢）。
 > 更多配置项见 `config.toml` 内注释与 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
+
+### 资源占用原则（重要）
+
+守心是**后台服务**，必须与其它进程共存，因此对资源有两条硬约束：
+
+1. **默认纯 CPU，不占显存**
+   `use_gpu = false` 是默认值（配置缺省、代码缺省都是 false）。
+   模型全部驻留内存，不向 GPU 卸载任何层；`n_gpu_layers` 强制为 0。
+   需要 GPU 时必须显式改 `use_gpu = true` 并用 `--features gguf-cuda` 编译。
+
+2. **GPU 模式下 CPU 占用不超过 60%**
+   即使推理主要跑在 GPU 上，llama.cpp 仍会开线程做数据搬运与采样。
+   实际线程数 = `min(threads, 核心数 × gpu_max_cpu_percent%)`（向下取整，默认 60%）。
+   32 核机器上最多用 19 个线程，绝不会吃满；
+   生效时日志会打印：`[GGUF] GPU 模式限制 CPU 占用：threads 32 -> 19（核心 32，上限 60%）`。
+
+纯 CPU 模式下线程数按 `threads` 配置，并且不会超过核心数。
 
 ---
 

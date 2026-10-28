@@ -108,6 +108,8 @@ if [ -f "$CFG" ]; then
   else
     warn "n_gpu_layers 非 0"
   fi
+  GMP=$(cfg "llm.gguf" "gpu_max_cpu_percent")
+  echo "         gpu_max_cpu_percent=${GMP:-60（默认）}（仅 GPU 模式生效，线程数上限）"
 else
   fail "缺少配置文件：$CFG"
 fi

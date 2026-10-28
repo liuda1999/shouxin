@@ -183,10 +183,28 @@ pub struct GgufBackendSettings {
     /// true 且 n_gpu_layers=0 时按显存自动决定卸载层数。
     #[serde(default = "default_gguf_use_gpu")]
     pub use_gpu: bool,
+
+    /// GPU 推理时允许占用的 CPU 核心上限（百分比）
+    ///
+    /// 即使 GPU 承担了主要计算，llama.cpp 仍会开多个线程做数据搬运/采样等，
+    /// 线程数取 min(threads, 核心数 × 该百分比)。默认 60。
+    #[serde(default = "default_gpu_max_cpu_percent")]
+    pub gpu_max_cpu_percent: u32,
 }
 
+/// GPU 开关默认值：**false**
+///
+/// 原则：本项目是后台服务，显存属于"重要且稀缺"的资源，默认一律纯 CPU 推理
+/// （模型驻留内存）。需要 GPU 时必须显式打开 `use_gpu = true`。
 fn default_gguf_use_gpu() -> bool {
-    true
+    false
+}
+
+/// GPU 推理时允许占用的 CPU 核心上限（百分比），默认 60%
+///
+/// 后台服务不能把核心吃满，否则会拖慢同机的其它进程。
+fn default_gpu_max_cpu_percent() -> u32 {
+    60
 }
 
 fn default_context_size() -> usize { 2048 }
