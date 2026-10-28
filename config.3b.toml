@@ -19,7 +19,7 @@ use_gpu = false
 offload_kv_cache = false
 
 [llm.ollama]
-model = "llama3.2:3b"
+model = "ministral-3:3b"   # 示例：仅当 primary/secondary 选 ollama 时才生效，按实际 Ollama 模型名替换
 endpoint = "http://localhost:11434"
 timeout_secs = 300
 max_retries = 2

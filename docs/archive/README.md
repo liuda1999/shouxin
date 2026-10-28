@@ -31,3 +31,10 @@
 - `HEARTBEAT_*.md`：心跳模块的阶段性状态记录
 - `SECURITY_AUDIT_REPORT.md`：早期安全审计
 - `EXTENSION_GUIDE.md`：早期扩展开发指南
+
+## configs/
+
+`configs/config_embedded.toml`、`configs/config_hnsw.toml` 是 v0.5.0 之前的示例配置，
+使用的是**已废弃的配置 schema**（`[llm] backend = "ollama"` 平铺写法），
+当前版本会忽略这些字段并回退默认值，不能直接使用。
+现行配置见仓库根目录 `config.toml` / `config.3b.toml`。
