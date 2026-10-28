@@ -1,0 +1,54 @@
+# Shouxin（守心）全局配置文件 - HNSW 模式
+# 向量库使用真实 HNSW 索引
+
+[llm]
+backend = "ollama"
+model = "llama3.2:3b"
+endpoint = "http://localhost:11434"
+temperature = 0.7
+max_tokens = 2000
+timeout_secs = 120
+
+[llm.heartbeat]
+backend = "ollama"
+model = "llama3.2:3b"
+endpoint = "http://localhost:11434"
+temperature = 0.3
+max_tokens = 500
+
+[embedder]
+model_path = "./.fastembed_cache"
+
+[heartbeat]
+enabled = false
+
+[processing]
+async_enabled = true
+worker_count = 2
+queue_capacity = 10000
+
+[storage]
+data_dir = "./data_hnsw"
+dictionary_dir = "dictionary"
+relational_dir = "relational"
+vector_dir = "vector"
+relational_db_file = "relational.db"
+vector_index_file = "vectors.hnsw"
+question_pool_dir = "heartbeat/questions"
+
+[logging]
+level = "debug"
+dir = "./logs"
+max_file_size_mb = 10
+
+[agent]
+primary_agent_id = "primary_agent"
+internal_api_token = ""
+
+[vector_config]
+dimension = 768
+store_type = "hnsw"
+m = 16
+ef_construction = 100
+ef_search = 10
+path = "./data_hnsw/vector"

@@ -1,0 +1,548 @@
+{
+  "test_name": "Event Extraction - 50 Events, Ollama qwen3.5:4b",
+  "test_time": "2026-06-05T23:10:20.735437+00:00",
+  "summary": {
+    "add_success": 50,
+    "add_failed": 0,
+    "total_extracted_events": 0,
+    "short_term_count": 0,
+    "long_term_count": 0,
+    "other_count": 0,
+    "search_queries_ok": 6,
+    "type_mismatches": 0
+  },
+  "add_results": [
+    {
+      "index": 1,
+      "desc": "短期-明天会议",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 2,
+      "desc": "短期-周末活动",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 3,
+      "desc": "短期-本周截止",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 4,
+      "desc": "短期-预约",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 5,
+      "desc": "短期-航班",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 6,
+      "desc": "短期-聚餐",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 7,
+      "desc": "短期-考试",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 8,
+      "desc": "短期-快递",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 9,
+      "desc": "短期-维修",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 10,
+      "desc": "短期-面试",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 11,
+      "desc": "短期-发布会",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 12,
+      "desc": "短期-培训",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 13,
+      "desc": "短期-搬家",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 14,
+      "desc": "短期-生日派对",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 15,
+      "desc": "短期-签约",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 16,
+      "desc": "短期-车检",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 17,
+      "desc": "短期-线上会议",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 18,
+      "desc": "短期-取件",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 19,
+      "desc": "短期-演讲",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 20,
+      "desc": "短期-出差",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 21,
+      "desc": "长期-健身计划",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 22,
+      "desc": "长期-学习计划",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 23,
+      "desc": "长期-买房",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 24,
+      "desc": "长期-英语学习",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 25,
+      "desc": "长期-创业",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 26,
+      "desc": "长期-学位",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 27,
+      "desc": "长期-储蓄",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 28,
+      "desc": "长期-装修",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 29,
+      "desc": "长期-开源项目",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 30,
+      "desc": "长期-驾照",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 31,
+      "desc": "长期-健康管理",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 32,
+      "desc": "长期-写作",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 33,
+      "desc": "长期-投资",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 34,
+      "desc": "长期-健身教练",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 35,
+      "desc": "长期-子女教育",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 36,
+      "desc": "高重要-服务器迁移",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 37,
+      "desc": "高重要-安全漏洞",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 38,
+      "desc": "高重要-法律事务",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 39,
+      "desc": "中重要-读书会",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 40,
+      "desc": "中重要-团建",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 41,
+      "desc": "低重要-看电影",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 42,
+      "desc": "低重要-理发",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 43,
+      "desc": "高重要-系统上线",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 44,
+      "desc": "长期-职业规划",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 45,
+      "desc": "长期-留学",
+      "expected_type": "long_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 46,
+      "desc": "短期-退税",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 47,
+      "desc": "短期-修车",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 48,
+      "desc": "短期-家长会",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 49,
+      "desc": "短期-续费",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    },
+    {
+      "index": 50,
+      "desc": "短期-体检",
+      "expected_type": "short_term",
+      "http_status": 200,
+      "success": true,
+      "event_count": 0,
+      "event_types": [],
+      "event_titles": []
+    }
+  ],
+  "search_results": [
+    {
+      "query": "会议",
+      "desc": "会议相关",
+      "result_count": 10
+    },
+    {
+      "query": "体检",
+      "desc": "医疗健康相关",
+      "result_count": 10
+    },
+    {
+      "query": "学习",
+      "desc": "学习计划相关",
+      "result_count": 10
+    },
+    {
+      "query": "买房",
+      "desc": "买房相关",
+      "result_count": 10
+    },
+    {
+      "query": "服务器",
+      "desc": "技术运维相关",
+      "result_count": 10
+    },
+    {
+      "query": "出差",
+      "desc": "差旅相关",
+      "result_count": 10
+    }
+  ]
+}

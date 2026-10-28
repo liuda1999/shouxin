@@ -1,0 +1,17 @@
+# .cargo/config.toml
+#
+# 本文件只服务于「启用 gguf-cuda feature 的本地 GPU 构建」。
+#
+# 注意：
+# 1. 其中的 CUDA 路径是**本机环境**，换机器 / 升级 CUDA 版本时需要同步修改；
+#    不使用 GPU（默认 feature）时可以删除本文件，构建不受影响。
+# 2. 这里不再包含历史工作区路径（原 `d:\OpenClaw-Workspace\...` 已失效，
+#    会让链接阶段找不到库）。
+
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-L", "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\lib\\x64"
+]
+
+[env]
+CUDA_PATH = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8"

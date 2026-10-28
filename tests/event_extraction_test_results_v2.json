@@ -1,0 +1,469 @@
+{
+  "test_name": "Event Extraction v2 - 50 Events, Ollama llama3.2:3b",
+  "test_time": "2026-06-05T23:12:13.610182+00:00",
+  "summary": {
+    "add_success": 50,
+    "total_conversations": 50,
+    "total_unique_events": 16,
+    "short_term_count": 0,
+    "long_term_count": 0,
+    "other_count": 16,
+    "type_distribution": {
+      "short_term": 0,
+      "long_term": 0,
+      "other": {
+        "medium": 0
+      }
+    }
+  },
+  "add_results": [
+    {
+      "index": 1,
+      "desc": "短期-明天会议",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "07857995-92ad-4ea5-9258-1ffa1887b00a"
+    },
+    {
+      "index": 2,
+      "desc": "短期-周末活动",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "5927683f-5686-423a-8267-4167d480c550"
+    },
+    {
+      "index": 3,
+      "desc": "短期-本周截止",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "7ad17300-4d81-4176-af6d-e5062e240eec"
+    },
+    {
+      "index": 4,
+      "desc": "短期-预约",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "70e1aa44-70ae-4b0b-bcba-86b956f43290"
+    },
+    {
+      "index": 5,
+      "desc": "短期-航班",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "20deb092-40b0-4c61-8771-f80a6ab14fb0"
+    },
+    {
+      "index": 6,
+      "desc": "短期-聚餐",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "25931126-52ad-4a77-a1e7-cea8ee047852"
+    },
+    {
+      "index": 7,
+      "desc": "短期-考试",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "e0ef6f38-b36c-461f-8dd2-db220a2b6b4a"
+    },
+    {
+      "index": 8,
+      "desc": "短期-快递",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "a83982b9-1600-481e-9da1-65e65b8aa53e"
+    },
+    {
+      "index": 9,
+      "desc": "短期-维修",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "5f30b8aa-8590-4805-af14-56a7861714f0"
+    },
+    {
+      "index": 10,
+      "desc": "短期-面试",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "e999d7b7-652a-46c7-a5d8-8f90a29004ea"
+    },
+    {
+      "index": 11,
+      "desc": "短期-发布会",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "d0d9a935-bbb7-4393-a718-b2778728a085"
+    },
+    {
+      "index": 12,
+      "desc": "短期-培训",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "f8dc5346-2369-42eb-8eef-1bb02184098c"
+    },
+    {
+      "index": 13,
+      "desc": "短期-搬家",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "32399d52-fcbe-418f-b662-a28b62dd7146"
+    },
+    {
+      "index": 14,
+      "desc": "短期-生日派对",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "ccb001f0-5dd6-4440-9920-f9f230e1972b"
+    },
+    {
+      "index": 15,
+      "desc": "短期-签约",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "ec8ca1e9-6933-492c-82a6-bd18c3b7e422"
+    },
+    {
+      "index": 16,
+      "desc": "短期-车检",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "b725e9b4-421e-4c03-b23a-92f2a157ffcb"
+    },
+    {
+      "index": 17,
+      "desc": "短期-线上会议",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "71260fb3-6299-438c-a5a5-9c05c2865365"
+    },
+    {
+      "index": 18,
+      "desc": "短期-演讲",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "ad14a599-753a-48b8-ab7b-f0c6211dc848"
+    },
+    {
+      "index": 19,
+      "desc": "短期-出差",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "d2edcc52-0804-48f1-b8fb-e2254a5808e7"
+    },
+    {
+      "index": 20,
+      "desc": "短期-退税",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "4fa30cb1-9c5a-4e72-9467-2ad08f9c92d7"
+    },
+    {
+      "index": 21,
+      "desc": "长期-健身计划",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "de2f0a71-282d-49b1-8e71-b3471335b777"
+    },
+    {
+      "index": 22,
+      "desc": "长期-学习计划",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "43f5f809-cc76-47a5-841a-074f8da69eac"
+    },
+    {
+      "index": 23,
+      "desc": "长期-买房",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "ef21affb-6ee6-4685-8464-a1678d68162b"
+    },
+    {
+      "index": 24,
+      "desc": "长期-英语学习",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "73089d07-ab49-4ee3-8926-f6d49c7c5cc3"
+    },
+    {
+      "index": 25,
+      "desc": "长期-创业",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "290ffa94-f8ae-4ef0-9b42-5647bea9c389"
+    },
+    {
+      "index": 26,
+      "desc": "长期-学位",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "608db3d7-23d7-45de-93a9-1cf40aee2d15"
+    },
+    {
+      "index": 27,
+      "desc": "长期-储蓄",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "0ce4a7f5-1ece-4697-92b5-c375fa285114"
+    },
+    {
+      "index": 28,
+      "desc": "长期-装修",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "06ee35df-128a-4900-a905-5fb6353283f3"
+    },
+    {
+      "index": 29,
+      "desc": "长期-开源项目",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "82238445-29ff-459f-adf6-286f4b364ddd"
+    },
+    {
+      "index": 30,
+      "desc": "长期-驾照",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "36c8c956-1e2c-4476-9651-931da51597f9"
+    },
+    {
+      "index": 31,
+      "desc": "长期-健康管理",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "69600412-ed7d-4fad-8386-749c71337d80"
+    },
+    {
+      "index": 32,
+      "desc": "长期-写作",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "9c10b879-f3ea-4545-b65d-ac705baaa56c"
+    },
+    {
+      "index": 33,
+      "desc": "长期-投资",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "31a5f36d-fd5c-4d88-ae60-c56da6b71be9"
+    },
+    {
+      "index": 34,
+      "desc": "长期-职业规划",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "e4626a8f-2581-44c6-943d-93e977ebf30e"
+    },
+    {
+      "index": 35,
+      "desc": "长期-留学",
+      "expected_type": "long_term",
+      "success": true,
+      "conversation_id": "c5def287-ddc8-4075-9fe8-11b366694b2b"
+    },
+    {
+      "index": 36,
+      "desc": "高重要-服务器迁移",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "5ae9fb8e-247a-4c57-9829-1fd95f568944"
+    },
+    {
+      "index": 37,
+      "desc": "高重要-安全漏洞",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "92db7740-2980-49f5-a3a1-64fa72414b7e"
+    },
+    {
+      "index": 38,
+      "desc": "高重要-法律事务",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "cd9633e0-e73f-408f-b1f3-1c046eaa2ec1"
+    },
+    {
+      "index": 39,
+      "desc": "中重要-读书会",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "e284db10-91bd-4122-a15c-bc2c94fe9f5e"
+    },
+    {
+      "index": 40,
+      "desc": "中重要-团建",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "2e152388-1550-473c-a172-7ffcfc3e7b8d"
+    },
+    {
+      "index": 41,
+      "desc": "低重要-看电影",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "983dc4a3-8ccd-410e-8c09-4eb16e8ae33c"
+    },
+    {
+      "index": 42,
+      "desc": "低重要-理发",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "e4ea9b43-4a25-40b8-9154-17d52db4154b"
+    },
+    {
+      "index": 43,
+      "desc": "高重要-系统上线",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "1d30c230-64e2-4b2f-a8f3-0d9433ee855e"
+    },
+    {
+      "index": 44,
+      "desc": "短期-修车",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "41e35050-7a72-42fd-8346-e4175505da39"
+    },
+    {
+      "index": 45,
+      "desc": "短期-家长会",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "422e7ec9-d71e-415a-aa80-1ce5f6c6db4c"
+    },
+    {
+      "index": 46,
+      "desc": "短期-续费",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "fb038699-7890-40c1-b935-2b19c5a88e80"
+    },
+    {
+      "index": 47,
+      "desc": "短期-体检",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "21ccbe62-6413-4b77-b1c0-c32fe2e29bcf"
+    },
+    {
+      "index": 48,
+      "desc": "短期-取件",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "2c6deade-5634-4d0a-9be9-19b13f7a9ffb"
+    },
+    {
+      "index": 49,
+      "desc": "短期-护照",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "80e93247-26e8-41d5-b7cb-b9593596d9db"
+    },
+    {
+      "index": 50,
+      "desc": "短期-会议主持",
+      "expected_type": "short_term",
+      "success": true,
+      "conversation_id": "d4f3e2b5-edd9-4f10-9997-dd507bae77db"
+    }
+  ],
+  "events": [
+    {
+      "title": "航班信息",
+      "importance": "medium",
+      "time": "",
+      "description": "航班CA1234于6月15号下午2点 departing北京"
+    },
+    {
+      "title": "新产品发布会",
+      "importance": "medium",
+      "time": "",
+      "description": "参加线上发布会"
+    },
+    {
+      "title": "技术面试",
+      "importance": "medium",
+      "time": "",
+      "description": "周五下午2点为应聘高级后端工程师"
+    },
+    {
+      "title": "维修",
+      "importance": "medium",
+      "time": "",
+      "description": ""
+    },
+    {
+      "title": "收货",
+      "importance": "medium",
+      "time": "",
+      "description": "明天从京东买的新电脑显示器会送到"
+    },
+    {
+      "title": "参加PMP认证考试",
+      "importance": "medium",
+      "time": "",
+      "description": "用户下周三上午9点参加PMP认证考试"
+    },
+    {
+      "title": "牙科检查",
+      "importance": "medium",
+      "time": "",
+      "description": "下周一上午10点"
+    },
+    {
+      "title": "项目验收报告",
+      "importance": "medium",
+      "time": "",
+      "description": "本周五之前必须提交"
+    },
+    {
+      "title": "爬山",
+      "importance": "medium",
+      "time": "",
+      "description": "这周六早上8点出发去爬山、与小王约好在香山门口集合"
+    },
+    {
+      "title": "带上Q2报告",
+      "importance": "medium",
+      "time": "",
+      "description": "会见内容"
+    },
+    {
+      "title": "产品评审会议",
+      "importance": "medium",
+      "time": "",
+      "description": "用户明天下午3点要参加产品评审会议"
+    },
+    {
+      "title": "Kubernetes实战培训",
+      "importance": "medium",
+      "time": "",
+      "description": "下周二全天参加公司组织的培训"
+    },
+    {
+      "title": "搬家",
+      "importance": "medium",
+      "time": "",
+      "description": "这个周六要搬家, 已经联系了搬家公司, 早上8点开始"
+    },
+    {
+      "title": "生日庆典",
+      "importance": "medium",
+      "time": "",
+      "description": "周日晚上7点在KTV举行生日庆典"
+    },
+    {
+      "title": "前往客户公司",
+      "importance": "medium",
+      "time": "",
+      "description": ""
+    },
+    {
+      "title": "签订合同",
+      "importance": "medium",
+      "time": "",
+      "description": "签下合同并将合同金额固定在50万元"
+    }
+  ]
+}

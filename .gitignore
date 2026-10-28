@@ -1,0 +1,55 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试文件
+test_*.py
+*.pyc
+__pycache__/
+
+# 测试报告
+*_REPORT.md
+*_SUMMARY.md
+API_BEHAVIOR_MATRIX.md
+CODE_AUDIT_REPORT.md
+EXECUTION_SUMMARY.md
+FIX_COMPILATION_ERROR.md
+
+# 数据目录
+data/
+.sled_data/
+
+# 打包文件
+*.tar
+*.zip
+*.tar.gz
+
+# 临时文件
+*.log
+*.tmp
+
+# 本地配置覆盖（包含敏感信息，不应提交）
+config.local.toml
+
+# ===== 模型与模型缓存（体积大，不进仓库；下载方法见 docs/MODEL_SETUP.md）=====
+models/
+*.gguf
+*.part[0-9]*
+*.part[0-9]*.done
+.fastembed_cache/
+
+# ===== 运行期数据与日志 =====
+/logs/
+*.server.log
+.dl_*.log
+.bench*.log
+.server_build.log
+.gguf_build.log
