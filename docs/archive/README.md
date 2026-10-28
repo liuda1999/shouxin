@@ -25,3 +25,9 @@
 - `*_TEST_REPORT` / `*_SUMMARY` / `STRESS_TEST_*`：阶段性测试报告
 - `PROJECT_INTRO` / `MODULE_*` / `PROJECT_AUDIT`：项目盘点
 - `ShouXin_Technical_Document_v4.0.0.md`：早期技术文档（版本号已过时）
+- `API_REFERENCE.md` / `TECHNICAL_DOCUMENTATION.md` / `FEATURE_MODULES*.md` / `STRUCTURE.md`：
+  v0.5.0 之前的接口与模块说明，接口路径与字段已与当前实现不一致，
+  当前口径以 [../API.md](../API.md)、[../ARCHITECTURE.md](../ARCHITECTURE.md) 为准
+- `HEARTBEAT_*.md`：心跳模块的阶段性状态记录
+- `SECURITY_AUDIT_REPORT.md`：早期安全审计
+- `EXTENSION_GUIDE.md`：早期扩展开发指南
