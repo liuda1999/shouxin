@@ -1,39 +1,52 @@
-# ShouXin v0.5.0 GGUF 模型测试配置
+# 守心 ShouXin 配置文件
+#
+# 覆盖顺序（后者覆盖前者）：
+#   1. 本文件
+#   2. 同目录下的 config.local.toml（本地覆盖，不进 Git）
+#   3. 环境变量，前缀 SHOUXIN__，层级用双下划线，例如：
+#        SHOUXIN__LLM__PRIMARY=gguf
+#        SHOUXIN__SERVER__PORT=3100
+#   4. 命令行参数（如 --host）优先级最高
+#
+# 切换配置：SHOUXIN_CONFIG=./config.3b.toml ./shouxin-server
 
+# ============ LLM ============
 [llm]
-primary = "gguf"
-secondary = "none"
+primary = "gguf"          # gguf | ollama | api
+secondary = "none"        # "none" 表示不启用备用模型
 temperature = 0.7
 max_tokens = 1024
-timeout_secs = 1800
+timeout_secs = 1800       # 整轮抽取超时；纯 CPU 下别开太小
 
 [llm.gguf]
 model_path = "./models/gemma-4-E4B-it-Q4_K_M.gguf"
 context_size = 4096
-threads = 16
-batch_size = 2048
-# LLM 推理使用 CPU（模型加载到内存，不做 GPU 卸载）
-# 纯 CPU 推理：模型加载到内存，不做 GPU 卸载
-n_gpu_layers = 0
-# 后台服务原则：默认纯 CPU，不占显存；确需 GPU 时改成 true
+threads = 16              # 建议 = 物理核心数（超线程通常无益）
+batch_size = 2048         # prompt 分块预填充的块大小
+# 后台服务原则：默认纯 CPU，不占显存；确需 GPU 时改成 true（还需 --features gguf-cuda）
 use_gpu = false
-# 仅 GPU 模式生效：线程数硬性压在 核心数 × 该百分比 以内（后台服务不吃满 CPU）
+n_gpu_layers = 0
+# 仅 GPU 模式生效：线程数硬性压在 物理核数 × 该百分比 以内
 gpu_max_cpu_percent = 60
+# KV Cache 是否卸载到 GPU；false = 留在内存（不额外占显存）
 offload_kv_cache = false
 
+# Ollama 后端（可选，仅当 primary/secondary 选 ollama 时生效）
 [llm.ollama]
-model = "ministral-3:3b"   # 示例：仅当 primary/secondary 选 ollama 时才生效，按实际 Ollama 模型名替换
+model = "ministral-3:3b"  # 按本机 Ollama 实际模型名替换
 endpoint = "http://localhost:11434"
 timeout_secs = 300
 max_retries = 2
 
+# OpenAI 兼容 API 后端（可选）
 [llm.api]
 endpoint = "https://api.openai.com/v1"
-api_key = ""
-model = "gpt-3.5-turbo"
+api_key = ""              # 建议用环境变量 SHOUXIN__LLM__API__API_KEY 注入
+model = "gpt-4o-mini"     # 示例值，按你的服务端模型名替换
 timeout_secs = 60
 max_retries = 2
 
+# 心跳专用 LLM（强制纯 CPU，避免后台任务抢显存）
 [llm.heartbeat]
 backend = "gguf"
 model = "./models/gemma-4-E4B-it-Q4_K_M.gguf"
@@ -41,12 +54,15 @@ endpoint = "gguf://localhost"
 temperature = 0.3
 max_tokens = 500
 
+# ============ 嵌入模型 ============
 [embedder]
-model_path = ".fastembed_cache"
-model = "intfloat/multilingual-e5-base"
-# 模型缺失时降级为离线哈希嵌入，避免服务起不来
-fallback_to_hash = true
+model_path = ".fastembed_cache"                 # 缓存根目录（相对仓库根）
+model = "intfloat/multilingual-e5-base"         # HuggingFace 仓库 ID，不是路径
+backend = "fastembed"                           # fastembed | hash
+hash_dimension = 768                            # backend=hash 时的向量维度
+fallback_to_hash = true                         # 模型缺失时降级，不阻塞启动
 
+# ============ 心跳 ============
 [heartbeat]
 enabled = true
 base_interval_secs = 60
@@ -56,9 +72,10 @@ adaptive = true
 idle_threshold_secs = 30
 maintenance_timeout_secs = 30
 llm_timeout_secs = 120
-memory_threshold_mb = 4096
+memory_threshold_mb = 4096      # 超过该内存占用则跳过本轮
 max_consecutive_skips = 3
 
+# ============ 存储 ============
 [storage]
 data_dir = "./data"
 dictionary_dir = "dictionary"
@@ -68,39 +85,37 @@ relational_db_file = "relational.db"
 vector_index_file = "vectors.hnsw"
 question_pool_dir = "heartbeat/questions"
 
+# ============ 日志 ============
 [logging]
-level = "info"
+level = "info"            # trace | debug | info | warn | error
 dir = "./logs"
 max_file_size_mb = 10
 
+# ============ 主智能体 ============
 [agent]
 primary_agent_id = "primary_agent_default"
-# internal_api_token 必须通过环境变量 SHOUXIN_AGENT__INTERNAL_API_TOKEN 或 config.local.toml 设置
+# 内部 API 令牌：用环境变量 SHOUXIN__AGENT__INTERNAL_API_TOKEN 或 config.local.toml 设置，不要写进本文件
 internal_api_token = ""
 
+# ============ HTTP 服务 ============
 [server]
-host = "127.0.0.1"
+host = "127.0.0.1"        # 默认只监听本机；需要局域网访问再改 0.0.0.0
 port = 3000
-# internal_api_token 必须通过环境变量 SHOUXIN_SERVER__INTERNAL_API_TOKEN 或 config.local.toml 设置
-internal_api_token = ""
+# 注：命令行 --host 优先级高于这里
 
+# ============ 事件 ============
 [event]
 long_term_hot_limit = 200
 short_term_hot_limit = 100
 
+# ============ 抽取 ============
 [extraction]
-# 单次 LLM 提取超时（秒）。超时后自动降级为正则提取。
-timeout_secs = 1800
-# 启动时"多旧的 prepared 写入意图"视为崩溃残留（秒）
-intent_grace_secs = 300
+timeout_secs = 1800             # 单次 LLM 提取超时，超时后降级正则
+intent_grace_secs = 300         # 启动时"多旧的 prepared 写入意图"视为崩溃残留
 
+# ============ 待办 ============
 [todo]
-# 待办生命周期策略（替代代码里写死的 30/50）
-# 待办数量超过该值时，心跳会归档最旧的一批
-max_pending_before_archive = 50
-# 归档时保留的 pending 数量
-archive_keep_count = 50
-# 待办数量超过该值时，心跳生成"任务提醒"
-reminder_threshold = 30
-# 超过该天数未更新视为陈旧，可被归档
-archive_after_days = 30
+max_pending_before_archive = 50   # 超过该值心跳归档最旧一批
+archive_keep_count = 50           # 归档时保留的 pending 数
+reminder_threshold = 30           # 超过该值生成"任务提醒"
+archive_after_days = 30           # 超过该天数未更新视为陈旧

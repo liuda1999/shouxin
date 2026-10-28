@@ -1,17 +1,20 @@
 # .cargo/config.toml
 #
-# 本文件只服务于「启用 gguf-cuda feature 的本地 GPU 构建」。
+# 本项目默认**纯 CPU 构建**（`--features gguf`），不需要任何 CUDA 配置。
+# 只有构建 `--features gguf-cuda` 时才需要指定 CUDA 库路径，而 CUDA 安装位置因机器而异，
+# 因此这里**不写死任何路径**，避免把机器相关配置带进仓库。
 #
-# 注意：
-# 1. 其中的 CUDA 路径是**本机环境**，换机器 / 升级 CUDA 版本时需要同步修改；
-#    不使用 GPU（默认 feature）时可以删除本文件，构建不受影响。
-# 2. 这里不再包含历史工作区路径（原 `d:\OpenClaw-Workspace\...` 已失效，
-#    会让链接阶段找不到库）。
-
-[target.x86_64-pc-windows-msvc]
-rustflags = [
-    "-L", "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\lib\\x64"
-]
-
-[env]
-CUDA_PATH = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8"
+# 需要 GPU 构建时，二选一：
+#
+#   1) 用环境变量（推荐，不改仓库文件）：
+#        export CUDA_PATH="/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.x"
+#        export RUSTFLAGS="-C target-cpu=native -L $(cygpath -w "$CUDA_PATH")\\lib\\x64"
+#        cargo build --release --features gguf-cuda
+#
+#   2) 在本机临时取消下面的注释（改动不要提交）：
+#
+# [target.x86_64-pc-windows-msvc]
+# rustflags = ["-L", "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\lib\\x64"]
+#
+# [env]
+# CUDA_PATH = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8"

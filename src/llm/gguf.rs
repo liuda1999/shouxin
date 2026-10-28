@@ -43,12 +43,15 @@ fn check_nvidia_gpu() -> bool {
     
     #[cfg(windows)]
     {
-        let cuda_in_program_files = std::path::Path::new(
-            "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA"
-        );
-        if cuda_in_program_files.exists() {
-            tracing::info!("[GPU] 检测到 NVIDIA CUDA 安装目录，启用 GPU 加速");
-            return true;
+        // 用 ProgramFiles 环境变量拼路径，避免写死盘符/安装位置
+        let cuda_dir = std::env::var("ProgramFiles")
+            .map(|pf| std::path::Path::new(&pf).join("NVIDIA GPU Computing Toolkit").join("CUDA"))
+            .ok();
+        if let Some(dir) = cuda_dir {
+            if dir.exists() {
+                tracing::info!("[GPU] 检测到 CUDA 安装目录（{}），可能可启用 GPU", dir.display());
+                return true;
+            }
         }
     }
     

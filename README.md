@@ -136,10 +136,22 @@ curl http://127.0.0.1:3000/api/todos
 
 ## 配置
 
-配置文件默认 `./config.toml`，也可用环境变量指定：
+配置文件默认 `./config.toml`。覆盖顺序（后者优先）：
+
+1. `config.toml`
+2. 同目录的 `config.local.toml`（本地私有覆盖，已在 `.gitignore` 中）
+3. 环境变量，前缀 `SHOUXIN__`，层级用双下划线：`SHOUXIN__SERVER__PORT=3100`
+4. 命令行参数，如 `--host 0.0.0.0:8080`
 
 ```bash
-SHOUXIN_CONFIG=./config.prod.toml ./shouxin-server
+SHOUXIN_CONFIG=./config.3b.toml ./shouxin-server   # 切换到低配 3B 档
+SHOUXIN__SERVER__PORT=3100 ./shouxin-server        # 临时改端口
+```
+
+**改完配置建议跑一次一致性检查**（会发现"写了但不生效"的死配置）：
+
+```bash
+python scripts/check_config.py config.toml config.3b.toml
 ```
 
 关键配置项：
@@ -164,6 +176,10 @@ model_path       = ".fastembed_cache"
 model            = "intfloat/multilingual-e5-base"
 backend          = "fastembed"   # fastembed | hash
 fallback_to_hash = true          # 模型缺失时降级，不阻塞启动
+
+[server]
+host = "127.0.0.1"  # 默认只监听本机；--host 优先级更高
+port = 3000
 ```
 
 > **`threads` 建议设为物理核心数**（超线程对 llama.cpp 通常无益甚至更慢）。
@@ -180,9 +196,10 @@ fallback_to_hash = true          # 模型缺失时降级，不阻塞启动
 
 2. **GPU 模式下 CPU 占用不超过 60%**
    即使推理主要跑在 GPU 上，llama.cpp 仍会开线程做数据搬运与采样。
-   实际线程数 = `min(threads, 核心数 × gpu_max_cpu_percent%)`（向下取整，默认 60%）。
-   32 核机器上最多用 19 个线程，绝不会吃满；
-   生效时日志会打印：`[GGUF] GPU 模式限制 CPU 占用：threads 32 -> 19（核心 32，上限 60%）`。
+   实际线程数 = `min(threads, **物理核数** × gpu_max_cpu_percent%)`（向下取整，默认 60%）。
+   16 物理核机器上最多用 9 个线程，绝不会吃满；
+   生效时日志会打印：`[GGUF] GPU 模式限制 CPU 占用：threads 16 -> 9（核心 16，上限 60%）`。
+   （用物理核而非逻辑核：32 逻辑线程 × 60% = 19 会超过 16 个物理核，等于还是超载。）
 
 纯 CPU 模式下线程数按 `threads` 配置，并且不会超过核心数。
 

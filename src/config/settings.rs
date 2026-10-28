@@ -18,6 +18,9 @@ pub struct Settings {
     pub heartbeat: HeartbeatSettings,
     pub storage: StorageSettings,
     pub logging: LoggingSettings,
+    /// HTTP 服务监听配置（命令行 --host 优先）
+    #[serde(default)]
+    pub server: ServerSettings,
     pub agent: AgentSettings,
     #[serde(default)]
     pub event: EventSettings,
@@ -103,6 +106,34 @@ impl Default for ExtractionSettings {
     }
 }
 
+/// HTTP 服务监听配置
+///
+/// 说明：`--host` 命令行参数优先；未提供时使用这里的 host + port。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ServerSettings {
+    /// 监听地址，默认 127.0.0.1（只监听本机，避免意外暴露到局域网）
+    #[serde(default = "default_server_host")]
+    pub host: String,
+    /// 监听端口，默认 3000
+    #[serde(default = "default_server_port")]
+    pub port: u16,
+}
+
+fn default_server_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_server_port() -> u16 {
+    3000
+}
+
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self { host: default_server_host(), port: default_server_port() }
+    }
+}
+
+/// 主智能体与内部 API 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSettings {
     pub primary_agent_id: String,
@@ -190,6 +221,12 @@ pub struct GgufBackendSettings {
     /// 线程数取 min(threads, 核心数 × 该百分比)。默认 60。
     #[serde(default = "default_gpu_max_cpu_percent")]
     pub gpu_max_cpu_percent: u32,
+
+    /// 是否把 KV Cache 卸载到 GPU（默认 false：KV 留在内存，避免占显存）
+    ///
+    /// 仅在 GPU 模式下有意义；纯 CPU 模式恒为 false。
+    #[serde(default)]
+    pub offload_kv_cache: bool,
 }
 
 /// GPU 开关默认值：**false**
@@ -335,6 +372,7 @@ impl Default for Settings {
             heartbeat: HeartbeatSettings::default(),
             storage: StorageSettings::default(),
             logging: LoggingSettings::default(),
+            server: ServerSettings::default(),
             agent: AgentSettings::default(),
             event: EventSettings::default(),
             extraction: ExtractionSettings::default(),

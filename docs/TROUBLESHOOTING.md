@@ -116,6 +116,33 @@ grep -E "falling back to regex|Insufficient Space|LLM call failed" .server.log |
 
 ---
 
+## 2.6 脚本"什么都没输出，退出码 2"
+
+**症状**：`bash scripts/xxx.sh` 立刻返回，没有任何输出，`echo $?` 是 `2`（或 127 且提示 `$'\r': command not found`）。
+
+**原因**：脚本是 **CRLF 换行**。Windows 上编辑/生成的文件容易带 `\r`，
+bash 会把 `\r` 当成命令的一部分，遇到 `case`/`if` 等结构直接解析失败。
+
+**判定**：
+
+```bash
+file scripts/build_gguf.sh          # 出现 "with CRLF line terminators" 即中招
+head -c 40 scripts/build_gguf.sh | xxd | head -2   # 看到 0d0a 就是 CRLF
+```
+
+**修复**：
+
+```bash
+# 仓库已加 .gitattributes（*.sh 强制 LF），正常情况下不会再发生；手动修复：
+sed -i 's/\r$//' scripts/*.sh
+git config core.autocrlf false    # 避免 checkout 时又被转回 CRLF
+```
+
+> 用 Python 脚本批量改文件时，务必用二进制模式或 `newline=''`，
+> 否则 Windows 上默认会把 `\n` 写成 `\r\n`。
+
+---
+
 ## 3. 构建相关
 
 | 报错 | 原因 | 处理 |
@@ -127,6 +154,8 @@ grep -E "falling back to regex|Insufficient Space|LLM call failed" .server.log |
 | `schannel: ... CRYPT_E_NO_REVOCATION_CHECK` | TLS 吊销检查被环境阻断 | `git -c http.schannelCheckRevoke=false clone …`；curl 加 `--ssl-no-revoke` |
 | `error LNK1104: 无法打开 cublas64_12.lib` | 用了 `gguf-cuda` 但没装 CUDA | 改用 `--features gguf`（纯 CPU） |
 | 首次构建 10 分钟 | 要完整编译 llama.cpp | 正常；之后增量编译约 1 分钟 |
+| `未找到可用的 cmake（>=3.20）` | 工具装在非标准位置（如便携版 Python 环境） | `cp scripts/toolchain.local.sh.example scripts/toolchain.local.sh` 后填 `SHOUXIN_CMAKE` / `SHOUXIN_NINJA` |
+| `未找到 MSVC C++ 工具集` | 未装 Build Tools，或装在非默认目录 | 装 VS Build Tools（勾选"使用 C++ 的桌面开发"），或设 `SHOUXIN_MSVC_ROOT` |
 
 ---
 

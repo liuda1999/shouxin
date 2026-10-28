@@ -1,5 +1,59 @@
 # 变更记录
 
+## [未发布] 2026-10-29 — 仓库审计：绝对路径清理、配置失效项修复、换行符规范化
+
+对 GitHub 推送结果、绝对路径、配置文件做了全量审计，修掉 3 类实质问题。
+
+### 1. 绝对路径（仓库可移植性）
+
+| 文件 | 问题 | 处理 |
+|------|------|------|
+| `scripts/build_gguf.sh` | 写死 MSVC 版本号、`/d/2026-ComfyUI-.../cmake.exe`、甚至 **`E:/ShouXin/...` 项目绝对路径** | 重写为仅做编排，工具链全部交给 `dev_env.sh` 探测 |
+| `scripts/dev_env.sh` | 同上 | 改为自动探测：`vswhere` / 扫 VS 安装目录 / SDK 取最新 / cmake 支持 PATH·标准目录·VS 自带·pip；支持 `SHOUXIN_MSVC_ROOT` 等环境变量覆盖 |
+| `scripts/cmake_probe.sh` | 写死 crate 版本、构建目录、编译器路径 | 改为复用 `dev_env.sh`，版本从 `Cargo.lock` 读取，构建目录自建 |
+| `examples/hnsw_test.rs` | 写死 `D://OpenClaw-Workspace//...//.fastembed_cache` | 改为读 `FASTEMBED_CACHE_DIR`，缺省用 `CARGO_MANIFEST_DIR/.fastembed_cache` |
+| `.cargo/config.toml` | 写死本机 CUDA `v12.8` 的 `-L` 与 `CUDA_PATH` | 默认注释掉，改为环境变量方案（默认纯 CPU 构建本就不需要） |
+| `src/llm/gguf.rs` | CUDA 探测写死 `C://Program Files\...` | 改用 `ProgramFiles` 环境变量拼接 |
+
+新增 `scripts/toolchain.local.sh.example`：工具装在非标准位置时，复制为
+`scripts/toolchain.local.sh`（已 gitignore）填写即可，**仓库内不出现机器路径**。
+
+### 2. 配置失效项（写了不生效）
+
+| 项 | 问题 | 处理 |
+|----|------|------|
+| `[server]` host/port | **整段未被代码读取**，实际只认命令行 `--host` | 新增 `ServerSettings` 并接入：`--host` 优先，其次配置 |
+| `[server].internal_api_token` | 与 `[agent].internal_api_token` 重复，且代码只读后者 | 删除重复项并加注释说明 |
+| `[llm.gguf].offload_kv_cache` | 结构体无此字段，`factory` 也未透传 → 恒为 false | 补字段并透传到客户端，配置真正生效 |
+| `[embedder].backend` / `hash_dimension` | 文档里有、配置里没有，全靠默认值 | 显式写入并加注释 |
+| `[llm.api].model = "gpt-3.5-turbo"` | 过时示例 | 改为 `gpt-4o-mini` 并注明是示例 |
+| 重复/矛盾注释 | `[llm.gguf]` 有两条重复的 CPU 说明 | 清理 |
+
+新增 `scripts/check_config.py`：校验 TOML 语法 + **死配置**（配置里有、结构体没有）
++ 漏配置提示。当前结果：`config.toml` / `config.3b.toml` 均 0 死配置。
+
+### 3. 换行符（导致脚本完全无法执行）
+
+Windows 下用文本模式批量改文件，把多个脚本写成了 **CRLF**，
+表现为 `bash scripts/build_gguf.sh` **无任何输出、退出码 2**。
+
+- 新增 `.gitattributes`：`*.sh / *.py / *.rs / *.toml / *.md` 强制 `eol=lf`，二进制按 binary 处理；
+- 仓库 `core.autocrlf=false`、`core.eol=lf`；
+- 全仓 43 个文本文件归一化为 LF；
+- 排障文档新增「脚本没输出、退出码 2」一节。
+
+### 验证
+
+- `cargo test --features gguf --lib`：**74 passed**
+- `cargo test --features gguf --tests`：**165 passed**（0 failed）
+- `bash scripts/api_smoke_test.sh`：**PASS=35 FAIL=0 SKIP=0**
+- `python scripts/check_config.py config.toml config.3b.toml`：**0 死配置**
+- `[server]` 生效验证：不传 `--host` 时监听 `127.0.0.1:3000`；
+  `SHOUXIN__SERVER__PORT=3123` 时监听 `:3123`
+- `bash scripts/build_gguf.sh`：自动探测到 MSVC 14.44 + SDK 10.0.26100，构建成功
+
+---
+
 ## [未发布] 2026-10-29 — 资源占用硬约束：默认不占显存 + GPU 模式 CPU ≤ 60%
 
 背景：守心是**后台服务**，必须与其它进程共存。显存是稀缺资源，CPU 也不能被吃满。

@@ -1,0 +1,28 @@
+# 统一换行符，避免 Windows 上把 shell 脚本写成 CRLF 导致 bash 执行失败
+# （典型症状：脚本无任何输出、退出码 2；或 "$'\r': command not found"）
+
+* text=auto eol=lf
+
+# 需要 LF 才能正常运行的脚本与源码
+*.sh      text eol=lf
+*.bash    text eol=lf
+*.py      text eol=lf
+*.rs      text eol=lf
+*.toml    text eol=lf
+*.md      text eol=lf
+*.sql     text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+
+# Windows 原生脚本保留 CRLF（如将来新增）
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+
+# 二进制资源不做转换
+*.png     binary
+*.jpg     binary
+*.ico     binary
+*.gguf    binary
+*.onnx    binary

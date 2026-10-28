@@ -96,6 +96,11 @@ fn build_client(
                         "gpu_max_cpu_percent".to_string(),
                         serde_json::Value::Number(gguf.gpu_max_cpu_percent.into()),
                     );
+                    // KV Cache 是否随模型一起卸载到 GPU（默认 false：留在内存）
+                    params.insert(
+                        "offload_kv_cache".to_string(),
+                        serde_json::Value::Bool(gguf.offload_kv_cache),
+                    );
                     params
                 },
             };

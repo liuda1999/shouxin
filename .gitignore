@@ -53,3 +53,6 @@ models/
 .bench*.log
 .server_build.log
 .gguf_build.log
+
+# 本机工具链路径覆盖（含机器特定绝对路径，不进仓库）
+scripts/toolchain.local.sh

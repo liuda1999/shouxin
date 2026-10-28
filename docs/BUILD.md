@@ -48,8 +48,33 @@ brew install cmake ninja
 仓库根目录：
 
 ```bash
-bash scripts/build_gguf.sh
+bash scripts/build_gguf.sh                    # debug
+bash scripts/build_gguf.sh --release          # release
+SHOUXIN_BIN=bench_gguf bash scripts/build_gguf.sh          # 编译基准工具
+SHOUXIN_FEATURES=gguf-cuda bash scripts/build_gguf.sh      # GPU 版（需 CUDA Toolkit）
 ```
+
+### 2.0 工具链从哪来（自动探测，仓库不写死路径）
+
+`build_gguf.sh` 只做编排，具体路径由 `scripts/dev_env.sh` 探测：
+
+| 组件 | 探测顺序 |
+|------|----------|
+| MSVC | `vswhere.exe` → 扫描 `C://Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*` 取最新 |
+| Windows SDK | `C://Program Files (x86)\Windows Kits\10\Include\` 下最新版本 |
+| cmake | `PATH` → `C://Program Files\CMake` → VS 自带 → pip 装的 cmake |
+| ninja | `PATH` → VS 自带 → cmake 同目录 / Python Scripts |
+
+工具装在非标准位置时（例如便携版 Python 环境），复制模板填写即可（该文件不进 Git）：
+
+```bash
+cp scripts/toolchain.local.sh.example scripts/toolchain.local.sh
+# SHOUXIN_CMAKE="/d/portable-python/Lib/site-packages/cmake/data/bin/cmake.exe"
+# SHOUXIN_NINJA="/d/portable-python/Scripts/ninja.exe"
+```
+
+也可临时用环境变量覆盖：`SHOUXIN_MSVC_ROOT`、`SHOUXIN_SDK_VERSION`、`SHOUXIN_CMAKE`、`SHOUXIN_NINJA`、`SHOUXIN_CUDA_ROOT`。
+探测失败时脚本会直接告诉你缺什么、怎么装，而不是静默退出。
 
 脚本做的事（每一步都是踩过的坑，详见注释）：
 

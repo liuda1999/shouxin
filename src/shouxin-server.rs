@@ -45,8 +45,9 @@ use shouxin::traits::{LlmClient, VectorStore};
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(long, default_value = "127.0.0.1:3000")]
-    host: String,
+    /// 监听地址（如 127.0.0.1:3000）。不填则使用配置 [server] 的 host + port
+    #[arg(long)]
+    host: Option<String>,
 }
 
 fn timeout_mw(timeout_secs: u64) -> impl Fn(axum::http::Request<Body>, axum::middleware::Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<axum::response::Response, axum::http::StatusCode>> + Send>> + Clone {
@@ -321,7 +322,6 @@ async fn run_api_server(
     println!("FastEmbed cache directory: {}", cache_dir.display());
 
     println!("Starting ShouXin Server...");
-    println!("Host: {}", args.host);
 
     let store_type = std::env::var("SHOUXIN_STORE_TYPE").unwrap_or_else(|_| "embedded".to_string());
     println!("Vector store type: {} (from SHOUXIN_STORE_TYPE env)", store_type);
@@ -361,6 +361,12 @@ async fn run_api_server(
         }
     };
     tracing::info!("Loaded config: LLM primary={}, secondary={:?}", settings.llm.primary, settings.llm.secondary);
+
+    // 监听地址：命令行 --host 优先，其次 config.toml 的 [server] host+port
+    let bind_addr = args
+        .host
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", settings.server.host, settings.server.port));
 
     // 主智能体 ID 是全系统 owner_id 的唯一来源，必须在任何路由/存储初始化之前注入
     shouxin::core::owner::init_primary_agent_id(settings.agent.primary_agent_id.clone());
@@ -722,9 +728,9 @@ async fn run_api_server(
     let app = app.layer(middleware::from_fn(timeout_mw(http_timeout)));
     println!("HTTP request timeout set to {}s", http_timeout);
 
-    println!("Server starting on {}", args.host);
-    let listener = TcpListener::bind(&args.host).await?;
-    println!("Server listening on {}", args.host);
+    println!("Server starting on {}", bind_addr);
+    let listener = TcpListener::bind(&bind_addr).await?;
+    println!("Server listening on {}", bind_addr);
 
     let warmup_am = async_memory.clone();
     tokio::spawn(async move {

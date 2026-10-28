@@ -1,0 +1,29 @@
+# 本机工具链覆盖（示例）
+#
+# 大多数情况下不需要这个文件：scripts/dev_env.sh 会自动探测
+#   - MSVC：通过 vswhere 或扫描 "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*"
+#   - Windows SDK：取 "C:\Program Files (x86)\Windows Kits\10\Include" 下最新版本
+#   - cmake / ninja：PATH、标准安装目录、VS 自带、pip 安装的 cmake
+#
+# 只有当你的环境比较特殊（例如工具装在非标准盘符、用便携版 Python 环境）时，
+# 才复制本文件为 `scripts/toolchain.local.sh` 并填写路径。
+# 该文件已在 .gitignore 中，不会提交。
+#
+# 用法：
+#   cp scripts/toolchain.local.sh.example scripts/toolchain.local.sh
+#   然后按需取消注释并修改
+
+# MSVC 工具集目录（到版本号这一层）
+# SHOUXIN_MSVC_ROOT="C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207"
+
+# Windows SDK 版本
+# SHOUXIN_SDK_VERSION="10.0.26100.0"
+
+# cmake 可执行文件（注意：pip 装的 cmake，真正可执行文件在 .../cmake/data/bin/cmake.exe）
+# SHOUXIN_CMAKE="/d/portable-python/Lib/site-packages/cmake/data/bin/cmake.exe"
+
+# ninja 可执行文件
+# SHOUXIN_NINJA="/d/portable-python/Scripts/ninja.exe"
+
+# CUDA 根目录（仅 gguf-cuda 构建需要）
+# SHOUXIN_CUDA_ROOT="C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8"

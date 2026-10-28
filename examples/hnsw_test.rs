@@ -15,7 +15,10 @@ use tempfile::TempDir;
 async fn create_hnsw_test_manager() -> Result<ThreeLibraryMemoryManager, Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
 
-    let fastembed_cache = std::path::PathBuf::from("D:\\OpenClaw-Workspace\\ShouXin_Complete_v0.2.0\\.fastembed_cache");
+    // 嵌入模型缓存目录：优先读环境变量，其次用仓库内默认目录（不写死机器路径）
+    let fastembed_cache = std::env::var("FASTEMBED_CACHE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".fastembed_cache"));
     let hf_cache = fastembed_cache.join("huggingface").join("hub");
     std::env::set_var("HF_HUB_CACHE", hf_cache.to_string_lossy().to_string());
     std::env::set_var("HF_HUB_OFFLINE", "1");
