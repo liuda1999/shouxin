@@ -67,7 +67,18 @@ bash scripts/build_gguf.sh
 bash scripts/build_gguf.sh --release
 ```
 
-### 2.2 验证 AVX2 真的生效
+### 2.2 想跑任意 cargo 命令（含测试）
+
+`scripts/build_gguf.sh` 只编 `shouxin-server`。要跑其它 cargo 子命令（如带 `gguf` 特性跑测试），
+先把环境导入当前 shell：
+
+```bash
+source scripts/dev_env.sh
+cargo test --features gguf --lib
+cargo build --release --features gguf --bin bench_gguf
+```
+
+### 2.3 验证 AVX2 真的生效
 
 这是判断"CPU 推理为什么慢"的第一现场：
 
