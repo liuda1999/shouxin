@@ -35,6 +35,23 @@ pub struct ExtractionTask {
     pub retry_count: u32,
 }
 
+/// 事件合并阈值（进程级，启动时由配置注入）
+///
+/// 为什么不用硬编码：相似度是**模型相关**的。e5-base 对无关中文短句的余弦相似度
+/// 本来就有 0.84–0.89（实测），旧的 0.75/0.90 阈值会把"完全不同的事件"判成相似，
+/// 导致新事件全部堆进待确认区、一条都落不了库。
+static MERGE_THRESHOLDS: std::sync::OnceLock<(f64, f64)> = std::sync::OnceLock::new();
+
+/// 注入事件合并阈值：(自动合并, 待确认)
+pub fn set_merge_thresholds(auto: f64, pending: f64) {
+    let _ = MERGE_THRESHOLDS.set((auto, pending));
+}
+
+fn merge_thresholds() -> (f64, f64) {
+    // 兜底值与配置默认值保持一致
+    *MERGE_THRESHOLDS.get().unwrap_or(&(0.96, 0.90))
+}
+
 pub struct BackgroundTaskQueue {
     sender: mpsc::UnboundedSender<ExtractionTask>,
     pending_tasks: Option<sled::Tree>,
@@ -536,7 +553,9 @@ impl BackgroundTaskQueue {
                     }
                 }
 
-                if best_score > 0.75 {
+                let (auto_th, pending_th) = merge_thresholds();
+                let (auto_th, pending_th) = (auto_th as f32, pending_th as f32);
+                if best_score > pending_th {
                     // 检查目标事件在 SQLite 中是否存在（防止向量库孤儿记忆导致合并静默失败）
                     let target_exists = state.relational
                         .get_event_by_id(&best_target_event_id).await
@@ -550,7 +569,7 @@ impl BackgroundTaskQueue {
                             event_summary_for_merge.chars().take(30).collect::<String>()
                         );
                         // 不 continue，继续走创建新事件路径
-                    } else if best_score > 0.90 {
+                    } else if best_score > auto_th {
                         // 自动合并到已有事件
                         let contact_ids: Vec<String> = e.related_person_ids.iter()
                             .map(|pid| person_id_to_contact_id.get(pid).cloned().unwrap_or_else(|| pid.clone()))
@@ -605,9 +624,11 @@ impl BackgroundTaskQueue {
                             Ok(merge_id) => {
                                 tracker.merge_ids.push(merge_id);
                                 info!(
-                                    "[P1-7] 待确认合并: '{}' 相似度 {:.4} (0.75-0.90)",
+                                    "[P1-7] 待确认合并: '{}' 相似度 {:.4} (阈值 {:.2}-{:.2})",
                                     event_summary_for_merge.chars().take(30).collect::<String>(),
-                                    best_score
+                                    best_score,
+                                    pending_th,
+                                    auto_th
                                 );
                                 continue;
                             }
@@ -654,13 +675,14 @@ impl BackgroundTaskQueue {
 
             let contact_ids_json = serde_json::to_string(&contact_ids).unwrap_or("[]".to_string());
             let event_parsed_time = crate::utils::parse_event_time(&e.description, Utc::now());
+            let event_start = event_parsed_time.unwrap_or(event_time);
             let mut event_index = crate::core::EventIndex {
                 event_id: e.event_id.clone(),
                 contact_ids: contact_ids_json,
                 owner_id: owner_id.clone(),
                 owner_type,
-                time_range_start: event_time,
-                time_range_end: event_time,
+                time_range_start: event_start,
+                time_range_end: event_start,
                 importance: if e.importance >= 0.8 { "high".to_string() } else if e.importance >= 0.5 { "medium".to_string() } else { "low".to_string() },
                 status: "pending".to_string(),
                 created_at: Utc::now(),

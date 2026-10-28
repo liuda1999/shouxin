@@ -12,6 +12,10 @@ pub fn parse_event_time(text: &str, reference_time: DateTime<Utc>) -> Option<Dat
         return None;
     }
 
+    if let Some(dt) = parse_month_edge(text, reference_time) {
+        return Some(dt);
+    }
+
     if let Some(dt) = parse_absolute_time(text, reference_time) {
         return Some(dt);
     }
@@ -209,6 +213,31 @@ fn parse_explicit_clock(text: &str) -> Option<(u32, u32)> {
 static_regex!(re_days_later, r"(\d+)\s*天后?");
 
 /// 解析相对日期：今天 / 明天 / 后天 / N天后，并叠加时段
+/// 解析"月底 / 月初"这类按月边界表达
+///
+/// 之前 `find_precise_time_expr` 会把"月底"匹配出来，但解析器不支持它，
+/// 于是"月底前出一版方案"拿不到日期（或被别的句子带偏成"今天"）。
+fn parse_month_edge(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    use chrono::Datelike;
+
+    let today = reference_time.date_naive();
+    let (year, month) = (today.year(), today.month());
+
+    let day = if text.contains("月底") || text.contains("月末") {
+        // 当月最后一天：下月 1 号减一天
+        let (ny, nm) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+        chrono::NaiveDate::from_ymd_opt(ny, nm, 1)? - chrono::Duration::days(1)
+    } else if text.contains("月初") {
+        chrono::NaiveDate::from_ymd_opt(year, month, 1)?
+    } else {
+        return None;
+    };
+
+    let (hour, minute) = extract_time_from_text(text, 23, 59);
+    chrono::NaiveTime::from_hms_opt(hour, minute, 0)
+        .map(|t| Utc.from_utc_datetime(&day.and_time(t)))
+}
+
 fn parse_relative_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let today = reference_time.date_naive();
 
@@ -318,6 +347,37 @@ fn parse_fuzzy_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTim
 mod tests {
     use super::*;
     use chrono::Weekday;
+
+    /// 回归：截止时间必须取自"和待办相关的句子"，不能跨句乱借
+    #[test]
+    fn deadline_uses_relevant_sentence_only() {
+        // 2026-10-28 是周三
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 2, 0, 0).unwrap();
+
+        // "月底前出一版方案" → 10-31，而不是同段里第一句的"今天"
+        let conv = "今天站会老周说接口联调完了。另外客户要求月底前出一版方案。";
+        let dt = resolve_deadline_in_text(conv, "出一版方案", now).unwrap();
+        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-10-31");
+
+        // "买维生素" 自己那句没有时间，不能借用上一句的"下周一"
+        let conv2 = "下周一上午九点要去医院做年度体检，记得空腹。另外要买点维生素。";
+        assert!(resolve_deadline_in_text(conv2, "买维生素", now).is_none());
+
+        // 同句内的时间要能正确取到（本周五 = 10-30）
+        let conv3 = "小陈负责写测试用例，本周五之前要给我。";
+        let dt3 = resolve_deadline_in_text(conv3, "写测试用例", now).unwrap();
+        assert_eq!(dt3.format("%Y-%m-%d").to_string(), "2026-10-30");
+    }
+
+    #[test]
+    fn month_edge_is_parsed() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 2, 0, 0).unwrap();
+        assert_eq!(parse_event_time("月底", now).unwrap().format("%Y-%m-%d").to_string(), "2026-10-31");
+        assert_eq!(parse_event_time("月初", now).unwrap().format("%Y-%m-%d").to_string(), "2026-10-01");
+        // 12 月的月底要跨年
+        let dec = Utc.with_ymd_and_hms(2026, 12, 10, 2, 0, 0).unwrap();
+        assert_eq!(parse_event_time("月底", dec).unwrap().format("%Y-%m-%d").to_string(), "2026-12-31");
+    }
 
     fn create_reference_time() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 6, 2, 10, 0, 0).unwrap()
@@ -451,32 +511,47 @@ pub fn resolve_deadline_in_text(
     }
 
     let title_chars: Vec<char> = title.chars().filter(|c| !c.is_whitespace()).collect();
+    let title_len = title_chars.len().max(1);
 
-    // 1) 优先：与待办标题重合度最高的句子
-    let mut best: Option<(usize, &str)> = None;
-    for sentence in &sentences {
-        let overlap = title_chars.iter().filter(|c| sentence.contains(**c)).count();
-        if overlap >= 2 {
+    // 1) 找出"确实在说这件事"的句子：用**覆盖度**而不是单字命中
+    //
+    // 原实现只统计"标题里有多少个字出现在句子中"，中文常用字（一、的、要…）
+    // 几乎人人都命中，导致随便挑中第一句，于是把无关句子的时间当成截止时间
+    // （实测："出一版方案" 被安上了"今天"）。
+    let mut best: Option<(f32, usize, &str)> = None;
+    for (idx, sentence) in sentences.iter().enumerate() {
+        let hit = title_chars.iter().filter(|c| sentence.contains(**c)).count();
+        let ratio = hit as f32 / title_len as f32;
+        if hit >= 2 && ratio >= 0.5 {
             match best {
-                Some((score, _)) if score >= overlap => {}
-                _ => best = Some((overlap, sentence)),
+                Some((score, _, _)) if score >= ratio => {}
+                _ => best = Some((ratio, idx, sentence)),
             }
         }
     }
 
-    let mut ordered: Vec<&str> = Vec::new();
-    if let Some((_, sentence)) = best {
-        ordered.push(sentence);
-    }
-    for sentence in &sentences {
-        if !ordered.contains(sentence) {
-            ordered.push(sentence);
+    // 2) 只在这句话里找时间；找不到才看**紧邻的下一句**
+    //
+    // 不跨整段乱找：宁可返回 None（调用方用默认 +7 天），也不要给一个错误日期。
+    // 允许看下一句是为了覆盖"…，下周五之前要给我。"这种被逗号/句号拆开的情况。
+    // 情况 A：有匹配句 → 只在这句（和紧邻下一句）里找，绝不跨句借用，
+    //         因为"匹配句里没写时间"时应回落到默认截止日，而不是拿别的句子的时间凑数。
+    // 情况 B：整段都跟标题不相关（如标题是外部生成的短语）→ 退回按顺序扫描，
+    //         这是历史行为，保持兼容（见 test_resolve_deadline_fallback_to_first_sentence）。
+    let candidates: Vec<&str> = match best {
+        Some((_, idx, sentence)) => {
+            let mut v = vec![sentence];
+            if let Some(next) = sentences.get(idx + 1) {
+                v.push(next);
+            }
+            v
         }
-    }
+        None => sentences.clone(),
+    };
 
-    // 2) 在候选句子里找"精确时间表达"
-    for sentence in ordered {
-        if let Some(expr) = find_precise_time_expr(sentence) {
+    for sentence in candidates {
+        // 同一句里可能有多处时间，逐个尝试（取第一个能解析的）
+        for expr in find_time_exprs(sentence) {
             if let Some(dt) = parse_event_time(&expr, reference_time) {
                 return Some(end_of_day(dt));
             }
@@ -484,6 +559,17 @@ pub fn resolve_deadline_in_text(
     }
 
     None
+}
+
+/// 找出句中所有"精确时间表达"（按出现顺序）
+fn find_time_exprs(sentence: &str) -> Vec<String> {
+    let re = match regex::Regex::new(
+        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|\d{1,2}月\d{1,2}日|\d{1,2}号)",
+    ) {
+        Ok(re) => re,
+        Err(_) => return Vec::new(),
+    };
+    re.find_iter(sentence).map(|m| m.as_str().to_string()).collect()
 }
 
 /// 找出句中的"精确时间表达"

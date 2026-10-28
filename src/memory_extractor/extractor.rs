@@ -456,8 +456,20 @@ impl LlmMemoryExtractor {
     }
 
     fn segment_conversation(&self, text: &str) -> Vec<String> {
+        // 分块策略：**按目标长度贪心打包**，并对总块数设上限。
+        //
+        // 原实现的合并条件是 `current + seg < 80`，一旦超过 80 字符就不再合并，
+        // 于是每块只有 ~80 字符：3.5 万字的对话被切成 175 块，
+        // 而每块都要单独调一次 LLM（联系人抽取），在 CPU 上要跑近一小时。
+        //
+        // 现在：目标 ~1200 字符/块（约 800 token，稳在 ctx 内），最多 8 块；
+        // 超长输入只抽取前 8 块，并明确告警（原文仍完整保存在字典库）。
+        const CHUNK_TARGET_CHARS: usize = 1200;
+        const MAX_CHUNKS: usize = 8;
+
         let re = Regex::new(r"[。！？\n;；]+").unwrap();
-        let raw_segments: Vec<&str> = re.split(text)
+        let raw_segments: Vec<&str> = re
+            .split(text)
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .collect();
@@ -467,16 +479,22 @@ impl LlmMemoryExtractor {
 
         for seg in raw_segments {
             let seg_len = seg.chars().count();
-            if current.chars().count() + seg_len < 80 {
+            let cur_len = current.chars().count();
+
+            // 当前块还没到目标长度 → 继续合并
+            if cur_len == 0 || cur_len + seg_len <= CHUNK_TARGET_CHARS {
                 if !current.is_empty() {
-                    current.push_str("。");
+                    current.push('。');
                 }
                 current.push_str(seg);
             } else {
-                if !current.is_empty() {
-                    segments.push(current);
-                }
-                current = seg.to_string();
+                segments.push(std::mem::take(&mut current));
+                current.push_str(seg);
+            }
+
+            // 单句本身就超长：按字符截断，避免单块撑爆上下文
+            if current.chars().count() >= CHUNK_TARGET_CHARS * 2 {
+                segments.push(std::mem::take(&mut current));
             }
         }
         if !current.is_empty() {
@@ -487,8 +505,26 @@ impl LlmMemoryExtractor {
             segments.push(text.to_string());
         }
 
-        info!("[LLM Extract] Segmented into {} chunks (avg {} chars)", segments.len(),
-            if segments.is_empty() { 0 } else { segments.iter().map(|s| s.chars().count()).sum::<usize>() / segments.len() });
+        if segments.len() > MAX_CHUNKS {
+            let total = segments.len();
+            segments.truncate(MAX_CHUNKS);
+            warn!(
+                "[LLM Extract] 输入过长（{} 字符），已切成 {} 块，仅处理前 {} 块；原文完整保留在字典库",
+                text.chars().count(),
+                total,
+                MAX_CHUNKS
+            );
+        }
+
+        info!(
+            "[LLM Extract] Segmented into {} chunks (avg {} chars)",
+            segments.len(),
+            if segments.is_empty() {
+                0
+            } else {
+                segments.iter().map(|s| s.chars().count()).sum::<usize>() / segments.len()
+            }
+        );
         segments
     }
 
@@ -787,6 +823,12 @@ impl LlmMemoryExtractor {
     async fn llm_validate_contacts(&self, conversation: &str, contacts: &[ExtractedPerson]) -> Vec<ExtractedPerson> {
         let contact_names: Vec<String> = contacts.iter().map(|c| c.name.clone()).collect();
         let names_str = contact_names.join("\n");
+
+        // 只取对话开头一段作为判断依据。
+        // 校验只需要"这些词在上下文里长什么样"，整段塞进去会超上下文
+        // （实测 3.5 万字 → 20320 tokens > 4096 ctx，导致校验必定失败并重试一轮）。
+        let excerpt: String = conversation.chars().take(1500).collect();
+        let conversation = excerpt.as_str();
 
         let validation_prompt = format!(
             r#"请判断以下从对话中提取的词语是否是人名（真实人物、虚拟角色、历史人物等）。

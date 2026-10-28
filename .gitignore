@@ -25,6 +25,9 @@ FIX_COMPILATION_ERROR.md
 
 # 数据目录
 data/
+data_*/
+*.db-shm
+*.db-wal
 .sled_data/
 
 # 打包文件

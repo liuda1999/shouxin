@@ -91,17 +91,34 @@ pub struct ExtractionSettings {
     /// 启动时"多旧的 prepared 写入意图"视为崩溃残留（秒）
     #[serde(default = "default_extraction_intent_grace_secs")]
     pub intent_grace_secs: u64,
+    /// 事件相似度：超过该值直接合并（默认 0.96，按 e5-base 实测校准）
+    #[serde(default = "default_event_merge_auto")]
+    pub event_merge_auto_threshold: f64,
+    /// 事件相似度：超过该值但未达自动合并阈值时，进入"待确认合并"（默认 0.90）
+    #[serde(default = "default_event_merge_pending")]
+    pub event_merge_pending_threshold: f64,
+
 }
 
 fn default_extraction_timeout_secs() -> u64 { 600 }
 
 fn default_extraction_intent_grace_secs() -> u64 { 300 }
 
+fn default_event_merge_auto() -> f64 {
+    0.96
+}
+
+fn default_event_merge_pending() -> f64 {
+    0.90
+}
+
 impl Default for ExtractionSettings {
     fn default() -> Self {
         Self {
             timeout_secs: default_extraction_timeout_secs(),
             intent_grace_secs: default_extraction_intent_grace_secs(),
+            event_merge_auto_threshold: default_event_merge_auto(),
+            event_merge_pending_threshold: default_event_merge_pending(),
         }
     }
 }

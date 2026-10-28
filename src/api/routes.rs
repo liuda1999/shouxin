@@ -911,6 +911,14 @@ async fn add_conversation(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
     Json(req): Json<AddConversationRequest>,
 ) -> ApiResponse<AddConversationResponse> {
+    // 空内容直接拒绝：否则会写入一条无意义对话并占用抽取队列
+    let trimmed_len = req.conversation.trim().chars().count();
+    if trimmed_len == 0 {
+        return ApiResponse::error_with_status(
+            "对话内容为空".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
     // S-09: 验证 conversation 长度
     if req.conversation.chars().count() > MAX_CONVERSATION_LEN {
         return ApiResponse::error_with_status(

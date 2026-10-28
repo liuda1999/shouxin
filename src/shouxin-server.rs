@@ -48,6 +48,11 @@ struct Args {
     /// 监听地址（如 127.0.0.1:3000）。不填则使用配置 [server] 的 host + port
     #[arg(long)]
     host: Option<String>,
+
+    /// 数据根目录（SQLite / Sled / 向量库都放这里）。
+    /// 不填则使用配置 [storage].data_dir；默认 "./data" 时保持历史布局（Sled 在 ./.sled_data）
+    #[arg(long)]
+    data_dir: Option<String>,
 }
 
 fn timeout_mw(timeout_secs: u64) -> impl Fn(axum::http::Request<Body>, axum::middleware::Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<axum::response::Response, axum::http::StatusCode>> + Send>> + Clone {
@@ -326,8 +331,45 @@ async fn run_api_server(
     let store_type = std::env::var("SHOUXIN_STORE_TYPE").unwrap_or_else(|_| "embedded".to_string());
     println!("Vector store type: {} (from SHOUXIN_STORE_TYPE env)", store_type);
 
-    let data_dir = if store_type == "hnsw" { "./data_hnsw" } else { "./data" };
-    let db_path = std::env::current_dir()?.join(data_dir).join("shouxin.db");
+    // 先加载配置：数据路径、监听地址等都要用
+    let settings = match Settings::new() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Failed to load config: {}, using defaults", e);
+            Settings::default()
+        }
+    };
+    tracing::info!("Loaded config: LLM primary={}, secondary={:?}", settings.llm.primary, settings.llm.secondary);
+
+    // ------------------------------------------------------------------
+    // 数据目录解析：命令行 --data-dir > 配置 [storage].data_dir > 默认 "./data"
+    //
+    // 兼容性：默认值 "./data" 保持历史布局（Sled 在仓库根的 ./.sled_data），
+    // 避免老用户升级后"数据像丢了"；一旦显式指定了别的目录，
+    // 所有数据（SQLite / Sled / 向量库）统一收敛到该目录下，便于多实例隔离与备份。
+    // ------------------------------------------------------------------
+    let data_root = args
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| settings.storage.data_dir.clone());
+    let is_legacy_layout = data_root == "./data" || data_root == "data" || data_root.is_empty();
+
+    let (db_path, sled_path, vector_base) = if is_legacy_layout {
+        let dir = if store_type == "hnsw" { "./data_hnsw" } else { "./data" };
+        let sled = if store_type == "hnsw" { "./sled_data_hnsw".to_string() } else { ".sled_data".to_string() };
+        let vec = if store_type == "hnsw" {
+            std::path::PathBuf::from("./data_hnsw").join("vector")
+        } else {
+            std::path::PathBuf::from(dir).join(&settings.storage.vector_dir)
+        };
+        (std::env::current_dir()?.join(dir).join("shouxin.db"), sled, vec)
+    } else {
+        let base = std::path::PathBuf::from(&data_root);
+        let sled = base.join(&settings.storage.dictionary_dir).to_string_lossy().to_string();
+        let vec = base.join(&settings.storage.vector_dir);
+        (base.join("shouxin.db"), sled, vec)
+    };
+    println!("Data root: {}（SQLite: {}）", data_root, db_path.display());
     std::fs::create_dir_all(db_path.parent().unwrap())?;
     let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
 
@@ -347,20 +389,9 @@ async fn run_api_server(
     let relational = Arc::new(relational);
     println!("Relational store initialized (file: {})", db_path.display());
 
-    let sled_path = if store_type == "hnsw" { "./sled_data_hnsw" } else { ".sled_data" };
-    let dictionary = SledDictionaryStore::open(sled_path)?;
+    let dictionary = SledDictionaryStore::open(&sled_path)?;
     let dictionary = Arc::new(dictionary);
     println!("Dictionary store initialized");
-
-    // 加载配置（用于向量库路径等）
-    let settings = match Settings::new() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("Failed to load config: {}, using defaults", e);
-            Settings::default()
-        }
-    };
-    tracing::info!("Loaded config: LLM primary={}, secondary={:?}", settings.llm.primary, settings.llm.secondary);
 
     // 监听地址：命令行 --host 优先，其次 config.toml 的 [server] host+port
     let bind_addr = args
@@ -371,15 +402,21 @@ async fn run_api_server(
     // 主智能体 ID 是全系统 owner_id 的唯一来源，必须在任何路由/存储初始化之前注入
     shouxin::core::owner::init_primary_agent_id(settings.agent.primary_agent_id.clone());
 
-    // 使用配置中的向量库路径（修复 config.toml vector_dir 被忽略的问题）
-    let vector_path = format!("{}/{}", settings.storage.data_dir, settings.storage.vector_dir);
+    // 事件合并阈值（与嵌入模型相关，必须可配置；见 config.toml [extraction]）
+    shouxin::service::background_queue::set_merge_thresholds(
+        settings.extraction.event_merge_auto_threshold,
+        settings.extraction.event_merge_pending_threshold,
+    );
+
+    // 向量库路径由上面的数据目录解析统一给出
+    let vector_path = vector_base.to_string_lossy().to_string();
     let vector_config = shouxin::stores::vector::factory::VectorStoreConfig {
         path: vector_path.clone(),
         ..shouxin::stores::vector::factory::VectorStoreConfig::default()
     };
 
     let vector_store_arc: Arc<AnyVectorStore> = if store_type == "hnsw" {
-        let store = HnswVectorStore::new_with_dimension("./data_hnsw/vector", vector_config.dimension)?;
+        let store = HnswVectorStore::new_with_dimension(&vector_path, vector_config.dimension)?;
         let store = Arc::new(store);
         let loaded = store.load_existing().await?;
         tracing::info!("HNSW vector store created, loaded {} existing records", loaded);

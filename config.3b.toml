@@ -112,6 +112,10 @@ short_term_hot_limit = 100
 [extraction]
 timeout_secs = 1800             # 单次 LLM 提取超时，超时后降级正则
 intent_grace_secs = 300         # 启动时"多旧的 prepared 写入意图"视为崩溃残留
+# 事件相似度阈值（**与嵌入模型强相关**，换模型需要重新校准）
+# e5-base 实测：无关中文短句 0.84–0.89，近重复 0.99+
+event_merge_auto_threshold = 0.96      # > 该值：直接合并为同一事件
+event_merge_pending_threshold = 0.90   # > 该值（且未达上一阈值）：进待确认区
 
 # ============ 待办 ============
 [todo]

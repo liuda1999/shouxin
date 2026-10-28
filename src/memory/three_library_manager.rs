@@ -498,13 +498,14 @@ impl ThreeLibraryMemoryManager {
             let mapped_contact_ids = map_contact_ids(&e.related_person_ids);
             let contact_ids_json = serde_json::to_string(&mapped_contact_ids).unwrap_or("[]".to_string());
             let event_parsed_time = parse_event_time(&e.description, Utc::now());
+            let event_start = event_parsed_time.unwrap_or(event_time);
             let mut event_index = crate::core::EventIndex {
                 event_id: e.event_id.clone(),
                 contact_ids: contact_ids_json,
                 owner_id: owner_id.clone(),
                 owner_type,
-                time_range_start: event_time,
-                time_range_end: event_time,
+                time_range_start: event_start,
+                time_range_end: event_start,
                 importance: if e.importance >= 0.9 {
                 "high".to_string()
             } else if e.importance > 0.7 {
@@ -666,13 +667,14 @@ impl ThreeLibraryMemoryManager {
             };
             let contact_ids_json = serde_json::to_string(&map_contact_ids(&e.related_person_ids)).unwrap_or("[]".to_string());
             let event_parsed_time = parse_event_time(&e.description, Utc::now());
+            let event_start = event_parsed_time.unwrap_or(event_time);
             let mut event_index = crate::core::EventIndex {
                 event_id: e.event_id.clone(),
                 contact_ids: contact_ids_json,
                 owner_id: owner_id.clone(),
                 owner_type,
-                time_range_start: event_time,
-                time_range_end: event_time,
+                time_range_start: event_start,
+                time_range_end: event_start,
                 importance: if e.importance >= 0.8 {
                 "high".to_string()
             } else if e.importance >= 0.5 {
