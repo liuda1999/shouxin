@@ -180,6 +180,15 @@ impl GgufClient {
     /// 正确做法是读 GGUF 元数据里的 `tokenizer.chat_template`（`model.chat_template(None)`）：
     /// 每个模型自带自己的模板，代码无需按模型名分支。取不到模板时退回 Llama-3 格式。
     async fn build_chat_prompt(&self, system_text: &str, user_text: &str) -> String {
+        // 必须先确保模型已加载：对话模板来自 GGUF 元数据，
+        // 句柄为空时会拿不到模板而退回内置的 Llama-3 格式。
+        // 曾经的表现：主抽取客户端启动时预加载过模型，一切正常；
+        // 而心跳/画像这类"首次调用"的客户端拿到的是错误模板，
+        // 模型于是把提示词原样复述，画像 JSON 永远解析失败。
+        if let Err(e) = self.ensure_loaded().await {
+            tracing::warn!("[GGUF] 构造提示词前加载模型失败: {}", e);
+        }
+
         let model = {
             let guard = self.model_handle.read().await;
             guard.as_ref().map(|h| h.model.clone())

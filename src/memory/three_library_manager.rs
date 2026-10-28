@@ -884,21 +884,65 @@ impl ThreeLibraryMemoryManager {
         
         // 从关系库搜索联系人索引（使用 owner 过滤）
         let trait_contacts = self.relational_store.search_contacts_with_owner(query, owner_type, &owner_id, limit, include_archived).await?;
-        
-        // 转换为 ContactDetail
-        let contacts: Vec<ContactDetail> = trait_contacts.into_iter().map(|trait_contact| {
-            ContactDetail {
-                contact_id: trait_contact.contact_id.clone(),
-                name: trait_contact.name.clone(),
-                aliases: vec![],
-                background: None,
-                last_interaction_at: trait_contact.last_activity,
-                activity_score: trait_contact.activity_score,
-                related_contacts: Vec::new(),
-                relationship_tags: Vec::new(),
+
+        // 补齐画像字段：别名 / 画像 / 关系标签 / 关联联系人
+        //
+        // 基础检索只取了 id/name/时间，这几列的写入方是"抽取链路 + 心跳画像"，
+        // 之前这里是硬编码的空值，导致接口永远返回 aliases=[]、background=null，
+        // 看起来像"没有自动生成画像"，实际是读不出来。
+        let ids: Vec<String> = trait_contacts.iter().map(|c| c.contact_id.clone()).collect();
+        let profiles = self.relational_store.fetch_contact_profiles(&ids).await.unwrap_or_default();
+
+        // 关联联系人只存 ID，这里批量解析成姓名，便于直接展示
+        let mut all_related_ids: Vec<String> = Vec::new();
+        for p in profiles.values() {
+            if let Some(raw) = &p.related_contact_ids {
+                all_related_ids.extend(
+                    serde_json::from_str::<Vec<String>>(raw).unwrap_or_default(),
+                );
             }
-        }).collect();
-        
+        }
+        all_related_ids.sort();
+        all_related_ids.dedup();
+        let names = self
+            .relational_store
+            .fetch_contact_names(&all_related_ids)
+            .await
+            .unwrap_or_default();
+
+        let contacts: Vec<ContactDetail> = trait_contacts
+            .into_iter()
+            .map(|trait_contact| {
+                let profile = profiles.get(&trait_contact.contact_id);
+                let aliases: Vec<String> = profile
+                    .and_then(|p| p.aliases.as_ref())
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or_default();
+                let relationship_tags: Vec<String> = profile
+                    .and_then(|p| p.relationship_tags.as_ref())
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or_default();
+                let related_contacts: Vec<String> = profile
+                    .and_then(|p| p.related_contact_ids.as_ref())
+                    .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|id| names.get(&id).cloned())
+                    .collect();
+
+                ContactDetail {
+                    contact_id: trait_contact.contact_id.clone(),
+                    name: trait_contact.name.clone(),
+                    aliases,
+                    background: profile.and_then(|p| p.background.clone()),
+                    last_interaction_at: trait_contact.last_activity,
+                    activity_score: trait_contact.activity_score,
+                    related_contacts,
+                    relationship_tags,
+                }
+            })
+            .collect();
+
         Ok(contacts)
     }
 

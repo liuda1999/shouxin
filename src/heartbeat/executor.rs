@@ -337,7 +337,50 @@ impl HeartbeatExecutor {
     }
 
     async fn update_contact_summary(&self, contact_id: &str, new_summary: &str) -> Result<(), ShouxinError> {
-        self.rel_store.update_contact_background(contact_id, new_summary).await
+        self.rel_store.update_contact_background(contact_id, new_summary).await?;
+
+        // 画像里的社会关系 → 关系标签 + 关联联系人 ID
+        //
+        // 之前只把整份画像写进 background 的 JSON，`relationship_tags` /
+        // `related_contact_ids` 两列从未更新，"联系人之间的关系"因而永远是空。
+        if let Ok(profile) = serde_json::from_str::<crate::heartbeat::types::ContactProfile>(new_summary) {
+            let mut tags: Vec<String> = Vec::new();
+            let mut related_ids: Vec<String> = Vec::new();
+
+            for rel in &profile.social_relations {
+                let tag = rel.relation_type.trim();
+                if !tag.is_empty() && tag != "未知" && !tags.iter().any(|t| t == tag) {
+                    tags.push(tag.to_string());
+                }
+
+                if let Some(id) = &rel.related_contact_id {
+                    if !id.is_empty() && !related_ids.contains(id) {
+                        related_ids.push(id.clone());
+                    }
+                } else if let Some(name) = &rel.related_contact_name {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        if let Some(id) = self
+                            .rel_store
+                            .find_contact_id_by_name_same_owner(contact_id, name)
+                            .await?
+                        {
+                            if !related_ids.contains(&id) {
+                                related_ids.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
+            let ids_json = serde_json::to_string(&related_ids).unwrap_or_else(|_| "[]".to_string());
+            self.rel_store
+                .update_contact_relations(contact_id, &ids_json, &tags_json)
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn mark_event_completed(&self, event_id: &str, completed_at: DateTime<Utc>) -> Result<(), ShouxinError> {

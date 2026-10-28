@@ -277,7 +277,8 @@ impl LlmMemoryExtractor {
 
 提取规则：
 1. 人名（people）: 对话中提到的所有人的姓名
-   - 只提取真实完整的人名，如"王经理"、"李总"、"王老师"、"赵总的女儿"
+   - **姓名必须逐字出现在对话原文中。示例里出现的人名仅用于演示输出格式，绝对不要提取示例中的人名。**
+   - 只提取真实完整的人名，如"王经理"、"李总"、"王老师"
    - 不要截断人名，如"王经理"不能提取为"经理"或"点去他办公"
    - 不提取人称代词如"他"、"她"、"我"、"你"
    - 不提取机构名如"公司"、"办公室"
@@ -610,7 +611,11 @@ impl LlmMemoryExtractor {
 
     /// 基于规则的联系人验证过滤器
     /// 过滤掉明显不是联系人的垃圾条目
-    fn rule_based_contact_filter(&self, contacts: &[ExtractedPerson]) -> Vec<ExtractedPerson> {
+    fn rule_based_contact_filter(
+        &self,
+        contacts: &[ExtractedPerson],
+        conversation: &str,
+    ) -> Vec<ExtractedPerson> {
         // 常见垃圾词列表 - 这些词明显不是人名
         let garbage_words: HashSet<&str> = [
             "我和", "我们", "你们", "他们", "她们", "它们",
@@ -730,6 +735,22 @@ impl LlmMemoryExtractor {
                 continue;
             }
 
+            // 规则 8: 必须真的出现在对话原文里（防止模型照抄提示词里的示例人物）
+            //
+            // 真实案例：提示词示例中有"李总（老李）带女儿参观"，
+            // 小模型会把示例里的"李总的女儿""张总的秘书""王总的助理"当成提取结果输出，
+            // 于是联系人列表被凭空捏造的人名污染。这里用原文做硬性校验：
+            // 名字本身或其任一别名必须能在对话文本中找到，否则丢弃。
+            let name_in_text = conversation.contains(name_trimmed);
+            let alias_in_text = contact
+                .aliases
+                .iter()
+                .any(|a| !a.trim().is_empty() && conversation.contains(a.trim()));
+            if !name_in_text && !alias_in_text {
+                removed_names.push((name.clone(), "对话原文中未出现".to_string()));
+                continue;
+            }
+
             // 通过所有规则检查，使用修复后的名称
             let mut fixed_contact = contact.clone();
             fixed_contact.name = name_trimmed.to_string();
@@ -751,7 +772,7 @@ impl LlmMemoryExtractor {
         }
 
         // 首先使用规则过滤进行初步筛选
-        let rule_filtered = self.rule_based_contact_filter(contacts);
+        let rule_filtered = self.rule_based_contact_filter(contacts, conversation);
         if rule_filtered.is_empty() {
             return vec![];
         }

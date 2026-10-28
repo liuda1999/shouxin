@@ -1,5 +1,45 @@
 # 变更记录
 
+## [未发布] 2026-10-29 — 联系人画像与关系自动生成（专项）
+
+针对"联系人的人设/别名/社会关系/联系人之间关系能否自动生成"做了完整排查，
+发现链路有 6 处断点，全部修复并端到端验证。
+
+| 编号 | 问题 | 影响 |
+|------|------|------|
+| C1 | `search_contacts` 构造 `ContactDetail` 时把 `aliases/background/related_contacts/relationship_tags` **硬编码为空** | 即使库里有画像，接口也只返回空值 —— 看起来像"从没生成过" |
+| C2 | 别名分两处存（`contact_index.aliases` 与 `contact_alias_index`），读取只看前者 | 抽取器写入的昵称（"王建国"）在接口里看不到 |
+| C3 | `build_chat_prompt` 在模型句柄加载**之前**执行，首次调用拿不到 GGUF 模板 | 心跳画像用错模板 → 模型复述提示词 → 画像 JSON 永远解析失败 |
+| C4 | 画像提示词要求"全部输出中文"，模型把 **JSON key 也翻成中文** | 解析器只认英文 key，字段全空 |
+| C5 | 画像只喂"事件摘要"，不喂对话原文；且召回用的 `get_conversations_since_v2` **只返回 pending/failed** | 模型看不到"老王是我的同事"，只能输出"未知" |
+| C6 | 画像里的 `social_relations` 只写进 `background` 的 JSON，`relationship_tags` / `related_contact_ids` 两列从未更新 | 联系人之间的关系永远是 `[]` |
+| C7 | 抽取提示词的 few-shot 示例（李总/赵总/王总监…）被模型照抄成联系人 | 联系人列表被"李总的女儿""张总的秘书"等**虚构人名**污染 |
+
+修复要点：
+
+- 读取路径真正读库，并合并两处别名来源；关联联系人 ID 批量解析成姓名
+- `build_chat_prompt` 前先 `ensure_loaded()`，杜绝"首次调用用错模板"
+- 画像提示词：key 保持英文、value 用中文，并给出结构示例；解析器兼容数组/对象/中文 key 三种形态
+- 画像证据补齐：新增 `get_recent_conversations_for_owner()`（不区分抽取状态），
+  把"含该联系人或其别名"的最近 3 段原文喂进提示词
+- 画像落库时同步写 `relationship_tags` 与 `related_contact_ids`，
+  并把 `related_contact_name` 在同一 owner 内解析成 ID（`find_contact_id_by_name_same_owner`）
+- 联系人过滤新增规则 8：**姓名或其别名必须逐字出现在对话原文中**，否则丢弃
+
+端到端实测（用户 `rel4`，对话含"老王是我同事／小李与老王同组／张姐是上级"）：
+
+```
+张姐  aliases=[]        tags=['上级']  related=['老王','小李']  画像 505 字符
+小李  aliases=[]        tags=['同事']  related=['老王','张姐']  画像 680 字符
+老王  aliases=['王建国'] tags=['同事']  related=['小李']        画像 579 字符
+```
+
+> 生成机制与频率：由**心跳**驱动（`analyze_contact_relations`），每轮最多处理 3 个"画像为空"的联系人，
+> 单个联系人每天最多更新 2 次、间隔 ≥ 8 小时（`MAX_PROFILE_UPDATES_PER_DAY` / `PROFILE_UPDATE_INTERVAL_HOURS`）。
+> 想立即看到效果可 `POST /api/heartbeat/trigger {"maintenance_only": false}`。
+
+---
+
 ## [未发布] 2026-10-28 — 启动阻塞、CPU 性能、新模型
 
 本轮目标：让项目**能按文档从零部署并跑通**，并把 CPU 推理拉到可用水平。

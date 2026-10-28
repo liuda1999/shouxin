@@ -383,6 +383,41 @@ impl DictionaryStore {
         self.get_conversations_since_v2(since, 1000).await
     }
 
+    /// 取某 owner 最近的若干条对话（不区分抽取状态）
+    ///
+    /// 与 `get_conversations_since_v2` 的区别：后者**只返回 pending/failed**（供后台队列消费），
+    /// 用它做"历史召回"会永远拿不到已完成对话。画像生成需要的是原文证据，
+    /// 因此单开一个按 owner 取最近 N 条的方法。
+    pub async fn get_recent_conversations_for_owner(
+        &self,
+        owner_type: crate::core::contact::OwnerType,
+        owner_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ConversationRecord>, ShouxinError> {
+        let mut results = Vec::new();
+        if limit == 0 {
+            return Ok(results);
+        }
+
+        // 从时间索引尾部往前扫（索引键为时间戳，天然按时间有序）
+        for item in self.conversation_ts_index.iter().rev() {
+            if results.len() >= limit {
+                break;
+            }
+            let (_, conv_key_bytes) = item?;
+            let conv_key = String::from_utf8_lossy(&conv_key_bytes);
+            if let Some(conv_data) = self.conversations.get(conv_key.as_bytes())? {
+                if let Ok(record) = serde_json::from_slice::<ConversationRecord>(&conv_data) {
+                    if record.owner_type == owner_type && record.owner_id == owner_id {
+                        results.push(record);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     /// 批量获取指定时间戳之后的所有对话（优化版）
     ///
     /// 使用前缀扫描优化，性能更好

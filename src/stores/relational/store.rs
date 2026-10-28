@@ -1143,6 +1143,139 @@ impl RelationalStore {
         Ok(())
     }
 
+    /// 更新联系人之间的关系（关联联系人 ID 列表 + 关系标签）
+    ///
+    /// 这两列此前从未被写入：画像生成时虽然从 LLM 拿到了 `social_relations`，
+    /// 但只塞进了 `background` 的 JSON 里，关系列一直是 `[]`，
+    /// 于是"联系人之间的关系"在检索侧永远为空。
+    pub async fn update_contact_relations(
+        &self,
+        contact_id: &str,
+        related_contact_ids_json: &str,
+        relationship_tags_json: &str,
+    ) -> Result<(), ShouxinError> {
+        query(
+            r#"
+            UPDATE contact_index
+            SET related_contact_ids = ?, relationship_tags = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(related_contact_ids_json)
+        .bind(relationship_tags_json)
+        .bind(contact_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 批量取联系人的画像字段
+    ///
+    /// `search_contacts_with_owner` 只查了 id/name/时间等基础列，
+    /// 别名、画像、关系字段需要单独补齐（否则接口只能返回空值）。
+    pub async fn fetch_contact_profiles(
+        &self,
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, ContactProfileFields>, ShouxinError> {
+        let mut map = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(map);
+        }
+
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, aliases, background, relationship_tags, related_contact_ids \
+             FROM contact_index WHERE id IN ({})",
+            placeholders
+        );
+
+        let mut q = sqlx::query(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+
+        for row in rows {
+            let id: String = row.get("id");
+            map.insert(
+                id,
+                ContactProfileFields {
+                    aliases: row.get::<Option<String>, _>("aliases"),
+                    background: row.get::<Option<String>, _>("background"),
+                    relationship_tags: row.get::<Option<String>, _>("relationship_tags"),
+                    related_contact_ids: row.get::<Option<String>, _>("related_contact_ids"),
+                },
+            );
+        }
+
+        // 别名的第二个来源：contact_alias_index（抽取链路写入的昵称/简称）
+        //
+        // 两份数据历史上是分开的：抽取器把 "明哥" 这类别名写进 alias 表，
+        // 心跳把"遇到的名字"写进 contact_index.aliases。
+        // 展示时应取并集，否则别名看起来总是只有名字本身。
+        let alias_sql = format!(
+            "SELECT contact_id, alias FROM contact_alias_index WHERE contact_id IN ({})",
+            placeholders
+        );
+        let mut aq = sqlx::query(&alias_sql);
+        for id in ids {
+            aq = aq.bind(id);
+        }
+        let mut extra: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for row in aq.fetch_all(&self.pool).await.unwrap_or_default() {
+            let cid: String = row.get("contact_id");
+            let alias: String = row.get("alias");
+            extra.entry(cid).or_default().push(alias);
+        }
+
+        for (cid, aliases) in extra {
+            if let Some(fields) = map.get_mut(&cid) {
+                let mut merged: Vec<String> = fields
+                    .aliases
+                    .as_ref()
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or_default();
+                for a in aliases {
+                    if !merged.contains(&a) {
+                        merged.push(a);
+                    }
+                }
+                fields.aliases = Some(
+                    serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string()),
+                );
+            }
+        }
+
+        Ok(map)
+    }
+
+    /// 按 ID 批量取联系人姓名（用于把关联联系人 ID 解析成名字）
+    pub async fn fetch_contact_names(
+        &self,
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>, ShouxinError> {
+        let mut map = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(map);
+        }
+
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT id, name FROM contact_index WHERE id IN ({})", placeholders);
+        let mut q = sqlx::query(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+        for row in q.fetch_all(&self.pool).await? {
+            let id: String = row.get("id");
+            let name: String = row.get("name");
+            map.insert(id, name);
+        }
+
+        Ok(map)
+    }
+
     /// 根据联系人 ID 获取联系人信息
     ///
     /// # 参数
@@ -3114,4 +3247,58 @@ fn parse_sqlite_datetime(value: &str) -> Result<DateTime<Utc>, ShouxinError> {
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f"))
         .map_err(|e| ShouxinError::GeneralError(format!("解析时间失败: {} ({})", e, value)))?;
     Ok(chrono::DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+}
+
+/// 联系人的画像相关字段（从 contact_index 单独取出，供检索接口补齐）
+#[derive(Debug, Clone, Default)]
+pub struct ContactProfileFields {
+    /// 别名（JSON 数组字符串）
+    pub aliases: Option<String>,
+    /// 画像 JSON（个人信息/社会关系/重大事件/评价）
+    pub background: Option<String>,
+    /// 关系标签（JSON 数组字符串）
+    pub relationship_tags: Option<String>,
+    /// 关联联系人 ID（JSON 数组字符串）
+    pub related_contact_ids: Option<String>,
+}
+
+impl RelationalStore {
+    /// 在同一 owner 下按姓名/别名查找联系人 ID
+    ///
+    /// 用途：把画像里 `social_relations[].related_contact_name`（"张三"）解析成 ID，
+    /// 从而把"联系人之间的关系"真正落成可查询的关联。
+    /// 限定同一 owner，避免跨用户误关联。
+    pub async fn find_contact_id_by_name_same_owner(
+        &self,
+        anchor_contact_id: &str,
+        name: &str,
+    ) -> Result<Option<String>, ShouxinError> {
+        let pattern = format!("%{}%", name);
+        let row = sqlx::query(
+            r#"
+            SELECT c.id
+            FROM contact_index c
+            WHERE c.owner_type = (SELECT owner_type FROM contact_index WHERE id = ?1)
+              AND c.owner_id   = (SELECT owner_id   FROM contact_index WHERE id = ?1)
+              AND c.id <> ?1
+              AND (
+                    c.name = ?2
+                 OR c.name LIKE ?3
+                 OR c.aliases LIKE ?3
+                 OR EXISTS (
+                      SELECT 1 FROM contact_alias_index a
+                      WHERE a.contact_id = c.id AND a.alias LIKE ?3
+                 )
+              )
+            LIMIT 1
+            "#,
+        )
+        .bind(anchor_contact_id)
+        .bind(name)
+        .bind(&pattern)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| r.get::<String, _>("id")))
+    }
 }

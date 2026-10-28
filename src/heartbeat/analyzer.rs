@@ -634,15 +634,57 @@ impl HeartbeatAnalyzer {
         let contact_aliases: Vec<String> = serde_json::from_str(&contact.aliases).unwrap_or_default();
         let contact_tags: Vec<String> = serde_json::from_str(&contact.relationship_tags).unwrap_or_default();
 
-        let prompt = format!(
-            r#"根据以下信息生成联系人画像：
+        // 找出近期包含该联系人（或其别名）的对话原文片段
+        //
+        // 为什么需要：原来只把"事件摘要"喂给模型，而"老王是我的同事""小李是老王的搭档"
+        // 这类**关系表述**往往在对话原文里、不在事件摘要里，模型只能回一句"未知"。
+        // 结果就是画像里的 social_relations 永远空，联系人之间的关系无从建立。
+        let mut names: Vec<String> = vec![contact.name.clone()];
+        names.extend(contact_aliases.iter().cloned());
+        let mut conversation_block = String::new();
+        if let Ok(recent) = self
+            .dict_store
+            .get_recent_conversations_for_owner(contact.owner_type, &contact.owner_id, 60)
+            .await
+        {
+            let mut picked = 0;
+            for conv in recent.iter() {
+                if picked >= 3 {
+                    break;
+                }
+                if names.iter().any(|n| !n.is_empty() && conv.content.contains(n.as_str())) {
+                    let snippet: String = conv.content.chars().take(300).collect();
+                    conversation_block.push_str(&format!("- {}\n", snippet));
+                    picked += 1;
+                }
+            }
+        }
 
-**重要语言约束：所有输出内容（个人信息、社会关系、事件、评价等所有字段）必须使用中文，禁止使用英语、西班牙语或其他语言。**
+        let prompt = format!(
+            r#"根据以下信息生成联系人画像。
+
+**输出格式（必须严格遵守）：**
+- 只输出一个 JSON 对象，不要 markdown 代码块、不要解释文字。
+- **JSON 的 key 必须保持英文原样**：personal_info / social_relations / major_events / objective_evaluation / potential_relations。
+- **只有 value 使用中文**。绝对不要把 key 翻译成中文（例如不要输出 "职业"、"社会关系"）。
+- social_relations 必须是**数组**，每个元素形如
+  {{"relation_type":"同事","related_contact_name":"小李","confidence":0.8}}；
+  无法确定的对象把 related_contact_name 省略，但 relation_type 必须给出具体关系（如 同事/上级/朋友/家人），
+  确实未知时用 "未知"。
+
+示例（仅示范结构与 key 名）：
+{{"personal_info":{{"known_occupation":"后端工程师","known_age":"未知","known_interests":["分布式系统"]}},
+"social_relations":[{{"relation_type":"同事","related_contact_name":"小李","confidence":0.8}}],
+"major_events":[{{"summary":"参加架构评审会"}}],
+"objective_evaluation":"工作认真，专注后端",
+"potential_relations":[]}}
 
 联系人姓名：{}
 已知别名：{:?}
 已知关系：{:?}
 相关事件：
+{}
+相关对话原文片段（关系表述优先以此为准）：
 {}
 
 请生成JSON格式的联系人画像，包含：
@@ -654,7 +696,12 @@ impl HeartbeatAnalyzer {
             contact.name,
             contact_aliases,
             contact_tags,
-            events_summary
+            events_summary,
+            if conversation_block.is_empty() {
+                "（无）".to_string()
+            } else {
+                conversation_block
+            }
         );
 
         let messages = vec![Message::user(&prompt).unwrap()];
@@ -683,40 +730,79 @@ impl HeartbeatAnalyzer {
                                 .unwrap_or_default(),
                         },
                         // P0-2: 解析LLM返回的social_relations，兼容字符串数组和对象数组两种格式
-                        // 格式1: ["朋友", "同事"] → relation_type 字符串
-                        // 格式2: [{"relation_type": "朋友", "related_contact_name": "张三", "confidence": 0.8}]
-                        social_relations: profile_json.get("social_relations")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| arr.iter().filter_map(|v| {
-                                if let Some(s) = v.as_str() {
-                                    let s = s.trim();
-                                    if s.is_empty() { return None; }
-                                    return Some(SocialRelation {
-                                        relation_type: s.to_string(),
-                                        related_contact_id: None,
-                                        related_contact_name: None,
-                                        confidence: 0.5,
-                                    });
-                                }
-                                let relation_type = v.get("relation_type")
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or("")
-                                    .trim()
-                                    .to_string();
-                                if relation_type.is_empty() { return None; }
-                                Some(SocialRelation {
-                                    relation_type,
-                                    related_contact_id: None,
-                                    related_contact_name: v.get("related_contact_name")
+                        // 兼容三种返回形态：
+                        //   1) ["朋友", "同事"]
+                        //   2) [{"relation_type":"同事","related_contact_name":"小李","confidence":0.8}]
+                        //   3) {"与用户的关系类型":"同事"} / {"relationship_type":"同事"}
+                        //      —— 小模型常把数组写成对象、甚至把 key 翻成中文，这里都兜住，
+                        //      否则社会关系会被整段丢弃，relation_tags/related_contacts 永远是空。
+                        social_relations: {
+                            let value = profile_json.get("social_relations");
+                            let items: Vec<serde_json::Value> = match value {
+                                Some(serde_json::Value::Array(arr)) => arr.clone(),
+                                Some(serde_json::Value::Object(_)) => vec![value.unwrap().clone()],
+                                _ => Vec::new(),
+                            };
+                            items
+                                .iter()
+                                .filter_map(|v| {
+                                    if let Some(s) = v.as_str() {
+                                        let s = s.trim();
+                                        if s.is_empty() {
+                                            return None;
+                                        }
+                                        return Some(SocialRelation {
+                                            relation_type: s.to_string(),
+                                            related_contact_id: None,
+                                            related_contact_name: None,
+                                            confidence: 0.5,
+                                        });
+                                    }
+
+                                    // 先找 relation_type / relationship_type，
+                                    // 再退化到"该对象里第一个非空字符串值"（覆盖中文 key）
+                                    let mut relation_type = v
+                                        .get("relation_type")
+                                        .or_else(|| v.get("relationship_type"))
                                         .and_then(|x| x.as_str())
-                                        .map(String::from),
-                                    confidence: v.get("confidence")
-                                        .and_then(|x| x.as_f64())
-                                        .map(|f| f as f32)
-                                        .unwrap_or(0.5),
+                                        .unwrap_or("")
+                                        .trim()
+                                        .to_string();
+                                    if relation_type.is_empty() {
+                                        if let Some(obj) = v.as_object() {
+                                            for (_, val) in obj {
+                                                if let Some(s) = val.as_str() {
+                                                    let s = s.trim();
+                                                    if !s.is_empty() {
+                                                        relation_type = s.to_string();
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if relation_type.is_empty() {
+                                        return None;
+                                    }
+                                    Some(SocialRelation {
+                                        relation_type,
+                                        related_contact_id: v
+                                            .get("related_contact_id")
+                                            .and_then(|x| x.as_str())
+                                            .map(String::from),
+                                        related_contact_name: v
+                                            .get("related_contact_name")
+                                            .and_then(|x| x.as_str())
+                                            .map(String::from),
+                                        confidence: v
+                                            .get("confidence")
+                                            .and_then(|x| x.as_f64())
+                                            .map(|f| f as f32)
+                                            .unwrap_or(0.5),
+                                    })
                                 })
-                            }).collect())
-                            .unwrap_or_default(),
+                                .collect()
+                        },
                         major_events: events.iter().take(10).map(|e| MajorEvent {
                             event_id: e.event_id.clone(),
                             summary: e.summary.clone(),
