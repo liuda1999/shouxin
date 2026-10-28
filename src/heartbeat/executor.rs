@@ -16,7 +16,12 @@ pub struct HeartbeatExecutor {
     vector_store: Option<Arc<AnyVectorStore>>,
     /// 待办生命周期策略（来自 [todo] 配置）
     todo_settings: crate::config::TodoSettings,
+    /// 上次"孤儿向量清理"时间（该操作需全量扫向量库，必须限流）
+    orphan_cleanup_last: tokio::sync::Mutex<Option<DateTime<Utc>>>,
 }
+
+/// 孤儿向量清理的最小间隔（小时）
+const ORPHAN_CLEANUP_INTERVAL_HOURS: i64 = 6;
 
 impl HeartbeatExecutor {
     pub fn new(
@@ -30,6 +35,7 @@ impl HeartbeatExecutor {
             rel_store,
             vector_store: None,
             todo_settings: crate::config::TodoSettings::default(),
+            orphan_cleanup_last: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -92,15 +98,23 @@ impl HeartbeatExecutor {
         stats.events_cleaned += cleaned;
 
         // 向量库孤儿记忆清理：删除 SQLite 中已不存在的事件对应的向量库记忆
+        //
+        // 这一步需要**全量读取向量库**并与事件表比对，代价很高。
+        // 原实现每轮维护心跳（60~120s）都跑一次，等于持续把整个向量库从磁盘读一遍，
+        // 对磁盘寿命和 CPU 都不友好。改为限流：默认最多每 6 小时一次。
         if let Some(ref vs) = self.vector_store {
-            match self.cleanup_orphaned_vector_memories(vs).await {
-                Ok(count) => {
-                    if count > 0 {
-                        info!("[Orphan Cleanup] Removed {} orphaned event memories from vector store", count);
-                        stats.events_cleaned += count;
+            if self.should_run_orphan_cleanup().await {
+                match self.cleanup_orphaned_vector_memories(vs).await {
+                    Ok(count) => {
+                        if count > 0 {
+                            info!("[Orphan Cleanup] Removed {} orphaned event memories from vector store", count);
+                            stats.events_cleaned += count;
+                        }
                     }
+                    Err(e) => warn!("[Orphan Cleanup] Failed to cleanup orphaned vector memories: {}", e),
                 }
-                Err(e) => warn!("[Orphan Cleanup] Failed to cleanup orphaned vector memories: {}", e),
+            } else {
+                debug!("[Orphan Cleanup] Skipped (interval not elapsed)");
             }
         }
 
@@ -435,14 +449,32 @@ impl HeartbeatExecutor {
     ///
     /// 遍历向量库中所有 material_type="event" 的记忆，
     /// 若其 metadata.event_id 在 SQLite event_index 中不存在，则删除该记忆。
+    /// 是否需要执行孤儿向量清理（限流：默认间隔 6 小时）
+    async fn should_run_orphan_cleanup(&self) -> bool {
+        let mut last = self.orphan_cleanup_last.lock().await;
+        let due = match *last {
+            None => true,
+            Some(t) => (Utc::now() - t).num_hours() >= ORPHAN_CLEANUP_INTERVAL_HOURS,
+        };
+        if due {
+            *last = Some(Utc::now());
+        }
+        due
+    }
+
     async fn cleanup_orphaned_vector_memories(
         &self,
         vs: &Arc<AnyVectorStore>,
     ) -> Result<usize, ShouxinError> {
         use crate::traits::vector_store::VectorStore;
 
-        // 获取 SQLite 中所有 event_id
-        let valid_event_ids = self.rel_store.get_all_event_ids().await?;
+        // 获取 SQLite 中所有 event_id（用 HashSet 兜住 O(1) 查找，避免逐条线性比对）
+        let valid_event_ids: std::collections::HashSet<String> = self
+            .rel_store
+            .get_all_event_ids()
+            .await?
+            .into_iter()
+            .collect();
 
         // 列出向量库中所有记忆（通过解引用 Arc 调用 trait 方法）
         let all_memories = VectorStore::list(&**vs, None).await?;

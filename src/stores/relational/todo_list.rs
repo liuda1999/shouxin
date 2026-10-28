@@ -740,6 +740,14 @@ impl TodoListStore {
         let now = chrono::Utc::now().to_rfc3339();
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(after_days.max(0))).to_rfc3339();
 
+        // 归档策略：**只归档"陈旧"待办，绝不自动隐藏新待办**
+        //
+        // 设计约束（tests/test_todo_hot_cold_archive.rs 有专门用例）：
+        // - 数量超过 max_pending_before_archive 只是**触发检查**的条件；
+        // - 真正被归档的必须满足 `last_updated_at < now - archive_after_days`；
+        // - 新建/近期更新的待办即使超量也保持可见，避免把用户正在处理的任务藏起来。
+        //
+        // 因此当待办都是"新鲜"的时候，数量上限不会强行裁剪 —— 这是刻意的行为。
         let result = sqlx::query(
             "UPDATE todo_list SET is_archived = 1, archived_at = ? WHERE todo_id IN (SELECT todo_id FROM todo_list WHERE status = 'pending' AND is_archived = 0 AND owner_type = ? AND owner_id = ? AND last_updated_at < ? ORDER BY last_updated_at ASC LIMIT ?)"
         )

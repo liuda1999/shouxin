@@ -111,7 +111,8 @@ impl EmbeddedVectorStore {
     fn save_record(&self, id: &str, record: &StoredRecord) -> Result<(), ShouxinError> {
         let bytes = serde_json::to_vec(record)?;
         self.db.insert(id.as_bytes(), bytes)?;
-        self.db.flush()?;
+        // 不再逐条 flush：sled 自身按 flush_every_ms 周期落盘，关闭时也会 flush。
+        // 逐条 fsync 会让"写入 N 条记忆"变成 N 次同步写，显著增加磁盘磨损。
         Ok(())
     }
 

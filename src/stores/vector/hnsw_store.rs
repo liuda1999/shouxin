@@ -98,7 +98,8 @@ impl HnswVectorStore {
         let db = Config::new()
             .path(path)
             .mode(Mode::LowSpace)
-            .flush_every_ms(Some(1000))
+            // 每 5 秒落盘一次（原 1 秒）：降低写放大，关闭时另有显式 flush 兜底
+            .flush_every_ms(Some(5000))
             .open()
             .map_err(|e| ShouxinError::StorageError(format!("Failed to open sled: {}", e)))?;
 

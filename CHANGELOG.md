@@ -1,5 +1,64 @@
 # 变更记录
 
+## [0.5.0] 2026-10-29 — 心跳审计、磁盘 I/O 优化、开源协议与仓库开放
+
+### 心跳模块审计（12 项维护动作逐条验证）
+
+| 能力 | 结论 | 验证方式 |
+|------|------|----------|
+| 过期待办失效 | ✅ | 建 `deadline=2026-10-01` 的待办 → 心跳后状态变 `auto_invalid`，日志 `Invalidated 1 expired todos` |
+| 待办超量归档 | ✅（按设计只归档陈旧项） | 75 条 pending 时心跳归档 23 条，日志 `Archived 23 stale todos` |
+| 待办提醒 | ✅ | pending 超阈值时生成 `⚠️ 你有 N 个待办未处理`，写入侧与心跳侧都有兜底 |
+| 联系人画像/关系 | ✅ | 见上一版 C1–C7 修复，实测 tags=['同事'/'上级']、related 反解为姓名 |
+| 事件合并待确认 | ✅ | `/api/events/pending_merges` 有数据，过期项由心跳清理 |
+| 自适应频率 | ✅ | 日志 `Next heartbeat in 120s (adaptive=true)` |
+| 内存保护 | ✅ | 日志 `available memory = 41824 MB (threshold: 4096 MB)` |
+| 仅维护模式 | ✅ | `{"maintenance_only":true}` 跳过 LLM，耗时 2–4 ms |
+| 并发保护 | ✅ | 重复触发返回 `Heartbeat is already executing` |
+
+**审计中发现并修复**
+
+- `POST /api/todos` 把 `deadline` 当必填字段，导致**无截止时间的待办根本建不出来**
+  → 改为可选，缺省取"7 天后 23:59:59"（与抽取链路一致）。
+- 曾尝试让"超过上限即归档最旧批次"，但 `tests/test_todo_hot_cold_archive.rs`
+  明确约束"**新鲜待办不得被自动隐藏**"，已回退并保留年龄门槛；
+  在代码注释与配置注释里写清了这条语义，避免后来者再改错。
+
+### 磁盘 I/O（保护硬盘寿命）
+
+审计到 5 处热点，全部修复：
+
+| 位置 | 问题 | 处理 | 效果 |
+|------|------|------|------|
+| `heartbeat/executor.rs` 孤儿向量清理 | 每轮心跳（60–120s）**全量读取整个向量库** | 限流为每 6 小时一次；`Vec::contains` 改 `HashSet` | 3 次维护心跳合计读 112 KB |
+| `stores/dictionary/store.rs` 时间索引 | `iter()` 从头全量扫描 | 改 `range(since..)` 直接定位 | 心跳不再扫全表 |
+| 同上：画像取证最近对话 | 无上限倒扫，owner 对话少时退化为整库遍历 | 最多扫 500 条 | 有界 |
+| `stores/vector/store.rs` | **每条记忆 insert 都 `flush()`（fsync）** | 去掉逐条 flush，交给 sled 周期落盘 + 关闭时 flush | 写放大从 N 次同步写降为周期批量 |
+| `stores/vector/hnsw_store.rs` | `flush_every_ms(1000)` | 放宽到 5000 ms | 落盘频率降 80% |
+
+**实测**（Ministral-3B 配置、空转 120 秒、无请求）：
+
+```
+读 244 KB（61 次） / 写 21.5 KB（22 次）  →  约 122 KB/min 读、10.7 KB/min 写
+```
+
+按此折算约 **0.5 GB/月写入**，对 SSD/HDD 寿命影响可忽略。
+
+### 开源协议与仓库
+
+- 新增 **PolyForm Noncommercial License 1.0.0**（禁止商业用途），附 `Required Notice`；
+- `Cargo.toml` 补齐 `license` / `description` / `repository` / `readme`；
+- 仓库由私有转为**公开**；
+- README 开头明确三项预期管理：**面向深度本地智能体用户**、**重代码项目**、**先算物理资源账**。
+
+### 验证
+
+- `cargo test --features gguf --lib`：74 passed
+- `cargo test --features gguf --tests`：91 passed（0 failed）
+- `bash scripts/api_smoke_test.sh`：PASS=35 FAIL=0 SKIP=0
+
+---
+
 ## [未发布] 2026-10-29 — 仓库审计：绝对路径清理、配置失效项修复、换行符规范化
 
 对 GitHub 推送结果、绝对路径、配置文件做了全量审计，修掉 3 类实质问题。

@@ -214,8 +214,11 @@ pub struct AddTodoRequest {
     pub title: String,
     /// 详细描述
     pub description: Option<String>,
-    /// 截止时间（RFC3339 格式）
-    pub deadline: String,
+    /// 截止时间（RFC3339 格式，可选）
+    ///
+    /// 不填时默认"7 天后 23:59:59"，与抽取链路的兜底规则保持一致。
+    #[serde(default)]
+    pub deadline: Option<String>,
     /// 重要性（high / medium / low）
     #[serde(default = "default_importance")]
     pub importance: String,
@@ -1405,13 +1408,23 @@ async fn add_todo(
         req.importance = "medium".to_string();
     }
 
-    // 解析截止时间
-    let deadline = match DateTime::parse_from_rfc3339(&req.deadline) {
-        Ok(dt) => dt.with_timezone(&Utc),
-        Err(e) => {
-            warn!("无效的 deadline 格式: {}", e);
-            return ApiResponse::error("无效的截止时间格式".to_string());
+    // 解析截止时间：不填则默认"7 天后 23:59:59"（与抽取链路一致，避免接口强制要求 deadline）
+    let deadline = match req.deadline.as_deref().map(str::trim) {
+        None | Some("") => {
+            let date = (Utc::now() + chrono::Duration::days(7)).date_naive();
+            DateTime::<Utc>::from_naive_utc_and_offset(
+                date.and_hms_opt(23, 59, 59)
+                    .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap()),
+                Utc,
+            )
         }
+        Some(raw) => match DateTime::parse_from_rfc3339(raw) {
+            Ok(dt) => dt.with_timezone(&Utc),
+            Err(e) => {
+                warn!("无效的 deadline 格式: {}", e);
+                return ApiResponse::error("无效的截止时间格式".to_string());
+            }
+        },
     };
 
     // 使用客户端提供的 ID 或服务端生成

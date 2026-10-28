@@ -399,8 +399,11 @@ impl DictionaryStore {
             return Ok(results);
         }
 
-        // 从时间索引尾部往前扫（索引键为时间戳，天然按时间有序）
-        for item in self.conversation_ts_index.iter().rev() {
+        // 从时间索引尾部往前扫（索引键为时间戳，天然按时间有序）。
+        // 必须限制扫描条数：若该 owner 的对话很少，无限倒扫会退化成整库遍历，
+        // 心跳每轮都这么做会持续读盘。这里最多扫 500 条，够覆盖近期上下文。
+        const MAX_SCAN: usize = 500;
+        for item in self.conversation_ts_index.iter().rev().take(MAX_SCAN) {
             if results.len() >= limit {
                 break;
             }
@@ -432,18 +435,15 @@ impl DictionaryStore {
         let mut results = Vec::new();
         let since_str = since.to_rfc3339();
 
-        for item in self.conversation_ts_index.iter() {
+        // 用 range 直接定位到起始时间，避免每次心跳都从索引头部全量扫描。
+        // sled 的键按字节序排列，而 ts_index_key 以 RFC3339（UTC、同一时区偏移）开头，
+        // 字典序即时间序，因此 range(since..) 等价于"时间 >= since"。
+        for item in self.conversation_ts_index.range(since_str.as_bytes()..) {
             if results.len() >= limit {
                 break;
             }
 
-            let (index_key_bytes, conv_key_bytes) = item?;
-            let index_key = String::from_utf8_lossy(&index_key_bytes);
-
-            if index_key.as_ref() < since_str.as_str() {
-                continue;
-            }
-
+            let (_index_key_bytes, conv_key_bytes) = item?;
             let conv_key = String::from_utf8_lossy(&conv_key_bytes);
 
             if let Some(conv_data) = self.conversations.get(conv_key.as_bytes())? {
