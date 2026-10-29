@@ -1,0 +1,119 @@
+{
+ "user": "stress242",
+ "rounds": [
+  {
+   "stats": {
+    "contacts": 112,
+    "with_profile": 43,
+    "json_ok": 43,
+    "keys_ok": 43,
+    "name_match": 43,
+    "has_relation": 43,
+    "relations_total": 77,
+    "relations_resolved": 72,
+    "index_consistent": 31,
+    "detail_checked": 43,
+    "memories_total": 174,
+    "memories_matched": 174,
+    "events_total": 20,
+    "events_owned": 20
+   },
+   "problems": [
+    {
+     "contact": "张伟",
+     "issue": "社会关系有 1/5 条在联系人表里找不到同名对象"
+    },
+    {
+     "contact": "李娜",
+     "issue": "社会关系有 1/2 条在联系人表里找不到同名对象"
+    },
+    {
+     "contact": "员安排最",
+     "issue": "社会关系有 1/2 条在联系人表里找不到同名对象"
+    },
+    {
+     "contact": "和人员安",
+     "issue": "社会关系有 1/1 条在联系人表里找不到同名对象"
+    },
+    {
+     "contact": "和人员安",
+     "issue": "关系索引 ['整和人员'] 与画像 ['和人员'] 无交集"
+    },
+    {
+     "contact": "括架构调",
+     "issue": "社会关系有 1/1 条在联系人表里找不到同名对象"
+    },
+    {
+     "contact": "多事情包",
+     "issue": "社会关系有 1/2 条在联系人表里找不到同名对象"
+    },
+    {
+     "contact": "许静",
+     "issue": "社会关系有 1/2 条在联系人表里找不到同名对象"
+    }
+   ],
+   "samples": [
+    {
+     "name": "刘洋",
+     "aliases": [
+      "大刘"
+     ],
+     "tags": [
+      "同事"
+     ],
+     "related": [
+      "张伟",
+      "王强",
+      "李娜",
+      "外包团队"
+     ],
+     "occupation": "后端工程师",
+     "relations": 4,
+     "resolved": 4,
+     "memories": 10,
+     "events": 1
+    },
+    {
+     "name": "陈总",
+     "aliases": [
+      "陈静",
+      "静姐"
+     ],
+     "tags": [
+      "同事"
+     ],
+     "related": [
+      "张伟",
+      "刘洋",
+      "王强",
+      "李娜"
+     ],
+     "occupation": "后端工程师",
+     "relations": 4,
+     "resolved": 4,
+     "memories": 10,
+     "events": 0
+    },
+    {
+     "name": "张伟",
+     "aliases": [
+      "张大炮"
+     ],
+     "tags": [
+      "同事"
+     ],
+     "related": [
+      "王强",
+      "李娜",
+      "刘洋"
+     ],
+     "occupation": "后端工程师",
+     "relations": 5,
+     "resolved": 4,
+     "memories": 10,
+     "events": 2
+    }
+   ]
+  }
+ ]
+}

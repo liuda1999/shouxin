@@ -620,11 +620,19 @@ async fn run_api_server(
         data_root, settings.storage.question_pool_dir
     );
     let question_pool = Arc::new(QuestionPool::new(&question_pool_dir, rel_for_heartbeat.clone()).map_err(|e| anyhow::anyhow!("Failed to create question pool at {}: {}", question_pool_dir, e))?);
-    let analyzer = Arc::new(HeartbeatAnalyzer::new(
-        llm_client_for_heartbeat,
-        dict_for_heartbeat,
-        rel_for_heartbeat.clone(),
-    ));
+    let analyzer = Arc::new(
+        HeartbeatAnalyzer::new(
+            llm_client_for_heartbeat,
+            dict_for_heartbeat,
+            rel_for_heartbeat.clone(),
+        )
+        // 画像频率限制来自 [heartbeat]，默认 2 次/天、间隔 8 小时；
+        // 批量导入场景（几百条语料）需要调大，否则当天大量联系人排不上队。
+        .with_profile_limits(
+            settings.heartbeat.profile_max_updates_per_day,
+            settings.heartbeat.profile_update_interval_hours,
+        ),
+    );
     let executor = Arc::new(HeartbeatExecutor::new(
         analyzer,
         question_pool.clone(),

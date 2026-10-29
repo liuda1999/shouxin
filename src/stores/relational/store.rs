@@ -2259,7 +2259,7 @@ impl RelationalStore {
         Ok(ambiguities)
     }
 
-    pub async fn get_active_contacts_for_profile_update(&self) -> Result<Vec<crate::core::ContactIndex>, ShouxinError> {
+    pub async fn get_active_contacts_for_profile_update(&self, max_updates_per_day: u32) -> Result<Vec<crate::core::ContactIndex>, ShouxinError> {
         let rows = query(
             r#"
             SELECT id, name, aliases, is_self, created_at, last_interaction_at,
@@ -2269,10 +2269,25 @@ impl RelationalStore {
             WHERE is_self = 0 AND is_agent = 0 AND is_archived = 0 AND is_virtual = 0
             AND last_interaction_at >= date('now', '-7 days')
             AND (background IS NULL OR background = '')
+            -- 垃圾名字直接不选：关系短语/超长串不可能生成有效画像，
+            -- 但它们按"最近互动时间"排序时会一直占住前 3 个名额，
+            -- 导致整轮心跳 actions=0、队列永远推不动（242 条压测复现过）。
+            AND length(name) BETWEEN 2 AND 8
+            AND name NOT LIKE '%的%'
+            AND name NOT LIKE '%和%'
+            -- 今天已经用完 2 次重试额度的也不要再选：否则每轮都白跑一次模型
+            AND NOT EXISTS (
+                SELECT 1 FROM contact_profile_update_log l
+                WHERE l.contact_id = contact_index.id
+                  AND substr(l.updated_at, 1, 10) = date('now')
+                GROUP BY l.contact_id
+                HAVING SUM(l.update_count_today) >= ?1
+            )
             ORDER BY last_interaction_at DESC
             LIMIT 3
             "#,
         )
+        .bind(max_updates_per_day as i64)
         .fetch_all(&self.pool)
         .await?;
 

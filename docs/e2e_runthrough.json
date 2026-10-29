@@ -1,0 +1,331 @@
+{
+ "user": "e2e1030",
+ "contacts": [
+  {
+   "contact_id": "a392fe75-c8a7-4f7e-939b-597a4100f30e",
+   "name": "罗军",
+   "aliases": [
+    "罗总"
+   ],
+   "background": "{\"contact_id\":\"a392fe75-c8a7-4f7e-939b-597a4100f30e\",\"personal_info\":{\"name\":\"罗军\",\"aliases\":[\"罗总\"],\"known_occupation\":\"技术总监\",\"known_age\":\"未知\",\"known_interests\":[\"架构设计\",\"系统优化\"]},\"social_relations\":[{\"relation_type\":\"上级\",\"related_contact_id\":null,\"related_contact_name\":\"张伟\",\"confidence\":0.9},{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"李娜\",\"confidence\":0.8},{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"陈静\",\"confidence\":0.8}],\"major_events\":[{\"event_id\":\"300a049c-e7c8-4dbd-b957-25412984f334\",\"summary\":\"架构评审会\",\"timestamp\":\"2026-10-29T16:11:06.651283600Z\",\"importance\":\"medium\",\"sentiment\":\"\"}],\"objective_evaluation\":\"技术总监，专注系统设计，有强大的组织能力\",\"potential_relations\":[],\"last_updated\":\"2026-10-29T16:15:16.949852100Z\"}",
+   "last_interaction_at": "2026-10-29T16:21:42.585934400Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "张伟",
+    "李娜",
+    "陈静"
+   ],
+   "relationship_tags": [
+    "上级",
+    "同事"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "c39e9201-e806-4454-82e1-2c86d523a0fe",
+   "name": "李娜",
+   "aliases": [],
+   "background": "",
+   "last_interaction_at": "2026-10-29T16:19:30.436298700Z",
+   "activity_score": 0.0,
+   "related_contacts": [],
+   "relationship_tags": [],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "35671697-3485-458e-8898-403e4d89674e",
+   "name": "张伟",
+   "aliases": [
+    "大炮",
+    "张大炮"
+   ],
+   "background": "{\"contact_id\":\"35671697-3485-458e-8898-403e4d89674e\",\"personal_info\":{\"name\":\"张伟\",\"aliases\":[\"大炮\",\"张大炮\"],\"known_occupation\":\"后端工程师\",\"known_age\":\"未知\",\"known_interests\":[\"分布式系统\",\"系统设计\"]},\"social_relations\":[{\"relation_type\":\"上级\",\"related_contact_id\":null,\"related_contact_name\":\"李娜\",\"confidence\":0.8},{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"陈静\",\"confidence\":0.8},{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"张大炮\",\"confidence\":0.8}],\"major_events\":[{\"event_id\":\"300a049c-e7c8-4dbd-b957-25412984f334\",\"summary\":\"架构评审会\",\"timestamp\":\"2026-10-29T16:11:06.651283600Z\",\"importance\":\"medium\",\"sentiment\":\"\"},{\"event_id\":\"5d4a3b03-b721-480a-a7d0-fc4fe4197cf5\",\"summary\":\"项目启动会\",\"timestamp\":\"2026-10-29T16:08:38.981810700Z\",\"importance\":\"medium\",\"sentiment\":\"\"},{\"event_id\":\"88c7c50e-8281-48c3-b94e-e76feae15357\",\"summary\":\"技术方案讨论\",\"timestamp\":\"2026-10-29T16:07:42.261283300Z\",\"importance\":\"medium\",\"sentiment\":\"\"},{\"event_id\":\"d85b9a63-2626-4ea8-902c-64edffde9006\",\"summary\":\"线上产品上线\",\"timestamp\":\"2026-10-29T16:07:42.219113500Z\",\"importance\":\"medium\",\"sentiment\":\"\"}],\"objective_evaluation\":\"张伟专注系统设计，但可能对技术方案的迁移风险过于保守，需要更详细的分析\",\"potential_relations\":[],\"last_updated\":\"2026-10-29T16:16:31.267380700Z\"}",
+   "last_interaction_at": "2026-10-29T16:19:30.434962700Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "李娜",
+    "陈静"
+   ],
+   "relationship_tags": [
+    "上级",
+    "同事"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "25cfe537-0e71-40fc-a7c3-edaf2f715a57",
+   "name": "由我负责",
+   "aliases": [],
+   "background": "{\"contact_id\":\"25cfe537-0e71-40fc-a7c3-edaf2f715a57\",\"personal_info\":{\"name\":\"由我负责\",\"aliases\":[],\"known_occupation\":\"负责人\",\"known_age\":\"未知\",\"known_interests\":[]},\"social_relations\":[{\"relation_type\":\"未知\",\"related_contact_id\":null,\"related_contact_name\":\"汤敏\",\"confidence\":0.7}],\"major_events\":[],\"objective_evaluation\":\"未知\",\"potential_relations\":[],\"last_updated\":\"2026-10-29T16:18:13.707973200Z\"}",
+   "last_interaction_at": "2026-10-29T16:16:59.450731700Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "是汤敏"
+   ],
+   "relationship_tags": [],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "2c4c708b-4671-4661-9577-b7958cd711e5",
+   "name": "现在对接",
+   "aliases": [],
+   "background": "{\"contact_id\":\"2c4c708b-4671-4661-9577-b7958cd711e5\",\"personal_info\":{\"name\":\"现在对接\",\"aliases\":[],\"known_occupation\":\"后端工程师\",\"known_age\":\"未知\",\"known_interests\":[\"分布式系统\"]},\"social_relations\":[{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"汤敏\",\"confidence\":0.8}],\"major_events\":[],\"objective_evaluation\":\"工作认真，专注后端\",\"potential_relations\":[],\"last_updated\":\"2026-10-29T16:18:36.988769600Z\"}",
+   "last_interaction_at": "2026-10-29T16:16:59.449922700Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "是汤敏"
+   ],
+   "relationship_tags": [
+    "同事"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "7818e9ed-f179-4fcf-892a-01fc0bb7b4d2",
+   "name": "钱伟是同",
+   "aliases": [],
+   "background": "{\"contact_id\":\"7818e9ed-f179-4fcf-892a-01fc0bb7b4d2\",\"personal_info\":{\"name\":\"钱伟是同\",\"aliases\":[],\"known_occupation\":\"后端工程师\",\"known_age\":\"未知\",\"known_interests\":[\"分布式系统\"]},\"social_relations\":[{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"汤敏\",\"confidence\":0.8}],\"major_events\":[],\"objective_evaluation\":\"工作认真，专注后端\",\"potential_relations\":[],\"last_updated\":\"2026-10-29T16:18:58.755165300Z\"}",
+   "last_interaction_at": "2026-10-29T16:16:59.443268900Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "是汤敏"
+   ],
+   "relationship_tags": [
+    "同事"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "fa8a54ca-683c-4291-9eaa-2800af99c0e5",
+   "name": "她以前",
+   "aliases": [],
+   "background": "{\"contact_id\":\"fa8a54ca-683c-4291-9eaa-2800af99c0e5\",\"personal_info\":{\"name\":\"她以前\",\"aliases\":[],\"known_occupation\":\"后端工程师\",\"known_age\":\"未知\",\"known_interests\":[\"分布式系统\"]},\"social_relations\":[{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"汤敏\",\"confidence\":0.8}],\"major_events\":[],\"objective_evaluation\":\"工作认真，专注后端\",\"potential_relations\":[],\"last_updated\":\"2026-10-29T16:20:31.569522Z\"}",
+   "last_interaction_at": "2026-10-29T16:16:59.441988900Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "是汤敏"
+   ],
+   "relationship_tags": [
+    "同事"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "19a28e01-7a3c-46bc-ba39-81709670150f",
+   "name": "是汤敏",
+   "aliases": [],
+   "background": "{\"contact_id\":\"19a28e01-7a3c-46bc-ba39-81709670150f\",\"personal_info\":{\"name\":\"是汤敏\",\"aliases\":[],\"known_occupation\":\"客户负责人\",\"known_age\":\"未知\",\"known_interests\":[]},\"social_relations\":[{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"钱伟\",\"confidence\":0.8}],\"major_events\":[],\"objective_evaluation\":\"专注客户需求，负责人能力较强\",\"potential_relations\":[],\"last_updated\":\"2026-10-29T16:20:57.291927800Z\"}",
+   "last_interaction_at": "2026-10-29T16:16:59.434421100Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "钱伟是同"
+   ],
+   "relationship_tags": [
+    "同事"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "b1ae9fc6-fe3f-4279-8441-38c96af45678",
+   "name": "向技术总监",
+   "aliases": [],
+   "background": "",
+   "last_interaction_at": "2026-10-29T16:09:32.611768Z",
+   "activity_score": 0.0,
+   "related_contacts": [],
+   "relationship_tags": [],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "942f97d0-e167-4344-808e-7a74eaa66166",
+   "name": "陈静",
+   "aliases": [],
+   "background": "{\"contact_id\":\"942f97d0-e167-4344-808e-7a74eaa66166\",\"personal_info\":{\"name\":\"陈静\",\"aliases\":[],\"known_occupation\":\"视觉设计师\",\"known_age\":\"未知\",\"known_interests\":[\"视觉设计\",\"UI/UX\"]},\"social_relations\":[{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"张伟\",\"confidence\":0.9},{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"李娜\",\"confidence\":0.9},{\"relation_type\":\"同事\",\"related_contact_id\":null,\"related_contact_name\":\"王强\",\"confidence\":0.8},{\"relation_type\":\"未知\",\"related_contact_id\":null,\"related_contact_name\":null,\"confidence\":0.7}],\"major_events\":[{\"event_id\":\"5d4a3b03-b721-480a-a7d0-fc4fe4197cf5\",\"summary\":\"项目启动会\",\"timestamp\":\"2026-10-29T16:08:38.981810700Z\",\"importance\":\"medium\",\"sentiment\":\"\"},{\"event_id\":\"88c7c50e-8281-48c3-b94e-e76feae15357\",\"summary\":\"技术方案讨论\",\"timestamp\":\"2026-10-29T16:07:42.261283300Z\",\"importance\":\"medium\",\"sentiment\":\"\"},{\"event_id\":\"d85b9a63-2626-4ea8-902c-64edffde9006\",\"summary\":\"线上产品上线\",\"timestamp\":\"2026-10-29T16:07:42.219113500Z\",\"importance\":\"medium\",\"sentiment\":\"\"}],\"objective_evaluation\":\"陈静专注于视觉设计，负责视觉稿，但可能因婆婆生病而延迟工作。\",\"potential_relations\":[],\"last_updated\":\"2026-10-29T16:10:00.198486500Z\"}",
+   "last_interaction_at": "2026-10-29T16:08:38.958188200Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "张伟",
+    "李娜",
+    "王强"
+   ],
+   "relationship_tags": [
+    "同事"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "5cdbbf8a-bcb9-4243-b226-b5dc125fbd0d",
+   "name": "王强",
+   "aliases": [],
+   "background": "",
+   "last_interaction_at": "2026-10-29T16:08:38.956878Z",
+   "activity_score": 0.0,
+   "related_contacts": [],
+   "relationship_tags": [],
+   "is_virtual": false
+  }
+ ],
+ "events": [],
+ "todos": [
+  {
+   "todo_id": "5e036d42-aa03-4273-af2d-14cb4e3de268",
+   "contact_ids": [],
+   "owner_id": "e2e1030",
+   "owner_type": "User",
+   "title": "整理竞品分析报告",
+   "description": null,
+   "deadline": "2026-10-30T23:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-29T16:20:35.339473500Z",
+   "completed_at": null,
+   "importance": "high",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-29T16:20:35.339473500Z"
+  },
+  {
+   "todo_id": "05189303-2750-44c5-92dd-28d978d52ab8",
+   "contact_ids": [],
+   "owner_id": "e2e1030",
+   "owner_type": "User",
+   "title": "准备评估材料",
+   "description": null,
+   "deadline": "2026-10-30T23:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-29T16:21:42.622650300Z",
+   "completed_at": null,
+   "importance": "high",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-29T16:21:42.622650300Z"
+  },
+  {
+   "todo_id": "90259298-5447-4fde-a22d-2ba542af98d4",
+   "contact_ids": [],
+   "owner_id": "e2e1030",
+   "owner_type": "User",
+   "title": "提交方案",
+   "description": null,
+   "deadline": "2026-10-30T23:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-29T16:21:42.626063900Z",
+   "completed_at": null,
+   "importance": "high",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-29T16:21:42.626063900Z"
+  },
+  {
+   "todo_id": "d4daf05d-ca59-43ca-9406-1c892fdab4d6",
+   "contact_ids": [],
+   "owner_id": "e2e1030",
+   "owner_type": "User",
+   "title": "下周三前交付接口文档",
+   "description": null,
+   "deadline": "2026-11-04T23:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-29T16:19:30.442666Z",
+   "completed_at": null,
+   "importance": "high",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-29T16:19:30.442666Z"
+  },
+  {
+   "todo_id": "178c23bb-aaef-43d7-ad46-b0e8ec58e8dd",
+   "contact_ids": [],
+   "owner_id": "e2e1030",
+   "owner_type": "User",
+   "title": "下周三前交付联调环境",
+   "description": null,
+   "deadline": "2026-11-04T23:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-29T16:19:30.444850Z",
+   "completed_at": null,
+   "importance": "high",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-29T16:19:30.444850Z"
+  },
+  {
+   "todo_id": "1e71b4e8-b1a0-4e70-977e-f6acc2e71d44",
+   "contact_ids": [],
+   "owner_id": "e2e1030",
+   "owner_type": "User",
+   "title": "给领导提交需求文档",
+   "description": null,
+   "deadline": "2026-11-06T15:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-29T16:07:42.279588Z",
+   "completed_at": null,
+   "importance": "high",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-29T16:07:42.279588Z"
+  },
+  {
+   "todo_id": "a6965c0c-a7dd-4389-9bdb-0fa798b74c54",
+   "contact_ids": [],
+   "owner_id": "e2e1030",
+   "owner_type": "User",
+   "title": "明天 morning 回复王经理的邮件",
+   "description": null,
+   "deadline": "2026-11-06T15:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-29T16:18:29.109425100Z",
+   "completed_at": null,
+   "importance": "medium",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-29T16:18:29.109425100Z"
+  },
+  {
+   "todo_id": "599a4af8-6fa8-4d65-bd60-9a3062a4b381",
+   "contact_ids": [],
+   "owner_id": "e2e1030",
+   "owner_type": "User",
+   "title": "下周一 morning 提交方案给王经理",
+   "description": null,
+   "deadline": "2026-11-06T15:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-29T16:18:29.114024100Z",
+   "completed_at": null,
+   "importance": "high",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-29T16:18:29.114024100Z"
+  }
+ ]
+}

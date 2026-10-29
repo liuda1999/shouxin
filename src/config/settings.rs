@@ -344,6 +344,23 @@ pub struct HeartbeatSettings {
     /// 低内存时最多连续跳过的次数（超过则强制执行）
     #[serde(default = "default_heartbeat_max_skips")]
     pub max_consecutive_skips: u32,
+    /// 单个联系人每天最多生成/更新画像的次数
+    ///
+    /// 为什么要可配置：批量导入（一次灌几百条语料）时，默认的 2 次/天
+    /// 会让大量联系人在当天永远排不上队，画像覆盖率被硬性锁死。
+    #[serde(default = "default_profile_max_updates_per_day")]
+    pub profile_max_updates_per_day: u32,
+    /// 同一联系人两次画像更新的最小间隔（小时）
+    #[serde(default = "default_profile_update_interval_hours")]
+    pub profile_update_interval_hours: i64,
+}
+
+fn default_profile_max_updates_per_day() -> u32 {
+    2
+}
+
+fn default_profile_update_interval_hours() -> i64 {
+    8
 }
 
 fn default_heartbeat_memory_threshold_mb() -> u64 {
@@ -462,6 +479,8 @@ impl Default for HeartbeatSettings {
             llm_timeout_secs: default_heartbeat_llm_timeout_secs(),
             memory_threshold_mb: default_heartbeat_memory_threshold_mb(),
             max_consecutive_skips: default_heartbeat_max_skips(),
+            profile_max_updates_per_day: default_profile_max_updates_per_day(),
+            profile_update_interval_hours: default_profile_update_interval_hours(),
         }
     }
 }

@@ -18,6 +18,7 @@ use crate::traits::llm::LlmClient;
 
 const EVENT_TIME_DIFF_THRESHOLD_HOURS: f64 = 24.0;
 const MIN_SIMILARITY_SCORE: f32 = 0.7;
+// 默认值与 [heartbeat] 配置一致，实际运行值由 with_profile_limits() 注入
 const PROFILE_UPDATE_INTERVAL_HOURS: i64 = 8;
 const MAX_PROFILE_UPDATES_PER_DAY: u32 = 2;
 
@@ -148,6 +149,10 @@ pub struct HeartbeatAnalyzer {
     llm_client: Arc<dyn LlmClient + Send + Sync>,
     dict_store: Arc<DictionaryStore>,
     rel_store: Arc<RelationalStore>,
+    /// 单联系人每天最多几次画像（来自 [heartbeat] 配置）
+    profile_max_updates_per_day: u32,
+    /// 同一联系人两次画像的最小间隔（小时）
+    profile_update_interval_hours: i64,
     /// 是否跳过"从对话里抽实体"这一步
     ///
     /// 只要后台队列在跑，这一步就是纯重复劳动：
@@ -167,6 +172,8 @@ impl HeartbeatAnalyzer {
             llm_client,
             dict_store,
             rel_store,
+            profile_max_updates_per_day: MAX_PROFILE_UPDATES_PER_DAY,
+            profile_update_interval_hours: PROFILE_UPDATE_INTERVAL_HOURS,
             skip_conversation_extraction: true,
         }
     }
@@ -181,6 +188,13 @@ impl HeartbeatAnalyzer {
         actions.extend(self.check_event_merges().await?);
 
         Ok(actions)
+    }
+
+    /// 注入画像频率限制（来自 [heartbeat] 配置）
+    pub fn with_profile_limits(mut self, max_per_day: u32, interval_hours: i64) -> Self {
+        self.profile_max_updates_per_day = max_per_day.max(1);
+        self.profile_update_interval_hours = interval_hours.max(0);
+        self
     }
 
     /// 显式设置是否跳过多余的对话抽取（默认 true）
@@ -540,7 +554,7 @@ impl HeartbeatAnalyzer {
 
         if contact_ids.is_empty() {
             debug!("No contact IDs found from names, checking fallback...");
-            let existing_contacts = self.rel_store.get_active_contacts_for_profile_update().await?;
+            let existing_contacts = self.rel_store.get_active_contacts_for_profile_update(self.profile_max_updates_per_day).await?;
             debug!("Fallback: looking for contacts in event '{}', found {} active contacts",
                 event.summary, existing_contacts.len());
             for contact in existing_contacts.iter().take(20) {
@@ -632,7 +646,7 @@ impl HeartbeatAnalyzer {
     async fn analyze_contact_relations(&self) -> Result<Vec<HeartbeatAction>, ShouxinError> {
         let mut actions = Vec::new();
 
-        let contacts = self.rel_store.get_active_contacts_for_profile_update().await?;
+        let contacts = self.rel_store.get_active_contacts_for_profile_update(self.profile_max_updates_per_day).await?;
 
         for contact in contacts {
             if let Some(profile) = self.generate_contact_profile(&contact).await? {
@@ -655,6 +669,16 @@ impl HeartbeatAnalyzer {
             debug!("Skipping profile update for {}: frequency limit", contact.name);
             return Ok(None);
         }
+
+        // 先记账，再调模型。
+        //
+        // 原来的顺序是"生成完再记账"，但画像提示词会让 llama.cpp 分词器偶发 abort
+        // （C++ 异常跨 FFI，进程直接死），这条路径根本走不到记账那一步。
+        // 结果是同一个联系人每次重启都被重新选中、再次崩溃，队列永远推不动
+        // （242 条压测里就卡在"排包括架"这类垃圾名字上）。
+        // 改成先记账：崩了也算一次尝试，配合每天 2 次上限与选人时的排除条件，
+        // 崩溃两次后该联系人会被跳过，其余联系人可以继续。
+        self.record_profile_update(&contact.id).await?;
 
         debug!("Generating profile for contact: {}", contact.name);
 
@@ -896,19 +920,15 @@ impl HeartbeatAnalyzer {
                         last_updated: Utc::now(),
                     };
 
-                    self.record_profile_update(&contact.id).await?;
                     return Ok(Some(profile));
                 } else {
                     warn!("Failed to parse profile JSON for contact {}: response={}", contact.name, response.chars().take(200).collect::<String>());
-                    // P0-2: 即使解析失败也记录一次尝试，避免画像失败时每次心跳都重试（死循环）
-                    // 配合 can_update_profile 的 MAX_PROFILE_UPDATES_PER_DAY=2 限制，每天最多重试2次
-                    self.record_profile_update(&contact.id).await?;
+                    // 尝试次数已在调用模型前记录，这里不再重复记（否则一次失败就用掉两次额度）
                 }
             }
             Ok(Err(e)) => {
                 warn!("Failed to generate profile for contact {}: {:?}", contact.id, e);
-                // P0-2: LLM调用失败也记录一次尝试，避免死循环
-                self.record_profile_update(&contact.id).await?;
+                // 同上：尝试次数已在调用前记录
             }
             Err(_elapsed) => {
                 warn!("Profile generation timed out for contact {} after 90s", contact.id);
@@ -929,17 +949,17 @@ impl HeartbeatAnalyzer {
             .map(|l| l.update_count)
             .sum();
 
-        debug!("can_update_profile check for {}: today_updates={}, max={}", contact_id, today_updates, MAX_PROFILE_UPDATES_PER_DAY);
+        debug!("can_update_profile check for {}: today_updates={}, max={}", contact_id, today_updates, self.profile_max_updates_per_day);
 
-        if today_updates >= MAX_PROFILE_UPDATES_PER_DAY {
+        if today_updates >= self.profile_max_updates_per_day {
             debug!("Profile update blocked for {}: daily limit reached", contact_id);
             return Ok(false);
         }
 
         if let Some(last_update) = log.first() {
-            if last_update.date == today && last_update.update_count >= MAX_PROFILE_UPDATES_PER_DAY {
+            if last_update.date == today && last_update.update_count >= self.profile_max_updates_per_day {
                 let hours_since = (Utc::now() - last_update.last_update).num_hours();
-                if hours_since < PROFILE_UPDATE_INTERVAL_HOURS as i64 {
+                if hours_since < self.profile_update_interval_hours {
                     debug!("Profile update blocked for {}: interval not elapsed ({}h < {}h)", contact_id, hours_since, PROFILE_UPDATE_INTERVAL_HOURS);
                     return Ok(false);
                 }

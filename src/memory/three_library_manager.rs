@@ -1038,6 +1038,8 @@ impl ThreeLibraryMemoryManager {
                     "time_range_end": e.time_range_end,
                     "importance": e.importance.clone(),
                     "status": e.status.clone(),
+                    // 带上 contact_ids：客户端/审计要能核对"这个事件确实属于这个人"
+                    "contact_ids": serde_json::from_str::<Vec<String>>(&e.contact_ids).unwrap_or_default(),
                 })
             })
             .collect();
@@ -1059,16 +1061,38 @@ impl ThreeLibraryMemoryManager {
         let memories_json: Vec<serde_json::Value> = conversations
             .iter()
             .map(|c| {
-                let snippet: String = c.content.chars().take(300).collect();
+                let matched = keywords
+                    .iter()
+                    .find(|k| !k.is_empty() && c.content.contains(k.as_str()))
+                    .cloned()
+                    .unwrap_or_default();
+
+                // 片段必须**围绕命中词**截取。
+                //
+                // 原来是死取前 300 字符：长对话里人名常出现在中段/结尾，
+                // 结果接口返回的"相关记忆"看起来跟这个联系人毫无关系
+                // （242 条压测审计：136 条记忆里有 34 条不含本人姓名）。
+                let chars: Vec<char> = c.content.chars().collect();
+                let total = chars.len();
+                let snippet = if matched.is_empty() || total <= 300 {
+                    chars.iter().take(300).collect::<String>()
+                } else {
+                    // 找到命中位置，向前留 80 字、向后补到 220 字
+                    let pos = c.content.find(matched.as_str()).unwrap_or(0);
+                    let char_pos = c.content[..pos].chars().count();
+                    let start = char_pos.saturating_sub(80);
+                    let end = (start + 220).min(total);
+                    let body: String = chars[start..end].iter().collect();
+                    let prefix = if start > 0 { "…" } else { "" };
+                    let suffix = if end < total { "…" } else { "" };
+                    format!("{}{}{}", prefix, body, suffix)
+                };
+
                 json!({
                     "conversation_id": c.id,
                     "snippet": snippet,
                     "timestamp": c.timestamp,
-                    "matched_keyword": keywords
-                        .iter()
-                        .find(|k| !k.is_empty() && c.content.contains(k.as_str()))
-                        .cloned()
-                        .unwrap_or_default(),
+                    "matched_keyword": matched,
                 })
             })
             .collect();

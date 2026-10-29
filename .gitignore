@@ -70,3 +70,13 @@ scripts/toolchain.local.sh
 .server_*.err
 .supervisor.log
 data_stress*/
+.auto*.log
+.auto*.err
+.e2e*.log
+.e2e*.err
+.frag*.log
+.frag*.err
+.grind*.log
+.grind*.err
+.server_p*.log
+.server_p*.err

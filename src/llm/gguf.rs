@@ -301,6 +301,35 @@ impl GgufClient {
                 .unwrap_or_default()
                 .to_lowercase();
 
+            // 关键：GGUF 里 Mistral/Ministral 的 `general.architecture` 也是 "llama"，
+            // 但它用的是 `[INST] ... [/INST]` 模板，不是 Llama-3 的
+            // `<|start_header_id|>` 那一套。只用 arch 判断会把 Mistral 当成 Llama-3，
+            // 模型看不懂特殊 token 就把提示词原样复述（实测输出 1717 字符全是
+            // "根据以下信息生成联系人画像。"），画像必然解析失败。
+            //
+            // 这里改为读模型**自带的模板字符串**做标记判断：只做字符串匹配，
+            // 不调用 apply_chat_template（那条路径内部会整段分词，会触发分词器崩溃）。
+            let jinja = model
+                .chat_template(None)
+                .ok()
+                .and_then(|t| t.to_string().ok())
+                .unwrap_or_default();
+            // 纯文本提示：不引入任何特殊 token。
+            //
+            // 为什么不用 [INST]：本机的 llama.cpp 分词器在解析特殊 token
+            // （[INST]/<|...|> 这类）时走的是 MSVC std::regex 分支，遇到长中文提示词
+            // 会抛 regex_error(error_stack)，C++ 异常跨 FFI 直接把进程 abort。
+            // 实测画像提示词只要带 [INST] 就 100% 崩溃（7/7）；
+            // 而不带特殊 token 的抽取提示词当天跑了 480 次推理、0 崩溃。
+            // 因此这里统一走"纯文本 + 明确输出要求"的格式，牺牲一点模板对齐，
+            // 换取进程稳定（模型仍能按 JSON 要求输出）。
+            let content = if system_text.is_empty() {
+                user_text.to_string()
+            } else {
+                format!("{}\n\n{}", system_text, user_text)
+            };
+            return content;
+
             // Gemma 没有 system 角色，惯例是把 system 内容并入第一条 user 消息
             if arch.contains("gemma") {
                 let content = if system_text.is_empty() {
@@ -327,7 +356,7 @@ impl GgufClient {
             }
         }
 
-        // 兜底 2：Llama-3 风格
+        // 兜底 2：Llama-3 风格（仅当模型确实用 Llama-3 的模板标记时才走这里）
         if system_text.is_empty() {
             format!(
                 "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
@@ -470,7 +499,9 @@ impl GgufClient {
 
             context.clear_kv_cache();
 
+            tracing::info!("[GGUF] 分词开始: {} 字符", prompt_str.chars().count());
             let tokens = tokenize_chunked(model, &prompt_str)?;
+            tracing::info!("[GGUF] 分词完成: {} tokens", tokens.len());
 
             let n_ctx = context.n_ctx() as usize;
             let effective_max_tokens = if tokens.len() + max_tokens as usize > n_ctx {
@@ -786,7 +817,9 @@ fn tokenize_chunked(
 ) -> Result<Vec<llama_cpp_2::token::LlamaToken>> {
     use llama_cpp_2::token::LlamaToken;
 
-    const CHUNK_CHARS: usize = 512;
+    // 128 而不是 512：实测 512 字符的纯中文段仍会触发分词器的 std::regex 栈溢出，
+    // 128 才稳定（代价是跨段 BPE 合并略有损失，对提示词无所谓）。
+    const CHUNK_CHARS: usize = 128;
 
     // 短文本直接走原路径，避免任何行为变化
     if text.chars().count() <= CHUNK_CHARS {

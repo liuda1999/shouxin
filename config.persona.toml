@@ -1,4 +1,4 @@
-# 守心 ShouXin 配置 —— 画像批处理档（LLM 超时放宽到 900s，心跳只手动触发）
+# 守心 ShouXin 配置 —— 画像批处理档（LLM 超时 900s，心跳自动跑，间隔 45s）
 # 用法： SHOUXIN_CONFIG=./config.3b.toml ./shouxin-server
 # 覆盖顺序（后者覆盖前者）：
 #   1. 本文件
@@ -65,15 +65,18 @@ fallback_to_hash = true                         # 模型缺失时降级，不阻
 # ============ 心跳 ============
 [heartbeat]
 enabled = true
-base_interval_secs = 7200
-min_interval_secs = 7200
-max_interval_secs = 7200
+base_interval_secs = 45
+min_interval_secs = 30
+max_interval_secs = 60
 adaptive = false
 idle_threshold_secs = 30
 maintenance_timeout_secs = 30
 llm_timeout_secs = 900
 memory_threshold_mb = 4096      # 超过该内存占用则跳过本轮
 max_consecutive_skips = 3
+# 画像批处理：当天把每个联系人都尽量跑一遍
+profile_max_updates_per_day = 30
+profile_update_interval_hours = 0
 
 # ============ 存储 ============
 [storage]
