@@ -158,11 +158,15 @@ SHOUXIN_CONFIG=./config.3b.toml ./target/release/shouxin-server
 
 ```bash
 # Windows（推荐：一键脚本，已封装 MSVC / CMake / Ninja / UTF-8 四个坑）
-bash scripts/build_gguf.sh
+bash scripts/build_gguf.sh --release
 
 # Linux / macOS
 cargo build --release --features gguf
 ```
+
+> `build_gguf.sh` **默认出 debug 构建**（产物在 `target/debug/`，首次约 2 分钟）。
+> 生产部署请加 `--release`（产物在 `target/release/`，编译 llama.cpp 优化版，5–10 分钟）。
+> 下面的运行命令按 release 写；如果你想先用 debug 快速验证，把路径换成 `target/debug/` 即可。
 
 首次构建会编译整个 llama.cpp：Windows 约 5–10 分钟，之后增量编译 1 分钟内。
 
@@ -173,7 +177,7 @@ cargo build --release --features gguf
 > ```bash
 > export SHOUXIN_CMAKE="/path/to/cmake"
 > export SHOUXIN_NINJA="/path/to/ninja"
-> bash scripts/build_gguf.sh
+> bash scripts/build_gguf.sh --release
 > ```
 >
 > 其他可覆盖项：`SHOUXIN_MSVC_ROOT`（MSVC 工具集目录）、`SHOUXIN_SDK_VERSION`（Windows SDK 版本）。
