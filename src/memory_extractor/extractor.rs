@@ -65,6 +65,11 @@ impl ExtractedElements {
 pub struct ExtractedPerson {
     pub contact_id: String,
     pub name: String,
+    /// 同名消歧标签（"做测试的那个" / "前端" / "客户那边的"）
+    ///
+    /// 只有对话里**确实出现两个同名的人**时才由模型填写；
+    /// 写入层按 (name, disambiguation) 判断是"同一人补充信息"还是"新建一个人"。
+    pub disambiguation: String,
     pub aliases: Vec<String>,
     pub role: Option<String>,
     pub description: Option<String>,
@@ -85,6 +90,7 @@ impl ExtractedPerson {
         Self {
             contact_id: Uuid::new_v4().to_string(),
             name,
+            disambiguation: String::new(),
             aliases: Vec::new(),
             role: None,
             description: None,
@@ -294,6 +300,11 @@ impl LlmMemoryExtractor {
    - 不提取人称代词如"他"、"她"、"我"、"你"
    - 不提取机构名如"公司"、"办公室"
    - aliases: 如果对话中提到了某人的别名/昵称/简称（如"赵明（明哥）"中的"明哥"、"张伟也叫张大炮"中的"张大炮"），在 aliases 数组中列出；没有别名则为空数组 []
+   - disambiguation: **仅当对话里同时出现两个同名的人**时填写，用原文里的区分信息说明是哪一个
+     （如"两个刘洋"→"前端"或"后端"；"两个王强"→"做测试的"或"做运维的"）。
+     只有一个人、或没有区分信息时，填空字符串 ""。不要编造原文没有的区分信息。
+   - **区分词不要并进姓名**："前端刘洋"要拆成 name="刘洋" + disambiguation="前端"，
+     绝对不能把 name 写成"前端刘洋"；同理"后端大刘"→ name="刘洋"（如果有别名"大刘"就放进 aliases）。
 2. 事件（events）: 对话中提到的每个独立事件分别提取
    - title: 简短的事件标题（如"产品需求会"、"启动开发"、"技术方案讨论"）
    - description: 一句话描述事件内容，不要输出整个对话全文
@@ -363,8 +374,12 @@ impl LlmMemoryExtractor {
 输入："记得明天回复李总的邮件，还要准备下周的汇报材料"
 输出：{"people":[{"name":"李总"}],"events":[],"todos":[{"title":"回复李总的邮件","importance":"medium"},{"title":"准备下周汇报材料","importance":"medium"}],"todo_update_intent":null}
 
+示例11（同名不同人）：
+输入："我们组有两个刘洋，前端刘洋和后端大刘，今天说的是前端刘洋负责的页面改版"
+输出：{"people":[{"name":"刘洋","disambiguation":"前端"}],"events":[{"title":"页面改版","description":"前端刘洋负责页面改版","importance":"short_term","participants":["刘洋"]}],"todos":[],"todo_update_intent":null}
+
 输出JSON（严格按照格式，不要其他文字）：
-{"people":[{"name":"姓名","aliases":[]}],"events":[{"title":"事件标题","description":"事件描述","time":"时间（如果有）","importance":"short_term或long_term或critical","participants":["参与人姓名"]}],"todos":[{"title":"待办标题","importance":"low或medium或high","deadline":"截止时间ISO格式（可选）","assigned_to":"负责人（可选）"}],"todo_update_intent":null}
+{"people":[{"name":"姓名","aliases":[],"disambiguation":""}],"events":[{"title":"事件标题","description":"事件描述","time":"时间（如果有）","importance":"short_term或long_term或critical","participants":["参与人姓名"]}],"todos":[{"title":"待办标题","importance":"low或medium或high","deadline":"截止时间ISO格式（可选）","assigned_to":"负责人（可选）"}],"todo_update_intent":null}
 
 如果没有提取到任何内容，返回：{"people":[],"events":[],"todos":[],"todo_update_intent":null}"#
             .to_string()
@@ -1143,6 +1158,8 @@ impl LlmMemoryExtractor {
         struct RawPerson {
             name: String,
             #[serde(default)]
+            disambiguation: Option<String>,
+            #[serde(default)]
             aliases: Vec<String>,
             #[serde(default)]
             role: Option<String>,
@@ -1230,6 +1247,11 @@ impl LlmMemoryExtractor {
                 let people: Vec<ExtractedPerson> = raw.people.into_iter().map(|p| ExtractedPerson {
                 contact_id: Uuid::new_v4().to_string(),
                 name: Self::fix_name_truncation(&p.name),
+                disambiguation: p
+                    .disambiguation
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
                 aliases: p.aliases,
                 role: p.role,
                 description: p.description,
@@ -1479,6 +1501,7 @@ impl LlmMemoryExtractor {
         let people: Vec<ExtractedPerson> = names.into_iter().map(|name| ExtractedPerson {
             contact_id: Uuid::new_v4().to_string(),
             name: Self::fix_name_truncation(&name),
+            disambiguation: String::new(),
             aliases: Vec::new(),
             role: None,
             description: None,
@@ -1601,6 +1624,7 @@ impl LlmMemoryExtractor {
                             existing.push(ExtractedPerson {
                                 contact_id: Uuid::new_v4().to_string(),
                                 name: person_name.clone(),
+                                disambiguation: String::new(),
                                 aliases: Vec::new(),
                                 role: None,
                                 description: None,
@@ -1642,6 +1666,7 @@ impl LlmMemoryExtractor {
                     existing.push(ExtractedPerson {
                         contact_id: Uuid::new_v4().to_string(),
                         name: full_match.to_string(),
+                        disambiguation: String::new(),
                         aliases: Vec::new(),
                         role: None,
                         description: None,
@@ -1677,6 +1702,7 @@ impl LlmMemoryExtractor {
                      existing.push(ExtractedPerson {
                          contact_id: Uuid::new_v4().to_string(),
                          name: capitalized.clone(),
+                         disambiguation: String::new(),
                          aliases: Vec::new(),
                          role: None,
                          description: None,

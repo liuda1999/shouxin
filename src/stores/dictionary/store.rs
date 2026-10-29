@@ -171,6 +171,7 @@ impl DictionaryStore {
             let user = ContactTotal {
                 id: user_id.to_string(),
                 name: "我".to_string(),
+                disambiguation: String::new(),
                 aliases: vec!["用户".to_string()],
                 is_self: true,
                 created_at: Utc::now(),

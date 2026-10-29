@@ -793,6 +793,7 @@ impl ThreeLibraryMemoryManager {
             ContactDetail {
                 contact_id: p.contact_id.clone(),
                 name: p.name.clone(),
+                disambiguation: String::new(),
                 aliases: p.aliases.clone(),
                 background: None,
                 last_interaction_at: Utc::now(),
@@ -940,6 +941,9 @@ impl ThreeLibraryMemoryManager {
                 ContactDetail {
                     contact_id: trait_contact.contact_id.clone(),
                     name: trait_contact.name.clone(),
+                    disambiguation: profile
+                        .and_then(|p| p.disambiguation.clone())
+                        .unwrap_or_default(),
                     aliases,
                     background: profile.and_then(|p| p.background.clone()),
                     last_interaction_at: trait_contact.last_activity,
@@ -1018,6 +1022,10 @@ impl ThreeLibraryMemoryManager {
                 json!({
                     "contact_id": id,
                     "name": related_names.get(id).cloned().unwrap_or_default(),
+                    "disambiguation": related_profiles
+                        .get(id)
+                        .and_then(|p| p.disambiguation.clone())
+                        .unwrap_or_default(),
                     "relationship_tags": tags,
                 })
             })
@@ -1105,6 +1113,8 @@ impl ThreeLibraryMemoryManager {
             "contact": {
                 "contact_id": contact.id,
                 "name": contact.name,
+                // 同名多条时用它区分："刘洋[前端]" vs "刘洋[后端]"
+                "disambiguation": contact.disambiguation,
                 "aliases": aliases,
                 "is_virtual": contact.is_virtual,
                 "is_agent": contact.is_agent,

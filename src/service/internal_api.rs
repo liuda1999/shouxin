@@ -176,6 +176,7 @@ async fn register_agent(
     let contact_total = ContactTotal {
         id: req.agent_id.clone(),
         name: req.name.clone(),
+        disambiguation: String::new(),
         aliases: vec![],
         is_self: false,
         created_at: now,

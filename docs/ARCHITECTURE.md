@@ -124,6 +124,17 @@ POST /api/memory/add
      `contact_index.related_contact_ids`（跨 owner 不解析，避免误关联）
 5. 频率：单联系人每天 ≤ 2 次、间隔 ≥ 8 小时。
 
+### 6.1.1 姓名不唯一：编号是唯一身份
+
+联系人的身份是 `contact_index.id`（UUID），**不是姓名**。
+`disambiguation` 只用于消歧（"前端"/"后端"），不参与身份判定。
+
+早期实现曾经建过 `UNIQUE(name, owner_id, owner_type)`，后果是三重的：
+两个同名的人无法共存；归档行仍占着名字，新写入拿新 UUID 就撞索引，
+**整条对话的 contacts/events/todos 全部回滚**；
+以及"两个刘洋"被静默合并成一个。该索引已删除，改为普通索引，
+去重交给写入层的 `find_contact_for_person(name, disambiguation)`。
+
 检索侧（`POST /api/memory/search/contacts`）返回的 `aliases` 是
 `contact_index.aliases` 与 `contact_alias_index` 的**并集**，
 `related_contacts` 已把 ID 解析为姓名，`is_virtual` 用于区分真实联系人与虚拟角色。

@@ -96,3 +96,9 @@ data_smoke/
 .smoke2*.err
 .smoke3*.log
 .smoke3*.err
+.dup*.log
+.dup*.err
+.smoke4*.log
+.smoke4*.err
+.acc4*.log
+.acc4*.err

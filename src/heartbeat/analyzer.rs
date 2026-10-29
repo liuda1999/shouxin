@@ -500,6 +500,7 @@ impl HeartbeatAnalyzer {
                 let new_contact = crate::core::ContactIndex {
                     id: Uuid::new_v4().to_string(),
                     name: fixed_name.to_string(),
+                    disambiguation: String::new(),
                     aliases: serde_json::to_string(&aliases).unwrap_or_default(),
                     is_self: false,
                     created_at: Utc::now(),

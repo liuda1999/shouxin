@@ -102,7 +102,15 @@ pub struct ContactTotal {
     /// 联系人唯一标识
     pub id: String,
     /// 联系人姓名
+    ///
+    /// 注意：姓名**不唯一**。两个"刘洋"是两条记录、两个独立 id。
     pub name: String,
+    /// 同名消歧标签（"前端" / "后端" / "客户那边的"）
+    ///
+    /// 只有 `name` + `disambiguation` 都相同，才当作同一个人。
+    /// 为空表示"没有额外信息可区分"，此时按姓名归并（宁可合并也不乱建号）。
+    #[serde(default)]
+    pub disambiguation: String,
     /// 联系人别名列表（JSON 数组）
     #[serde(default)]
     pub aliases: Vec<String>,
@@ -153,6 +161,7 @@ impl ContactTotal {
         Self {
             id,
             name,
+            disambiguation: String::new(),
             aliases: Vec::new(),
             is_self: false,
             created_at: now,
@@ -182,6 +191,7 @@ impl ContactTotal {
         Self {
             id,
             name,
+            disambiguation: String::new(),
             aliases: Vec::new(),
             is_self: false,
             created_at: now,
@@ -229,10 +239,19 @@ impl ContactTotal {
 /// 存储活跃联系人的索引信息，用于快速查询
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactIndex {
-    /// 联系人唯一标识
+    /// 联系人唯一标识（UUID，全局唯一；姓名的唯一性**不成立**）
     pub id: String,
     /// 联系人姓名
+    ///
+    /// 允许重复：两个"刘洋"各自有独立编号，靠 `disambiguation` 区分。
     pub name: String,
+    /// 同名消歧标签
+    ///
+    /// 写入去重时按 `(name, disambiguation)` 判定：
+    /// 同名且消歧相同（或都为空）→ 认为是同一个人，复用原 id；
+    /// 同名但消歧不同 → 新建独立联系人。
+    #[serde(default)]
+    pub disambiguation: String,
     /// 联系人别名列表（JSON 字符串）
     #[serde(default)]
     pub aliases: String,
@@ -287,6 +306,7 @@ impl ContactIndex {
         Self {
             id: total.id.clone(),
             name: total.name.clone(),
+            disambiguation: total.disambiguation.clone(),
             aliases: serde_json::to_string(&total.aliases).unwrap_or_default(),
             is_self: total.is_self,
             created_at: total.created_at,
@@ -483,6 +503,11 @@ pub struct ContactPatch {
     pub contact_id: String,
     /// 姓名（None 表示不修改）
     pub name: Option<String>,
+    /// 同名消歧标签（None 表示不修改）
+    ///
+    /// 只在"第一次拿到区分信息"时写一次："刘洋" → "刘洋[前端]"。
+    /// 之后同一个人再被提到时，提取层没有标签（空字符串），不能把已有标签清掉。
+    pub disambiguation: Option<String>,
     /// 最后交互时间（None 表示不修改）
     pub last_interaction_at: Option<DateTime<Utc>>,
     /// 所有者类型（None 表示保留原值）
@@ -508,6 +533,15 @@ impl ContactPatch {
             contact_id: contact_id.into(),
             ..Default::default()
         }
+    }
+
+    /// 设置同名消歧标签（空字符串视为"不修改"）
+    pub fn with_disambiguation(mut self, disambiguation: impl Into<String>) -> Self {
+        let d = disambiguation.into();
+        if !d.trim().is_empty() {
+            self.disambiguation = Some(d.trim().to_string());
+        }
+        self
     }
 
     /// 设置姓名（会在提取到更准确名字时覆盖）
@@ -558,6 +592,12 @@ impl ContactPatch {
             let trimmed = name.trim();
             if !trimmed.is_empty() {
                 contact.name = trimmed.to_string();
+            }
+        }
+        if let Some(ref d) = self.disambiguation {
+            let trimmed = d.trim();
+            if !trimmed.is_empty() {
+                contact.disambiguation = trimmed.to_string();
             }
         }
         if let Some(at) = self.last_interaction_at {

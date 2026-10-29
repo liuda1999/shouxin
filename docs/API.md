@@ -98,8 +98,32 @@ POST /api/memory/search/contacts
 **虚拟角色默认不混入**：`is_virtual = 1` 的行（历史人物、动漫/科幻角色等）
 走 `/api/virtual_entities`，本接口默认过滤掉它们；需要一起看时传 `include_virtual: true`。
 
-返回每个联系人的 `aliases` / `background`（人设 JSON）/ `relationship_tags` /
-`related_contacts`（已解析成姓名）以及 **`is_virtual`**（是否为智能体扮演的虚拟人物）。
+返回每个联系人的 `contact_id` / **`disambiguation`** / `aliases` / `background`（人设 JSON）/
+`relationship_tags` / `related_contacts`（已解析成姓名）以及 **`is_virtual`**。
+
+### 同名联系人：姓名不唯一，靠编号 + 消歧标签区分
+
+`contact_index` 的主键是 UUID，**姓名不唯一**。同一个用户下可以存在两条 `name` 相同的记录：
+
+```json
+{ "data": [
+  { "contact_id": "68b9b1bf-…", "name": "刘洋", "disambiguation": "前端", "relationship_tags": ["同事"] },
+  { "contact_id": "682751b1-…", "name": "刘洋", "disambiguation": "后端", "relationship_tags": ["同事"] }
+] }
+```
+
+写入去重规则（宁可合并，也不乱建号）：
+
+| 新提取到的 | 库里已有 | 结果 |
+|-----------|---------|------|
+| `刘洋` + `前端` | 同名且标签 `前端` | 同一人，复用原 `contact_id` |
+| `刘洋` + `前端` | 同名但都没标签 | 同一人第一次被区分 → 复用并补标签 |
+| `刘洋` + `前端` | 同名但标签是 `后端` | **另一个人 → 新建独立编号** |
+| `刘洋`（无标签） | 有同名但都带标签 | 归到最近互动的那个，不新建 |
+| `前端刘洋`（区分词并进了姓名） | 库里已有 `刘洋` | 剥掉前缀，按 `刘洋` + `前端` 处理 |
+
+> 客户端要用 `contact_id` 做引用，不要用姓名；姓名只用于展示，
+> 同名时请把 `disambiguation` 一起显示成 `刘洋（前端）`。
 
 ### 联系人全息详情
 

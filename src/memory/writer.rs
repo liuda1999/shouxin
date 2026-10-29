@@ -131,7 +131,7 @@ impl MemoryWriter {
     /// 写入一批联系人（字典库权威 + 关系库索引 + 别名索引 + 活跃度）
     ///
     /// 与旧实现的差异：
-    /// - 用 `find_contact_by_any_name` 同时按姓名和别名去重（旧同步路径只看姓名）；
+    /// - 用 `find_contact_for_person` 按「姓名/别名 + 同名消歧标签」去重；
     /// - 虚拟角色不写入真人体系（旧同步路径没有这个判断）；
     /// - 别名是"并入"，不是覆盖；
     /// - `ContactIndex` 的业务字段来自字典库权威记录，缺失时才回退关系库旧值，
@@ -161,11 +161,74 @@ impl MemoryWriter {
                 continue;
             }
 
-            // 1) 去重：按姓名或别名匹配已有联系人
-            let existing = self
+            // 1) 去重：按「姓名（或别名） + 同名消歧标签」匹配
+            //
+            // 姓名**不唯一**：两个"刘洋"若分别带"前端""后端"标签，会被判成两个人，
+            // 各拿一个独立 UUID；只有姓名相同且标签也相同（或双方都没标签）才归并。
+            let mut existing = self
                 .relational
-                .find_contact_by_any_name(&person.name, owner_type, owner_id)
+                .find_contact_for_person(
+                    &person.name,
+                    &person.disambiguation,
+                    owner_type,
+                    owner_id,
+                )
                 .await?;
+
+            // 1b) 姓名归一化兜底：模型有时把区分词并进姓名（"前端刘洋"），
+            //     而库里已经有"刘洋"这个人。
+            //     此时若直接入库，就会凭空多出一个联系人"前端刘洋"——
+            //     实测同一条语料第二次被提及时，模型输出名字变体，联系人从 2 条涨到 3 条。
+            //     规则：只有当"去掉前缀后的名字"**确实已在库中**时，才把它拆开，
+            //     前缀当作消歧标签；否则保持原样（不能凭猜测改用户的名字）。
+            let mut final_name = person.name.clone();
+            let mut final_disambiguation = person.disambiguation.clone();
+            if existing.is_none() {
+                let chars: Vec<char> = person.name.chars().collect();
+                if (3..=6).contains(&chars.len()) {
+                    for cut in 1..=2usize {
+                        let suffix: String = chars[cut..].iter().collect();
+                        if suffix.chars().count() < 2 {
+                            continue;
+                        }
+                        // 只认**姓名精确相等**：别名命中不能作为拆分依据，
+                        // 否则"欧阳娜娜"这类复姓/多字名容易被误拆。
+                        let owner_type_str = format!("{:?}", owner_type);
+                        let same_name = self
+                            .relational
+                            .search_contacts_by_name(&suffix, &owner_type_str, owner_id)
+                            .await
+                            .unwrap_or_default();
+                        if same_name.is_empty() || same_name[0].name != suffix {
+                            continue;
+                        }
+                        let prefix: String = chars[..cut].iter().collect();
+                        // 模型可能同时给了标签（"name=前端刘洋, disambiguation=前端"），
+                        // 两处一致时优先用模型给的标签，不一致时也用模型给的（更可信）。
+                        let disp = if !final_disambiguation.trim().is_empty() {
+                            final_disambiguation.trim().to_string()
+                        } else {
+                            prefix.trim().to_string()
+                        };
+                        debug!(
+                            "[MemoryWriter] 姓名归一化：'{}' → 姓名='{}'，消歧='{}'（库中已有 ID {}）",
+                            person.name, suffix, disp, same_name[0].id
+                        );
+                        final_disambiguation = disp;
+                        final_name = suffix;
+                        existing = self
+                            .relational
+                            .find_contact_for_person(
+                                &final_name,
+                                &final_disambiguation,
+                                owner_type,
+                                owner_id,
+                            )
+                            .await?;
+                        break;
+                    }
+                }
+            }
 
             let final_contact_id = existing
                 .as_ref()
@@ -223,10 +286,11 @@ impl MemoryWriter {
             let mut patch = ContactPatch::new(final_contact_id.clone())
                 .with_owner(owner_type, owner_id)
                 .touched_at(Utc::now())
+                .with_disambiguation(final_disambiguation.clone())
                 .merge_aliases(merged_aliases.iter().cloned());
             if is_new {
                 // 只有新建时才用提取到的姓名；已存在的记录以字典库为准，避免改名被旧名回滚
-                patch = patch.with_name(person.name.clone());
+                patch = patch.with_name(final_name.clone());
             }
             let contact_total = self.dictionary.patch_contact(&patch).await?;
 
@@ -244,7 +308,12 @@ impl MemoryWriter {
                 if msg.contains("UNIQUE constraint failed") {
                     if let Ok(Some(found)) = self
                         .relational
-                        .find_contact_by_any_name(&person.name, owner_type, owner_id)
+                        .find_contact_for_person(
+                            &final_name,
+                            &final_disambiguation,
+                            owner_type,
+                            owner_id,
+                        )
                         .await
                     {
                         let mut retried = contact_index.clone();
@@ -484,6 +553,15 @@ impl MemoryWriter {
         ContactIndex {
             id: total.id.clone(),
             name: total.name.clone(),
+            // 消歧标签：字典库有就用字典库的，没有就保留索引里已有的（不能清空，
+            // 否则"前端刘洋"和"后端刘洋"下次写入会重新变成同名同标签而被误并）
+            disambiguation: if total.disambiguation.is_empty() {
+                existing
+                    .map(|e| e.disambiguation.clone())
+                    .unwrap_or_default()
+            } else {
+                total.disambiguation.clone()
+            },
             aliases,
             is_self: total.is_self,
             created_at: total.created_at,
@@ -547,6 +625,46 @@ mod tests {
         p.contact_id = contact_id.to_string();
         p.aliases = aliases.iter().map(|s| s.to_string()).collect();
         p
+    }
+
+    /// 回归：同名不同人必须各自拿到独立编号，不能因为重名就被合并
+    ///
+    /// 这是"每个联系人一个独立编号、联系人列表不怕重名"设计的核心行为：
+    /// 姓名 + 消歧标签都相同才归并，标签不同必须新建。
+    #[tokio::test]
+    async fn test_same_name_different_disambiguation_creates_two_contacts() {
+        let (dict, rel, _dir) = setup().await;
+        let writer = MemoryWriter::new(dict.clone(), rel);
+
+        let mut front = person("p1", "刘洋", &[]);
+        front.disambiguation = "前端".to_string();
+        let a = writer
+            .write_contacts(&[front], OwnerType::User, "u1")
+            .await
+            .unwrap();
+
+        let mut back = person("p2", "刘洋", &[]);
+        back.disambiguation = "后端".to_string();
+        let b = writer
+            .write_contacts(&[back], OwnerType::User, "u1")
+            .await
+            .unwrap();
+
+        assert_eq!(a.created, 1);
+        assert_eq!(b.created, 1, "同名但消歧不同，应该新建一条而不是归并");
+        let id_front = a.id_map.get("p1").cloned().unwrap();
+        let id_back = b.id_map.get("p2").cloned().unwrap();
+        assert_ne!(id_front, id_back, "两个刘洋必须是两个独立编号");
+
+        // 再次提到"前端刘洋"，应命中已有的那条，不新建
+        let mut again = person("p3", "刘洋", &[]);
+        again.disambiguation = "前端".to_string();
+        let c = writer
+            .write_contacts(&[again], OwnerType::User, "u1")
+            .await
+            .unwrap();
+        assert_eq!(c.created, 0);
+        assert_eq!(c.id_map.get("p3").cloned().unwrap(), id_front);
     }
 
     #[tokio::test]

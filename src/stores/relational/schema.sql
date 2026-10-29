@@ -12,7 +12,11 @@ CREATE TABLE IF NOT EXISTS contact_index (
     relationship_tags TEXT,
     relation_weight TEXT,
     background TEXT,
-    notes TEXT
+    notes TEXT,
+    -- 同名消歧标签：用于区分"两个刘洋"（前端 / 后端 / 客户那边的）。
+    -- 设计前提是每个联系人都有独立 UUID，姓名**不唯一**；
+    -- 只有姓名 + 消歧标签都相同，才认为是同一个人。
+    disambiguation TEXT DEFAULT ''
 );
 
 -- 事件索引表（活跃事件索引）

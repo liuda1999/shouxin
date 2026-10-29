@@ -281,10 +281,15 @@ impl Default for CleanupRule {
 /// 联系人详情（统一检索返回的完整联系人信息）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactDetail {
-    /// 联系人 ID
+    /// 联系人 ID（唯一；同名者靠它区分）
     pub contact_id: String,
-    /// 姓名
+    /// 姓名（**不唯一**：可能有多个人同名）
     pub name: String,
+    /// 同名消歧标签（"前端" / "后端" / "客户那边的"）
+    ///
+    /// 同名多条时用它区分：`刘洋[前端]` 与 `刘洋[后端]` 是两个不同的人。
+    #[serde(default)]
+    pub disambiguation: String,
     /// 别名
     pub aliases: Vec<String>,
     /// 背景信息

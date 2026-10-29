@@ -252,6 +252,7 @@ impl RelationalStore {
             "ALTER TABLE contact_index ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'default_user'",
             "ALTER TABLE contact_index ADD COLUMN is_agent INTEGER DEFAULT 0",
             "ALTER TABLE contact_index ADD COLUMN parent_agent_id TEXT",
+            "ALTER TABLE contact_index ADD COLUMN disambiguation TEXT DEFAULT ''",
         ];
         for mq in &migration_queries {
             let _ = query(mq).execute(&self.pool).await;
@@ -270,9 +271,19 @@ impl RelationalStore {
             .execute(&self.pool)
             .await?;
 
-        // V9: 同一 owner 下相同名称的联系人唯一约束，防止并发去重竞态
+        // 曾经这里建的是 UNIQUE(name, owner_id, owner_type)。
+        //
+        // 那与"每个联系人一个独立编号、不怕重名"的设计直接冲突：
+        //   1) 两个"刘洋"根本无法共存（第二条 INSERT 直接 UNIQUE constraint failed）；
+        //   2) 归档行也占着名字，新写入拿新 UUID 就撞索引，
+        //      导致**整条对话的 contacts/events/todos 全部回滚**（压测复现过）。
+        // 现在姓名不再唯一，去重交给写入层的"姓名 + 消歧标签"判定。
+        // 老库先把这个唯一索引删掉，再建普通索引（查询仍然走索引，只是允许重名）。
+        let _ = query("DROP INDEX IF EXISTS idx_unique_contact_name_owner")
+            .execute(&self.pool)
+            .await;
         let _ = query(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_contact_name_owner ON contact_index(name, owner_id, owner_type)",
+            "CREATE INDEX IF NOT EXISTS idx_contact_name_owner ON contact_index(name, owner_id, owner_type)",
         )
         .execute(&self.pool)
         .await;
@@ -571,12 +582,13 @@ impl RelationalStore {
         query(
             r#"
             INSERT INTO contact_index
-            (id, name, aliases, is_self, created_at, last_interaction_at, related_contact_ids,
-             relationship_tags, relation_weight, background, notes, owner_type, owner_id,
-             is_agent, parent_agent_id, is_virtual, is_archived, activity_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            (id, name, disambiguation, aliases, is_self, created_at, last_interaction_at,
+             related_contact_ids, relationship_tags, relation_weight, background, notes,
+             owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, activity_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
+            disambiguation = excluded.disambiguation,
             aliases = excluded.aliases,
             is_self = excluded.is_self,
             last_interaction_at = excluded.last_interaction_at,
@@ -595,6 +607,7 @@ impl RelationalStore {
         )
         .bind(&contact.id)
         .bind(&contact.name)
+        .bind(&contact.disambiguation)
         .bind(&contact.aliases)
         .bind(if contact.is_self { 1 } else { 0 })
         .bind(contact.created_at.to_rfc3339())
@@ -636,7 +649,7 @@ impl RelationalStore {
             r#"
             SELECT id, name, aliases, is_self, created_at, last_interaction_at,
                    related_contact_ids, relationship_tags, relation_weight, background, notes,
-                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score
+                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score, disambiguation
             FROM contact_index
             WHERE is_self = 1 AND owner_type = ? AND owner_id = ? AND is_archived = 0
             "#,
@@ -651,7 +664,7 @@ impl RelationalStore {
             r#"
             SELECT id, name, aliases, is_self, created_at, last_interaction_at,
                    related_contact_ids, relationship_tags, relation_weight, background, notes,
-                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score
+                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score, disambiguation
             FROM contact_index
             WHERE is_self = 0 AND owner_type = ? AND owner_id = ? AND is_archived = 0
             ORDER BY last_interaction_at DESC
@@ -697,7 +710,7 @@ impl RelationalStore {
         let rows = sqlx::query(
             "SELECT id, name, aliases, is_self, created_at, last_interaction_at, \
              related_contact_ids, relationship_tags, relation_weight, background, notes, \
-             owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score \
+             owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score, disambiguation \
              FROM contact_index WHERE name = ? AND owner_type = ? AND owner_id = ? AND is_archived = 0 \
              ORDER BY last_interaction_at DESC"
         )
@@ -1238,7 +1251,7 @@ impl RelationalStore {
 
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT id, aliases, background, relationship_tags, related_contact_ids, is_virtual \
+            "SELECT id, disambiguation, aliases, background, relationship_tags, related_contact_ids, is_virtual \
              FROM contact_index WHERE id IN ({})",
             placeholders
         );
@@ -1254,6 +1267,7 @@ impl RelationalStore {
             map.insert(
                 id,
                 ContactProfileFields {
+                    disambiguation: row.get::<Option<String>, _>("disambiguation"),
                     aliases: row.get::<Option<String>, _>("aliases"),
                     background: row.get::<Option<String>, _>("background"),
                     relationship_tags: row.get::<Option<String>, _>("relationship_tags"),
@@ -1349,7 +1363,7 @@ impl RelationalStore {
             r#"
             SELECT id, name, aliases, is_self, created_at, last_interaction_at,
                    related_contact_ids, relationship_tags, relation_weight, background, notes,
-                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score
+                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score, disambiguation
             FROM contact_index
             WHERE id = ? AND owner_type = ? AND owner_id = ?
             "#,
@@ -1525,6 +1539,8 @@ impl ContactIndex {
         Ok(Self {
             id: row.get("id"),
             name: row.get("name"),
+            // 老库可能没有这一列（迁移是 ALTER 加的），try_get 容错
+            disambiguation: row.try_get("disambiguation").unwrap_or_default(),
             aliases: row.get("aliases"),
             is_self: is_self == 1,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
@@ -1763,13 +1779,14 @@ impl RelationalStoreTrait for RelationalStore {
         query(
             r#"
             INSERT OR REPLACE INTO contact_index 
-            (id, name, aliases, is_self, created_at, last_interaction_at, related_contact_ids, 
-             relationship_tags, relation_weight, background, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, name, disambiguation, aliases, is_self, created_at, last_interaction_at,
+             related_contact_ids, relationship_tags, relation_weight, background, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&contact.contact_id)
         .bind(&contact.name)
+        .bind("") // disambiguation
         .bind("") // aliases
         .bind(0) // is_self
         .bind(contact.created_at.to_rfc3339())
@@ -2175,42 +2192,99 @@ impl RelationalStoreTrait for RelationalStore {
 }
 
 impl RelationalStore {
+    /// 按姓名或别名找联系人（不区分同名者）
+    ///
+    /// 这是给"只知道名字"的调用方（心跳画像、关系分析）用的包装，
+    /// 内部按无消歧标签处理。写入路径请用 `find_contact_for_person`。
     pub async fn find_contact_by_any_name(
         &self,
         name: &str,
         owner_type: crate::core::contact::OwnerType,
         owner_id: &str,
     ) -> Result<Option<crate::core::ContactIndex>, ShouxinError> {
-        // 注意：**不能**过滤 is_archived = 0。
-        //
-        // `contact_index` 上有唯一索引 (name, owner_id, owner_type)，归档行同样占用名字。
-        // 如果这里跳过归档行，写入方会给同名联系人分配一个新 id，
-        // 随后 INSERT 直接撞唯一索引，导致**整条对话抽取失败**（contacts/events/todos 全丢）。
-        // 200 条压测实测：活跃联系人超过 50 上限被归档后，
-        // 后续提到这些人的对话 100% 失败（错误码 2067 UNIQUE constraint failed）。
-        // 正确语义是：老联系人被重新提到 → 找到它 → 复活（见 MemoryWriter::build_contact_index）。
+        self.find_contact_for_person(name, "", owner_type, owner_id)
+            .await
+    }
+
+    /// 按「姓名（或别名） + 同名消歧标签」找联系人
+    ///
+    /// 设计前提：**姓名不唯一**，每个联系人一个独立 UUID。
+    /// 判定规则（宁可合并，也不乱建号）：
+    ///
+    /// | 入参标签 | 库里候选 | 结论 |
+    /// |---------|---------|------|
+    /// | "前端" | 有同名且标签="前端" | 同一个人，复用原 id |
+    /// | "前端" | 同名但全部无标签 | 同一个人第一次被区分出来 → 复用它并补标签 |
+    /// | "前端" | 同名但标签都是"后端"等别的值 | **不同的人 → 新建** |
+    /// | 空 | 有同名且无标签 | 同一个人 |
+    /// | 空 | 同名都有标签（指代含糊） | 归到最近互动的那个，不新建 |
+    ///
+    /// 注意：**不能**过滤 `is_archived = 0`。归档行仍然是同一个人，
+    /// 跳过他会在归档后给他重复建号，写库时还可能覆盖掉原有关系数据。
+    /// 正确语义是老联系人被重新提到 → 找到它 → 复活（见 MemoryWriter::build_contact_index）。
+    pub async fn find_contact_for_person(
+        &self,
+        name: &str,
+        disambiguation: &str,
+        owner_type: crate::core::contact::OwnerType,
+        owner_id: &str,
+    ) -> Result<Option<crate::core::ContactIndex>, ShouxinError> {
+        // 同名可能有多条，这里一次取候选，再在内存里按标签判定
         let rows = query(
             r#"
             SELECT id, name, aliases, is_self, created_at, last_interaction_at,
                    related_contact_ids, relationship_tags, relation_weight, background, notes,
-                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score
+                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score, disambiguation
             FROM contact_index
             WHERE (name = ? OR aliases LIKE ?) AND owner_type = ? AND owner_id = ?
             ORDER BY is_archived ASC, last_interaction_at DESC
-            LIMIT 1
+            LIMIT 20
             "#,
         )
         .bind(name)
         .bind(format!("%\"{}\"%", name))
         .bind(format!("{:?}", owner_type))
         .bind(owner_id)
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        match rows {
-            Some(row) => Ok(Some(crate::core::ContactIndex::from_row(&row)?)),
-            None => Ok(None),
+        let mut candidates = Vec::with_capacity(rows.len());
+        for row in rows {
+            candidates.push(crate::core::ContactIndex::from_row(&row)?);
         }
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+
+        let want = disambiguation.trim().to_lowercase();
+        if !want.is_empty() {
+            // 1) 标签完全一致 → 同一个人
+            if let Some(hit) = candidates
+                .iter()
+                .find(|c| c.disambiguation.trim().to_lowercase() == want)
+            {
+                return Ok(Some(hit.clone()));
+            }
+            // 2) 库里同名但都没有标签：这是同一个人第一次被区分出来，
+            //    复用它（写入时会把标签补上），而不是再建一条
+            if candidates
+                .iter()
+                .all(|c| c.disambiguation.trim().is_empty())
+            {
+                return Ok(candidates.into_iter().next());
+            }
+            // 3) 已有别的标签 → 这是另一个人
+            return Ok(None);
+        }
+
+        // 入参没有标签：优先无标签的记录；都有标签时归到最近互动的那个
+        if let Some(hit) = candidates
+            .iter()
+            .find(|c| c.disambiguation.trim().is_empty())
+        {
+            return Ok(Some(hit.clone()));
+        }
+        Ok(candidates.into_iter().next())
     }
 
     pub async fn get_processing_state(&self) -> Result<crate::heartbeat::types::ProcessingState, ShouxinError> {
@@ -3358,6 +3432,8 @@ fn parse_sqlite_datetime(value: &str) -> Result<DateTime<Utc>, ShouxinError> {
 /// 联系人的画像相关字段（从 contact_index 单独取出，供检索接口补齐）
 #[derive(Debug, Clone, Default)]
 pub struct ContactProfileFields {
+    /// 同名消歧标签
+    pub disambiguation: Option<String>,
     /// 别名（JSON 数组字符串）
     pub aliases: Option<String>,
     /// 画像 JSON（个人信息/社会关系/重大事件/评价）

@@ -19,6 +19,7 @@
 """
 
 import argparse
+import datetime
 import json
 import sqlite3
 import time
@@ -187,6 +188,42 @@ def main():
         check("角色详情不含 contact 结构（与真人分离）", "background" not in data)
     else:
         check("虚拟角色详情（独立接口）", False, "创建失败")
+
+    # ---- 同名不同人：编号唯一，姓名可重复 ----
+    #
+    # 这里直接写库而不走抽取，是因为"模型愿不愿意输出消歧标签"是模型能力问题，
+    # 而这里要验收的是**系统设计**：同一个 owner 下允许两条同名记录、
+    # 各有独立 UUID、检索能同时返回并靠 disambiguation 区分。
+    con = sqlite3.connect(f"file:{args.db}?mode=rw", uri=True)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    pair = [(f"dup-bj-{U}", "北京"), (f"dup-sh-{U}", "上海")]
+    try:
+        for cid, tag in pair:
+            con.execute(
+                "INSERT OR REPLACE INTO contact_index "
+                "(id,name,disambiguation,aliases,is_self,created_at,last_interaction_at,"
+                "related_contact_ids,relationship_tags,relation_weight,background,notes,"
+                "owner_type,owner_id,is_agent,is_virtual,is_archived,activity_score) "
+                "VALUES (?,?,?,'[]',0,?,?,'[]','[]','','','',?,?,0,0,0,0.5)",
+                (cid, "李雷", tag, now, now, "User", U),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    r, _ = req("POST", f"{B}/api/memory/search/contacts",
+               {"query": "李雷", "limit": 10, "user_id": U})
+    rows = [x for x in (r.get("data") or []) if x.get("name") == "李雷"]
+    check("同名两条都能查到（姓名不唯一）", len(rows) >= 2, f"{len(rows)} 条")
+    ids = {x["contact_id"] for x in rows}
+    check("同名者各有独立编号", len(ids) == len(rows), f"{len(ids)} 个编号")
+    tags = {x.get("disambiguation") for x in rows}
+    check("同名者带消歧标签", {"北京", "上海"} <= tags, f"{tags}")
+
+    if rows:
+        d, code = req("GET", f"{B}/api/contacts/{rows[0]['contact_id']}/detail?user_id={U}")
+        got = ((d.get("data") or {}).get("contact") or {}).get("disambiguation")
+        check("详情接口返回消歧标签", code == 200 and got == rows[0].get("disambiguation"), f"{got}")
 
     print(f"\n== 汇总：PASS={PASS}  FAIL={FAIL} ==")
 
