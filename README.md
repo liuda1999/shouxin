@@ -6,6 +6,10 @@
 
 **本地优先、隐私至上的智能体记忆子系统。**
 
+[![version](https://img.shields.io/badge/version-0.6.0-blue)](CHANGELOG.md)
+[![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
+[![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
+
 > **适用人群：深度本地智能体用户。** 如果你只是想让 AI 记几句话，这个项目**不是**给你准备的。
 > 它面向的是一类人：长期在自己的机器上跑智能体、希望记忆完全落在本地、愿意为数据主权投入硬件与折腾成本。
 >
@@ -47,6 +51,9 @@
 | **本地推理** | 内置 `llama.cpp` 推理 GGUF，纯 CPU，无需 GPU / 无需 Ollama |
 | **本地嵌入** | FastEmbed + ONNX（`multilingual-e5-base`），中文语义检索；模型缺失时自动降级为离线哈希嵌入 |
 | **语义检索** | 事件 / 联系人 / 学习素材 / 历史对话多路检索 + 智能融合 |
+| **联系人档案** | 姓名 + 别名 + 关系标签 + 人设画像 + 关联事件 + 原文证据；`GET /api/contacts/:id/detail` 一次取全 |
+| **同名分得清** | 联系人身份是 UUID，姓名**不唯一**；两个"刘洋"靠 消歧标签 / 身份线索 / 别名多字段投票区分 |
+| **虚拟角色独立** | 历史 / 神话 / 动漫 / 游戏角色独立建表，与真人联系人隔离；同名不同作品可共存 |
 | **待办管理** | 自动从对话中识别待办与截止时间，支持完成、更新、冷热归档 |
 | **主动心跳** | 自适应频率的后台巡检：待办提醒、联系人资料维护、待确认问题 |
 | **时间解析** | 中文相对时间（"下周三""月底"）本地解析，不依赖模型给日期 |
@@ -56,17 +63,63 @@
 
 ---
 
-## 快速开始
+## 技术栈
 
-### 0. 前置依赖
+| 层 | 选型 | 版本 | 说明 |
+|----|------|------|------|
+| 语言 | Rust（edition 2021） | ≥ 1.75（开发机 1.99.1） | 全项目单一语言 |
+| HTTP | `axum` + `tower-http` | 0.7 / 0.5 | 36 个路由注册，29 个唯一路径 |
+| 异步运行时 | `tokio` | 1.x（full） | 工作线程栈 32 MB（llama.cpp 分词器需要） |
+| 推理 | `llama-cpp-2`（llama.cpp 绑定） | `=0.1.146` | 纯 CPU，默认不编译 CUDA |
+| 嵌入 | `fastembed` + ONNX Runtime | 4.9.1 | `intfloat/multilingual-e5-base`，缺模型降级哈希 |
+| 关系库 | SQLite（`sqlx` + bundled `libsqlite3-sys`） | sqlx 0.8 | 无需系统装 SQLite |
+| 向量库 | `hnsw_rs` | 0.3 | HNSW 近似最近邻 |
+| 字典库 | `sled` | 0.34 | 对话原文，永不删除 |
+| 配置 | `config` + `clap` | 0.14 / 4 | TOML + 环境变量 + 命令行 |
+| 构建 | CMake ≥ 3.20 + Ninja | — | Windows 用 MSVC 2022 Build Tools；Linux/macOS 用 GCC/Clang |
 
-- **Rust** ≥ 1.75
-- **C++ 工具链**：Windows 需 VS 2022 Build Tools；Linux 需 `build-essential`
-- **CMake** ≥ 3.20 + **Ninja**
+> 依赖里没有 GPU 运行时、没有 Docker、没有外部数据库。**唯一的系统级依赖是 C++ 编译工具链**（用于编译 llama.cpp）。
 
-### 1. 准备模型（必须手动下载，不进 Git）
+---
 
-模型体积大，不进 Git 仓库。**推理模型**和**嵌入模型**要分别下载。推理模型提供两档：
+## 部署：从 GitHub 拉取到跑通
+
+以下命令在 **Git Bash（Windows）/ bash（Linux、macOS）** 下执行，路径均相对仓库根目录。
+
+### 0. 前置条件
+
+| 项 | 要求 | 检查命令 |
+|----|------|----------|
+| Rust | ≥ 1.75（含 cargo） | `rustc --version` |
+| C++ 工具链 | Windows：VS 2022 Build Tools（含 MSVC v143 + Windows SDK）；Linux：`build-essential`；macOS：Xcode CLT | `cl` / `g++ --version` |
+| CMake | ≥ 3.20 | `cmake --version` |
+| Ninja | 任意较新版本 | `ninja --version` |
+| Python | ≥ 3.8 + `requests`（下载 / 压测脚本用） | `python --version` · `python -c "import requests"` |
+| 磁盘 | ≥ 15 GB（模型 5.7 GB + 构建产物 + 数据） | — |
+| 内存 | ≥ 8 GB（4B 档建议 10 GB） | — |
+
+Windows 上如果不想手工配 MSVC 环境，直接用 `scripts/build_gguf.sh`（内部会调 `scripts/dev_env.sh` 自动探测，**不写死任何机器路径**）。
+
+### 1. 克隆
+
+```bash
+git clone https://github.com/liuda1999/shouxin.git
+cd shouxin
+```
+
+仓库本身约 5 MB（模型、数据、构建产物都在 `.gitignore` 里）。
+
+### 2. 环境自检（强烈建议）
+
+```bash
+bash scripts/check_env.sh
+```
+
+它会逐项检查 Rust / CMake / Ninja / C++ 工具链 / 模型文件 / 端口占用，**缺什么直接给出修复命令**，不用等到编译报错才发现。
+
+### 3. 下载模型（必须手动，不进 Git）
+
+推理模型和嵌入模型要分别下载。推理模型两档选一：
 
 | 档位 | 模型 | 体积 | 特点 |
 |------|------|------|------|
@@ -74,6 +127,9 @@
 | **低配 3B** | `Ministral-3-3B-Reasoning-2512-Q8_0` | 3.4 GB | 更省内存、更快起步，用 `config.3b.toml` 启用 |
 
 ```bash
+# 下载脚本依赖 requests（一次性）
+python -m pip install --upgrade requests
+
 mkdir -p models
 
 # ① 默认推理模型 4.6 GB（国内建议用内置分段下载脚本，直连单线程常被限速到几十 KB/s）
@@ -92,33 +148,49 @@ python scripts/download_gguf.py \
   "https://hf-mirror.com/unsloth/Ministral-3-3B-Reasoning-2512-GGUF/resolve/main/Ministral-3-3B-Reasoning-2512-Q8_0.gguf" \
   "models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf" 32
 
-# 用低配配置启动（模型路径已指向 Ministral）
 SHOUXIN_CONFIG=./config.3b.toml ./target/release/shouxin-server
 ```
 
 > 视觉塔 `mmproj` 目前不加载（抽取为纯文本），仅在需要多模态时预留。
+> 校验方式、目录布局、离线降级见 **[docs/MODEL_SETUP.md](docs/MODEL_SETUP.md)**。
 
-详细说明（含校验、目录布局、离线降级）见 **[docs/MODEL_SETUP.md](docs/MODEL_SETUP.md)**。
-
-### 2. 构建
+### 4. 构建
 
 ```bash
-# Windows（推荐：一键脚本，已封装全部环境坑）
+# Windows（推荐：一键脚本，已封装 MSVC / CMake / Ninja / UTF-8 四个坑）
 bash scripts/build_gguf.sh
 
 # Linux / macOS
 cargo build --release --features gguf
 ```
 
-### 3. 运行
+首次构建会编译整个 llama.cpp：Windows 约 5–10 分钟，之后增量编译 1 分钟内。
+
+> **cmake / ninja 装在非标准位置怎么办**（便携版、`pip install cmake`、绿色版）：
+> 用环境变量指给构建脚本，否则 `llama-cpp-sys` 的 build script 会报
+> `failed to execute command: program not found`：
+>
+> ```bash
+> export SHOUXIN_CMAKE="/path/to/cmake"
+> export SHOUXIN_NINJA="/path/to/ninja"
+> bash scripts/build_gguf.sh
+> ```
+>
+> 其他可覆盖项：`SHOUXIN_MSVC_ROOT`（MSVC 工具集目录）、`SHOUXIN_SDK_VERSION`（Windows SDK 版本）。
+> 完整说明见 [docs/BUILD.md](docs/BUILD.md)。
+
+### 5. 启动
 
 ```bash
-./target/debug/shouxin-server          # 默认 127.0.0.1:3000
-# 或
+# 默认读取 ./config.toml，监听 127.0.0.1:3000
+./target/release/shouxin-server
+
+# 改地址 / 换配置
 ./target/release/shouxin-server --host 0.0.0.0:3000
+SHOUXIN_CONFIG=./config.3b.toml ./target/release/shouxin-server
 ```
 
-启动成功的关键日志：
+启动成功的关键日志（三条都在才算真正就绪，模型加载约需 20–60 秒）：
 
 ```
 [GGUF] 初始化: GPU=false, n_gpu_layers=0, context=4096, threads=16
@@ -127,25 +199,41 @@ Embedder initialized (backend: fastembed, model: intfloat/multilingual-e5-base)
 Server listening on 127.0.0.1:3000
 ```
 
-### 4. 验证
+### 6. 验证（4 步，全部通过即部署成功）
 
 ```bash
-# 健康检查
+# ① 健康检查
 curl http://127.0.0.1:3000/health
 
-# 丢一段对话进去
+# ② 写入一段对话（立即返回 conversation_id）
 curl -X POST http://127.0.0.1:3000/api/memory/add \
   -H "Content-Type: application/json" \
   -d '{"conversation":"下周三和张总开会讨论预算，下周五前给出方案。","user_id":"default_user"}'
 
-# 查抽取状态（processing → completed，约 1 分钟）
+# ③ 查抽取状态（processing → completed，3B 模型约 30–60 秒）
 curl http://127.0.0.1:3000/api/memory/extract_status/<conversation_id>
 
-# 查联系人 / 待办 / 语义检索
+# ④ 检索结果（联系人 / 待办）
 curl -X POST http://127.0.0.1:3000/api/memory/search/contacts \
   -H "Content-Type: application/json" -d '{"query":"张","limit":5,"user_id":"default_user"}'
 curl http://127.0.0.1:3000/api/todos
 ```
+
+也可以直接跑全接口冒烟（覆盖 36 项检查）：
+
+```bash
+BASE=http://127.0.0.1:3000 USER_ID=smoke bash scripts/api_smoke_test.sh
+# 期望：PASS=36  FAIL=0  SKIP=1
+```
+
+### 7. 部署自检清单
+
+- [ ] `bash scripts/check_env.sh` 没有 `[FAIL]`
+- [ ] `models/` 下有推理模型，`.fastembed_cache/` 下有嵌入模型
+- [ ] 构建产物存在：`target/release/shouxin-server`（Windows 为 `.exe`）
+- [ ] 启动日志出现三条就绪信息，`/health` 返回 200
+- [ ] 第 6 节 4 步验证全部有结果
+- [ ] `scripts/api_smoke_test.sh` 全绿
 
 ---
 
@@ -176,8 +264,8 @@ python scripts/check_config.py config.toml config.3b.toml
 
 ```toml
 [llm]
-primary    = "gguf"      # gguf | ollama | api
-max_tokens = 1024
+primary      = "gguf"    # gguf | ollama | api
+max_tokens   = 1024
 timeout_secs = 1800      # 抽取链路整轮超时（纯 CPU 时别开太小）
 
 [llm.gguf]
@@ -187,7 +275,6 @@ threads      = 16        # 建议 = 物理核心数
 batch_size   = 2048      # prompt 分块预填充的块大小
 use_gpu      = false     # 默认纯 CPU（内存驻留，不卸载到 GPU）
 n_gpu_layers = 0
-gpu_max_cpu_percent = 60 # 仅 GPU 模式生效：CPU 占用上限（核心数百分比）
 
 [embedder]
 model_path       = ".fastembed_cache"
@@ -217,7 +304,6 @@ port = 3000
    实际线程数 = `min(threads, **物理核数** × gpu_max_cpu_percent%)`（向下取整，默认 60%）。
    16 物理核机器上最多用 9 个线程，绝不会吃满；
    生效时日志会打印：`[GGUF] GPU 模式限制 CPU 占用：threads 16 -> 9（核心 16，上限 60%）`。
-   （用物理核而非逻辑核：32 逻辑线程 × 60% = 19 会超过 16 个物理核，等于还是超载。）
 
 纯 CPU 模式下线程数按 `threads` 配置，并且不会超过核心数。
 
@@ -253,15 +339,11 @@ port = 3000
 
 ```bash
 bash scripts/bench_cpu.sh                 # 线程扫描，输出 tok/s
-# 或指定模型
 bash scripts/bench_cpu.sh models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf
 ```
 
 注意：**不要在服务运行中跑基准**，两者抢 CPU 会让数字严重失真。
-
-> 我们在开发机上做过的一组参考数字只用于回归对比，**不作为选型标准**，
-> 详见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
-> 方法论与踩坑记录见 **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**。
+方法论与踩坑记录见 **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**。
 
 ---
 
@@ -270,26 +352,32 @@ bash scripts/bench_cpu.sh models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查 |
-| POST | `/api/memory/add` | 写入一段对话（立即返回 conversation_id） |
+| POST | `/api/memory/add` | 写入一段对话（立即返回 `conversation_id`） |
 | GET | `/api/memory/extract_status/:id` | 查询抽取进度与结果 |
 | POST | `/api/memory/replay/:id` | 重放单条对话的抽取 |
 | POST | `/api/memory/replay_failed` | 批量重放失败的对话 |
 | POST | `/api/memory/search/semantic` | 语义检索（向量） |
 | POST | `/api/memory/search/events` | 事件检索 |
-| POST | `/api/memory/search/contacts` | 联系人检索（含人设 / 别名 / 关系 / `is_virtual`） |
+| POST | `/api/memory/search/contacts` | 联系人检索（人设 / 别名 / 关系 / `disambiguation` / `is_virtual`） |
 | GET | `/api/contacts/:id/detail` | **联系人全息详情**：人设 + 关联联系人 + 关联事件 + 相关记忆原文 |
 | POST | `/api/memory/search/history` | 历史对话检索 |
 | POST | `/api/search/smart` | 多路融合检索 |
+| POST | `/api/vector/search` · `GET /api/vector/:id` | 向量库直查 / 按 id 取向量 |
 | GET/POST | `/api/todos` | 待办列表 / 新建 |
-| PUT | `/api/todos/:id/complete` | 完成待办 |
-| DELETE | `/api/todos/:id` | 删除待办 |
+| PUT | `/api/todos/:id/complete` · `DELETE /api/todos/:id` | 完成 / 删除待办 |
 | GET | `/api/events/pending_merges` | 待确认的事件合并 |
-| POST | `/api/events/pending_merges/:id/resolve` | 确认合并（merge / create / dismiss） |
+| POST | `/api/events/pending_merges/:id/resolve` · `/api/events/confirm_merge` | 确认合并（merge / create / dismiss） |
 | POST | `/api/files/upload` | 上传文件并入索引 |
 | GET | `/api/files/:id` · `/api/files/:id/text` | 文件元数据 / 提取的文本 |
 | GET | `/api/heartbeat/status` · `/api/heartbeat/pending_questions` | 心跳状态 / 待确认问题 |
 | POST | `/api/heartbeat/trigger` · `/api/heartbeat/answer` | 手动触发心跳 / 回答问题 |
-| GET | `/api/virtual_entities` | 虚拟联系人（人设）列表 |
+| GET/POST | `/api/virtual_entities` | 虚拟角色列表 / 新建（独立表） |
+| GET/PUT/DELETE | `/api/virtual_entities/:id` | 角色详情（含原著设定）/ 修改 / 删除 |
+| GET | `/api/virtual_entities/check/:name` | 该名字是否已被某个角色占用 |
+
+> **联系人的身份是 `contact_id`，不是姓名。** 同名（两个"刘洋"）是允许的：
+> 检索会返回多条，用 `contact_id` 引用、用 `disambiguation`（如"前端"/"后端"）展示区分。
+> 规则（同名怎么判定"同一个人"）详见 [docs/API.md](docs/API.md) 的「同名联系人」一节。
 
 完整请求/响应示例见 **[docs/API.md](docs/API.md)**。
 
@@ -298,14 +386,22 @@ bash scripts/bench_cpu.sh models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf
 ## 测试
 
 ```bash
-cargo test --lib      # 单元测试（快，不加载模型）
-cargo test --tests    # 集成测试（会加载真实 ONNX 嵌入模型）
+# 单元测试：89 项，不加载模型，秒级
+cargo test --features gguf --lib
 
-# 全量 API 冒烟（覆盖 routes.rs 注册的全部端点，需先启动服务）
-bash scripts/api_smoke_test.sh
-BASE=http://127.0.0.1:3001 USER_ID=smoke bash scripts/api_smoke_test.sh   # 指定地址/隔离用户
+# 集成测试：10 个测试文件（会加载真实 ONNX 嵌入模型）
+cargo test --features gguf --tests
 
-# 200 条验收压测（自造语料：长/短/公式/人物关系/边界）
+# 全量 API 冒烟：36 项，覆盖 routes.rs 注册的全部端点（需先启动服务）
+BASE=http://127.0.0.1:3000 USER_ID=smoke bash scripts/api_smoke_test.sh
+
+# 联系人 / 虚拟角色专项验收：23 项（热冷回退、同名并存、角色隔离）
+python scripts/api_acceptance.py --base http://127.0.0.1:3000 --user acc --db ./data/shouxin.db
+
+# 联系人画像审计：逐条核对 画像 JSON / 社会关系 / 关联记忆 是否自洽
+python scripts/audit_contacts.py --base http://127.0.0.1:3000 --user acc --out audit.json
+
+# 200+ 条验收压测（自造语料：长/短/公式/人物关系/边界/同名）
 python scripts/stress_200.py submit --base http://127.0.0.1:3000 --user stress200
 python scripts/stress_200.py poll   --base http://127.0.0.1:3000 --user stress200
 python scripts/stress_200.py verify --base http://127.0.0.1:3000 --user stress200
@@ -314,7 +410,7 @@ python scripts/stress_200.py verify --base http://127.0.0.1:3000 --user stress20
 python scripts/gen_personas.py --base http://127.0.0.1:3000 --user stress200 --max-rounds 40
 ```
 
-压测结果与发现的问题见 **[docs/STRESS_TEST.md](docs/STRESS_TEST.md)**。
+压测方法与暴露的缺陷见 **[docs/STRESS_TEST.md](docs/STRESS_TEST.md)**。
 
 ---
 
@@ -323,23 +419,28 @@ python scripts/gen_personas.py --base http://127.0.0.1:3000 --user stress200 --m
 ```
 ShouXin/
 ├── src/
-│   ├── api/              # HTTP 路由与处理器
+│   ├── api/              # HTTP 路由、请求/响应结构、同步与异步入口
 │   ├── config/           # 配置加载与结构定义
 │   ├── core/             # 领域模型（事件/联系人/待办/记忆/事实）
 │   ├── embedder/         # 嵌入器（fastembed ONNX / 离线哈希）
-│   ├── llm/              # LLM 客户端（gguf / ollama / api + 工厂 + 管理）
-│   ├── memory_extractor/ # 抽取器（LLM 提示词 + 解析 + 正则降级）
-│   ├── service/          # 业务编排（后台队列、心跳、事务写入）
+│   ├── heartbeat/        # 心跳（巡检、画像生成、关系分析、歧义检测）
+│   ├── intent/           # 意图识别
+│   ├── learning/         # 学习素材
+│   ├── llm/              # LLM 客户端（gguf / ollama / api + 路由 + 并发控制）
+│   ├── memory/           # 三库编排、写入器、联系人详情的联查
+│   ├── memory_extractor/ # 抽取器（提示词、解析、人名过滤、正则降级）
+│   ├── service/          # 后台队列、心跳调度、文件入库、内部 API
 │   ├── stores/           # 三库实现（relational / vector / dictionary）
 │   ├── traits/           # 抽象接口
 │   ├── utils/            # 时间解析、分词、工具函数
-│   ├── bin/bench_gguf.rs # 推理基准工具
-│   └── shouxin-server.rs # 服务入口
-├── tests/                # 集成测试
-├── scripts/              # 构建 / 模型下载 / 编码修复 / 基准脚本
+│   └── shouxin-server.rs # 服务入口（启动、依赖装配、内置角色播种）
+├── tests/                # 集成测试（10 个）
+├── scripts/              # 环境自检 / 构建 / 模型下载 / 验收 / 压测 / 基准
 ├── docs/                 # 文档
 ├── migrations/           # SQLite 迁移
-└── config.toml           # 默认配置
+├── config.toml           # 默认配置（含全部注释）
+├── config.3b.toml        # 低配 3B 档
+└── config.toml.example   # 配置模板
 ```
 
 ---
@@ -348,8 +449,13 @@ ShouXin/
 
 1. **多模态未启用**：`mmproj-BF16.gguf` 视觉塔已预留但不加载，抽取链路是纯文本。
 2. **事件合并需人工确认**：相似度落在 0.75–0.90 的事件不会自动合并，进 `pending_merges` 等确认。
-3. **整轮抽取耗时**：小模型（3B）在 CPU 上做多轮校验需要数十秒，属预期；追求速度可换更小模型或减少人名逐条校验。
-4. **首次构建较慢**：要编译整个 llama.cpp（Windows 约 5–10 分钟，之后增量编译 1 分钟内）。
+3. **整轮抽取耗时**：3B 模型在 CPU 上单条约 30–40 秒（2 次推理：实体抽取 + 人名校验），属预期；
+   追求速度可换小模型、走 Ollama/API 后端，或调小 `max_tokens`。
+4. **首次构建较慢**：要编译整个 llama.cpp（Windows 约 5–10 分钟，之后增量 1 分钟内）。
+5. **同名信息不足时按最近互动归并**：若某次对话既没给消歧标签、也没给身份线索
+   （只说"刘洋今天请假"），而库里已有多个同名者，会归到最近互动的那个——信息不足时的保守选择，不会乱建号。
+6. **极短句召回偏弱**：像"汤敏以前和钱伟是同事"这种碎片化短句，3B 模型可能只抓到一两个名字；
+   完整句子（日常聊天）不受影响。需要大量极短消息的场景建议 8B 以上模型或 API 后端。
 
 ---
 
@@ -358,13 +464,20 @@ ShouXin/
 | 文档 | 内容 |
 |------|------|
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | **配置详解**：gguf/Ollama/API 三种后端切换、上下文调节、阈值校准 |
-| [docs/STRESS_TEST.md](docs/STRESS_TEST.md) | **200 条压测报告**：语料设计、检查项结论、暴露的缺陷 |
-| [docs/MODEL_SETUP.md](docs/MODEL_SETUP.md) | 推理模型 / 嵌入模型下载与目录布局 |
-| [docs/BUILD.md](docs/BUILD.md) | 构建指南与常见编译错误 |
+| [docs/BUILD.md](docs/BUILD.md) | **构建指南**：工具链从哪来、Windows 一键构建、常见编译错误 |
+| [docs/MODEL_SETUP.md](docs/MODEL_SETUP.md) | 推理模型 / 嵌入模型下载、校验与目录布局 |
+| [docs/API.md](docs/API.md) | 接口详解（含同名联系人与虚拟角色的规则） |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构与三库设计、联系人多字段匹配 |
+| [docs/STRESS_TEST.md](docs/STRESS_TEST.md) | **压测报告**：语料设计、检查项结论、暴露的缺陷 |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | CPU 推理性能：基准方法、根因分析、调优 |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 排障手册 |
-| [docs/API.md](docs/API.md) | 接口详解 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构与三库设计 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更记录 |
+
+---
+
+## 版本
+
+当前版本 **0.6.0**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 

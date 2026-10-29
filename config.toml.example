@@ -1,179 +1,125 @@
-# ==============================================================================
-# ShouXin（守心）v0.4.0 多源大模型后端配置示例
-# ==============================================================================
+# 守心 ShouXin 配置文件
 #
-# 本文件展示所有支持的 LLM 来源配置方式。
-# 使用时复制为 config.toml，取消注释所需配置段即可。
+# 覆盖顺序（后者覆盖前者）：
+#   1. 本文件
+#   2. 同目录下的 config.local.toml（本地覆盖，不进 Git）
+#   3. 环境变量，前缀 SHOUXIN__，层级用双下划线，例如：
+#        SHOUXIN__LLM__PRIMARY=gguf
+#        SHOUXIN__SERVER__PORT=3100
+#   4. 命令行参数（如 --host）优先级最高
 #
-# 环境变量覆盖格式: SHOUXIN__<SECTION>__<KEY> (双下划线分隔嵌套)
-#   示例: SHOUXIN__LLM__PRIMARY=api
-#         SHOUXIN__LLM__OLLAMA__MODEL=llama3.2:3b
-#         SHOUXIN__LLM__API__API_KEY=sk-xxx
-#
-# 模型来源说明:
-#   ollama - 本地 Ollama 服务 (http://localhost:11434)
-#   gguf   - 内置 llama.cpp GGUF 本地推理 (需 cargo build --features gguf)
-#   api    - 网络 API，兼容 OpenAI Chat Completions 格式
-#
-# 主备切换:
-#   配置 primary + secondary 后，主模型连续失败 3 次自动切换至备模型。
-#   主模型恢复后需手动切回（通过管理 API: POST /admin/llm/switch）。
-# ==============================================================================
+# 切换配置：SHOUXIN_CONFIG=./config.3b.toml ./shouxin-server
 
-# ------------------------------------------------------------------------------
-# LLM 多源配置
-# ------------------------------------------------------------------------------
+# ============ LLM ============
 [llm]
-
-# 主模型来源（必填）：ollama / gguf / api
-primary = "ollama"
-
-# 备模型来源（可选）：当主模型不可用时自动切换
-# secondary = "api"
-
-# 全局默认参数（各后端可覆盖部分）
+primary = "gguf"          # gguf | ollama | api
+secondary = "none"        # "none" 表示不启用备用模型
 temperature = 0.7
-max_tokens = 2000
-timeout_secs = 60
+max_tokens = 1024
+timeout_secs = 1800       # 整轮抽取超时；纯 CPU 下别开太小
 
-# ------------------------------------------------------------------------------
-# 后端 1: Ollama
-# ------------------------------------------------------------------------------
-# 前置条件: ollama serve 已启动 + ollama pull <model>
+[llm.gguf]
+model_path = "./models/gemma-4-E4B-it-Q4_K_M.gguf"
+context_size = 4096
+threads = 16              # 建议 = 物理核心数（超线程通常无益）
+batch_size = 2048         # prompt 分块预填充的块大小
+# 后台服务原则：默认纯 CPU，不占显存；确需 GPU 时改成 true（还需 --features gguf-cuda）
+use_gpu = false
+n_gpu_layers = 0
+# 仅 GPU 模式生效：线程数硬性压在 物理核数 × 该百分比 以内
+gpu_max_cpu_percent = 60
+# KV Cache 是否卸载到 GPU；false = 留在内存（不额外占显存）
+offload_kv_cache = false
+
+# Ollama 后端（可选，仅当 primary/secondary 选 ollama 时生效）
 [llm.ollama]
-model = "llama3.2:3b"              # 模型名称（需已拉取）
-endpoint = "http://localhost:11434" # Ollama API 地址
-timeout_secs = 120                  # 请求超时
-max_retries = 2                     # 失败重试次数
-
-# ------------------------------------------------------------------------------
-# 后端 2: GGUF (llama.cpp)
-# ------------------------------------------------------------------------------
-# 前置条件: cargo build --features gguf
-# 需要将 .gguf 模型文件放置在指定路径
-# [llm.gguf]
-# model_path = "./models/llama-7b-q4_k_m.gguf"  # 模型文件路径
-# context_size = 2048                            # 上下文窗口大小
-# threads = 4                                    # CPU 推理线程数
-# batch_size = 512                               # 批处理大小
-# n_gpu_layers = 0                               # GPU 层数（0=纯CPU）
-
-# ------------------------------------------------------------------------------
-# 后端 3: 网络 API（OpenAI 兼容）
-# ------------------------------------------------------------------------------
-# 支持任意 OpenAI Chat Completions 兼容接口
-# 环境变量引用: ${VAR_NAME} 格式，从运行时环境读取
-# [llm.api]
-# endpoint = "https://api.openai.com/v1/chat/completions"
-# api_key = "${OPENAI_API_KEY}"               # 支持环境变量引用
-# model = "gpt-3.5-turbo"
-# timeout_secs = 30
-# max_retries = 3
-# headers = { "X-Custom-Header" = "value" }   # 可选自定义请求头
-
-# ------------------------------------------------------------------------------
-# 心跳模块独立 LLM 配置（可选）
-# ------------------------------------------------------------------------------
-# 如果不配置，心跳模块将使用主 LLM 配置
-[llm.heartbeat]
-backend = "ollama"
-model = "llama3.2:3b"
+model = "ministral-3:3b"  # 按本机 Ollama 实际模型名替换
 endpoint = "http://localhost:11434"
+timeout_secs = 300
+max_retries = 2
+
+# OpenAI 兼容 API 后端（可选）
+[llm.api]
+endpoint = "https://api.openai.com/v1"
+api_key = ""              # 建议用环境变量 SHOUXIN__LLM__API__API_KEY 注入
+model = "gpt-4o-mini"     # 示例值，按你的服务端模型名替换
+timeout_secs = 60
+max_retries = 2
+
+# 心跳专用 LLM（强制纯 CPU，避免后台任务抢显存）
+[llm.heartbeat]
+backend = "gguf"
+model = "./models/gemma-4-E4B-it-Q4_K_M.gguf"
+endpoint = "gguf://localhost"
 temperature = 0.3
 max_tokens = 500
 
-# ------------------------------------------------------------------------------
-# 嵌入模型配置
-# ------------------------------------------------------------------------------
+# ============ 嵌入模型 ============
 [embedder]
-# FastEmbed 模型缓存目录（下载的 onnx 模型存放位置）
-model_path = "./.fastembed_cache"
+model_path = ".fastembed_cache"                 # 缓存根目录（相对仓库根）
+model = "intfloat/multilingual-e5-base"         # HuggingFace 仓库 ID，不是路径
+backend = "fastembed"                           # fastembed | hash
+hash_dimension = 768                            # backend=hash 时的向量维度
+fallback_to_hash = true                         # 模型缺失时降级，不阻塞启动
 
-# ------------------------------------------------------------------------------
-# 心跳模块配置
-# ------------------------------------------------------------------------------
+# ============ 心跳 ============
 [heartbeat]
-enabled = true                # 是否启用心跳（false 时不会启动后台调度）
-base_interval_secs = 60       # 基础心跳间隔
-min_interval_secs = 30        # 最小间隔（有新记忆时更勤快）
-max_interval_secs = 120       # 最大间隔（长时间空闲时更稀疏）
-adaptive = true               # 自适应间隔：按"距上次记忆写入"的时长动态调整
-idle_threshold_secs = 30      # 空闲判定阈值（超过该时长视为空闲）
-maintenance_timeout_secs = 30 # 维护阶段超时（纯 SQL，不调用 LLM）
-llm_timeout_secs = 120        # LLM 阶段超时
-memory_threshold_mb = 4096    # 可用内存低于该值时跳过心跳
-max_consecutive_skips = 3     # 低内存时最多连续跳过次数（超过强制执行）
+enabled = true
+base_interval_secs = 60
+min_interval_secs = 30
+max_interval_secs = 120
+adaptive = true
+idle_threshold_secs = 30
+maintenance_timeout_secs = 30
+llm_timeout_secs = 120
+memory_threshold_mb = 4096      # 超过该内存占用则跳过本轮
+max_consecutive_skips = 3
 
-# ------------------------------------------------------------------------------
-# 存储配置
-# ------------------------------------------------------------------------------
+# ============ 存储 ============
 [storage]
 data_dir = "./data"
 dictionary_dir = "dictionary"
 relational_dir = "relational"
-vector_dir = "vector"
+vector_dir = "vector_store"
 relational_db_file = "relational.db"
 vector_index_file = "vectors.hnsw"
 question_pool_dir = "heartbeat/questions"
 
-# ------------------------------------------------------------------------------
-# 日志配置
-# ------------------------------------------------------------------------------
+# ============ 日志 ============
 [logging]
-level = "info"                # trace / debug / info / warn / error
+level = "info"            # trace | debug | info | warn | error
 dir = "./logs"
 max_file_size_mb = 10
 
-# ------------------------------------------------------------------------------
-# 记忆提取流水线配置
-# ------------------------------------------------------------------------------
-[extraction]
-# 单次 LLM 提取超时（秒）。超时后自动降级为正则提取。
-timeout_secs = 600
-# 启动时"多旧的 prepared 写入意图"视为崩溃残留（秒）
-intent_grace_secs = 300
-
-# ------------------------------------------------------------------------------
-# Agent 配置
-# ------------------------------------------------------------------------------
+# ============ 主智能体 ============
 [agent]
-primary_agent_id = "primary_agent"
-internal_api_token = "<your-token-here>"  # 生产环境请修改
+primary_agent_id = "primary_agent_default"
+# 内部 API 令牌：用环境变量 SHOUXIN__AGENT__INTERNAL_API_TOKEN 或 config.local.toml 设置，不要写进本文件
+internal_api_token = ""
 
-# ==============================================================================
-# 多源切换场景示例
-# ==============================================================================
-#
-# 场景 1: 纯 Ollama（默认）
-#   primary = "ollama"
-#   + [llm.ollama] 配置
-#
-# 场景 2: 纯 API
-#   primary = "api"
-#   + [llm.api] 配置
-#
-# 场景 3: 纯 GGUF
-#   primary = "gguf"
-#   + [llm.gguf] 配置
-#   + cargo build --features gguf
-#
-# 场景 4: Ollama 主 + API 备（推荐生产用）
-#   primary = "ollama"
-#   secondary = "api"
-#   + [llm.ollama] 配置
-#   + [llm.api] 配置
-#
-# 场景 5: API 主 + Ollama 备
-#   primary = "api"
-#   secondary = "ollama"
-#   + [llm.api] 配置
-#   + [llm.ollama] 配置
-# ==============================================================================
-# ------------------------------------------------------------------------------
-# 待办生命周期策略
-# ------------------------------------------------------------------------------
+# ============ HTTP 服务 ============
+[server]
+host = "127.0.0.1"        # 默认只监听本机；需要局域网访问再改 0.0.0.0
+port = 3000
+# 注：命令行 --host 优先级高于这里
+
+# ============ 事件 ============
+[event]
+long_term_hot_limit = 200
+short_term_hot_limit = 100
+
+# ============ 抽取 ============
+[extraction]
+timeout_secs = 1800             # 单次 LLM 提取超时，超时后降级正则
+intent_grace_secs = 300         # 启动时"多旧的 prepared 写入意图"视为崩溃残留
+# 事件相似度阈值（**与嵌入模型强相关**，换模型需要重新校准）
+# e5-base 实测：无关中文短句 0.84–0.89，近重复 0.99+
+event_merge_auto_threshold = 0.96      # > 该值：直接合并为同一事件
+event_merge_pending_threshold = 0.90   # > 该值（且未达上一阈值）：进待确认区
+
+# ============ 待办 ============
 [todo]
-max_pending_before_archive = 50  # 待办数量超过该值时归档最旧的
-archive_keep_count = 50          # 归档时保留的 pending 数量
-reminder_threshold = 30          # 超过该数量时由心跳生成"任务提醒"
-archive_after_days = 30          # 超过该天数未更新视为陈旧
+max_pending_before_archive = 50   # 超过该值心跳归档最旧一批
+archive_keep_count = 50           # 归档时保留的 pending 数
+reminder_threshold = 30           # 超过该值生成"任务提醒"
+archive_after_days = 30           # 超过该天数未更新视为陈旧

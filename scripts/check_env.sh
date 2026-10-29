@@ -45,13 +45,17 @@ fi
 if command -v cmake >/dev/null 2>&1; then
   ok "cmake $(cmake --version 2>&1 | head -1 | awk '{print $3}')"
 else
-  warn "未找到 cmake —— 编译 gguf 特性时必需（Windows 推荐用 scripts/build_gguf.sh，它会自己找）"
+  warn "未找到 cmake —— 编译 gguf 特性时必需"
+  echo "         安装：winget install Kitware.CMake  |  pip install cmake  |  apt install cmake"
+  echo "         已装在非标准路径时指定：export SHOUXIN_CMAKE=/path/to/cmake"
 fi
 
 if command -v ninja >/dev/null 2>&1; then
   ok "ninja 可用"
 else
   warn "未找到 ninja（可用 Makefile，但推荐 ninja）"
+  echo "         安装：winget install Ninja-build.Ninja  |  pip install ninja  |  apt install ninja-build"
+  echo "         已装在非标准路径时指定：export SHOUXIN_NINJA=/path/to/ninja"
 fi
 
 echo "== 2. 推理模型（GGUF）=="
