@@ -1754,7 +1754,17 @@ pub(crate) fn is_relational_phrase(name: &str) -> bool {
     if chars >= 4 && (n.contains('和') || n.contains('与')) {
         return true;
     }
-    if chars > 6 {
+    // 长度上限只针对**中文名**：中文姓名（含复姓）极少超过 6 字，
+    // 但英文/数字名（ChatGPT、Alexander、T-800）和虚拟角色名（哆啦A梦）
+    // 天然更长，按"总字符数"一刀切会把它们误杀。
+    let cjk_count = n
+        .chars()
+        .filter(|c| ('\u{4E00}'..='\u{9FFF}').contains(c))
+        .count();
+    if cjk_count > 6 {
+        return true;
+    }
+    if cjk_count == 0 && chars > 24 {
         return true;
     }
 
@@ -1786,7 +1796,12 @@ pub(crate) fn is_relational_phrase(name: &str) -> bool {
         '已', '将', '正', '刚', '才', '又', '再', '只', '更', '最', '这', '那', '哪',
         '谁', '什', '怎', '为', '以', '于', '其', '之', '与', '及', '或', '但', '而',
     ];
-    if n.chars().any(|c| PARTICLES.contains(&c)) {
+    // 只看**开头**是不是虚词/代词。
+    //
+    // 句子碎片（"由我负责""现在对接""她以前""是汤敏""向技术总监"）都以这些字开头；
+    // 而合法人名里也可能出现这些字（"初音未来"含"来"、"如来"含"来"、"有朋"含"有"），
+    // 按"任意位置出现"过滤会误杀虚拟角色和真实姓名。
+    if n.chars().next().map(|c| PARTICLES.contains(&c)).unwrap_or(false) {
         return true;
     }
 
@@ -1806,6 +1821,19 @@ mod name_sanity_tests {
             "由我负责", "现在对接", "她以前", "是汤敏", "向技术总监",
         ] {
             assert!(is_relational_phrase(bad), "应判为关系短语: {}", bad);
+        }
+    }
+
+    /// 虚拟角色（历史人物/动漫/科幻）和英文名不能被误杀：
+    /// 它们虽然不是"现实同事"，但都是合法的人名实体，
+    /// 而且虚拟角色走独立接口创建，过滤器不该干预。
+    #[test]
+    fn keeps_virtual_and_latin_names() {
+        for name in [
+            "孙悟空", "曹操", "林黛玉", "苏晚晴", "哆啦A梦", "初音未来",
+            "福尔摩斯", "哈利波特", "钢铁侠", "ChatGPT", "Alexander", "T-800",
+        ] {
+            assert!(!is_relational_phrase(name), "不应误杀: {}", name);
         }
     }
 

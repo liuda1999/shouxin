@@ -890,6 +890,12 @@ impl RelationalStore {
     /// - `owner_type`: 所有者类型
     /// - `owner_id`: 所有者 ID
     /// - `limit`: 返回结果数量限制
+    /// 联系人检索：**热表优先，不够再查冷表**
+    ///
+    /// 设计约定（与产品一致）：
+    /// - 热表（`is_archived = 0`）只保留常用/近期联系人（外部按 50 条上限裁剪），平时查询都命中热表，快；
+    /// - 热表里没查够，再补查冷表（`is_archived = 1`），避免"人被归档了就搜不到"；
+    /// - 虚拟角色（`is_virtual = 1`）默认**不混进普通联系人结果**，它们走 `/api/virtual_entities`。
     pub async fn search_contacts_with_owner(
         &self,
         search_query: &str,
@@ -897,15 +903,63 @@ impl RelationalStore {
         owner_id: &str,
         limit: usize,
         include_archived: bool,
+        include_virtual: bool,
+    ) -> Result<Vec<TraitContactIndex>, ShouxinError> {
+        let mut collected: Vec<TraitContactIndex> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // 第一段：热表
+        let hot = self
+            .query_contacts_page(search_query, owner_type, owner_id, limit, false, include_virtual)
+            .await?;
+        for c in hot {
+            if seen.insert(c.contact_id.clone()) {
+                collected.push(c);
+            }
+        }
+
+        // 第二段：热表没查够（或没命中）时补冷表
+        if collected.len() < limit {
+            let remain = limit - collected.len();
+            let cold = self
+                .query_contacts_page(search_query, owner_type, owner_id, remain, true, include_virtual)
+                .await?;
+            for c in cold {
+                if seen.insert(c.contact_id.clone()) {
+                    collected.push(c);
+                }
+            }
+        }
+
+        // include_archived=true 时，调用方要的是"全量"，这里补上热表里漏掉的归档项
+        if include_archived {
+            let all = self
+                .query_contacts_page(search_query, owner_type, owner_id, limit, true, include_virtual)
+                .await?;
+            for c in all {
+                if seen.insert(c.contact_id.clone()) {
+                    collected.push(c);
+                }
+            }
+            collected.truncate(limit);
+        }
+
+        Ok(collected)
+    }
+
+    /// 单段查询（热表/冷表各查一次）
+    async fn query_contacts_page(
+        &self,
+        search_query: &str,
+        owner_type: crate::core::contact::OwnerType,
+        owner_id: &str,
+        limit: usize,
+        archived: bool,
+        include_virtual: bool,
     ) -> Result<Vec<TraitContactIndex>, ShouxinError> {
         let like_pattern = format!("%{}%", search_query);
         let owner_type_str = format!("{:?}", owner_type);
-        
-        let archived_filter = if include_archived {
-            ""
-        } else {
-            " AND c.is_archived = 0"
-        };
+        let virtual_filter = if include_virtual { "" } else { " AND c.is_virtual = 0" };
 
         let sql = format!(
             r#"
@@ -913,48 +967,44 @@ impl RelationalStore {
             FROM contact_index c
             LEFT JOIN contact_alias_index a ON c.id = a.contact_id AND c.owner_type = a.owner_type AND c.owner_id = a.owner_id
             WHERE (c.name LIKE ? OR a.alias LIKE ?)
-              AND c.owner_type = ? AND c.owner_id = ?{}
+              AND c.owner_type = ? AND c.owner_id = ?
+              AND c.is_archived = ?{}
             ORDER BY c.last_interaction_at DESC
             LIMIT ?
             "#,
-            archived_filter
+            virtual_filter
         );
 
         let rows = sqlx::query(&sql)
-        .bind(&like_pattern)
-        .bind(&like_pattern)
-        .bind(&owner_type_str)
-        .bind(owner_id)
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+            .bind(&like_pattern)
+            .bind(&like_pattern)
+            .bind(&owner_type_str)
+            .bind(owner_id)
+            .bind(if archived { 1 } else { 0 })
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut contacts = Vec::new();
         for row in rows {
             let id: String = row.get("id");
             let name: String = row.get("name");
-            let created_at_str: String = row.get("created_at");
-            let last_interaction_at_str: String = row.get("last_interaction_at");
-
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map_err(|e| ShouxinError::GeneralError(e.to_string()))?
-                .with_timezone(&Utc);
-            let last_activity = DateTime::parse_from_rfc3339(&last_interaction_at_str)
-                .map_err(|e| ShouxinError::GeneralError(e.to_string()))?
-                .with_timezone(&Utc);
-
-            let contact = TraitContactIndex {
+            let created: String = row.get("created_at");
+            let last: String = row.get("last_interaction_at");
+            contacts.push(TraitContactIndex {
                 contact_id: id,
                 name,
                 user_id: None,
                 activity_score: 0.0,
-                last_activity,
+                last_activity: chrono::DateTime::parse_from_rfc3339(&last)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
                 rank: 0,
-                created_at,
-            };
-            contacts.push(contact);
+                created_at: chrono::DateTime::parse_from_rfc3339(&created)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+            });
         }
-
         Ok(contacts)
     }
 

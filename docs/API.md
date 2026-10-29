@@ -82,8 +82,21 @@ POST /api/memory/search/semantic
 ```http
 POST /api/memory/search/contacts
 
-{ "query": "老王", "limit": 5, "user_id": "default_user" }
+{
+  "query": "老王",
+  "limit": 5,
+  "user_id": "default_user",
+  "include_archived": false,   // 是否把冷表（已归档）里的也列出来
+  "include_virtual": false     // 是否把虚拟角色混进普通联系人结果
+}
 ```
+
+**冷热两级检索**：先查热表（`is_archived = 0`，只保留最近活跃的 50 个），
+热表没查够再补查冷表（`is_archived = 1`）——所以人被热表裁剪归档后**依然搜得到**，
+只是排在后面。`include_archived=true` 时返回"热 + 冷"全量。
+
+**虚拟角色默认不混入**：`is_virtual = 1` 的行（历史人物、动漫/科幻角色等）
+走 `/api/virtual_entities`，本接口默认过滤掉它们；需要一起看时传 `include_virtual: true`。
 
 返回每个联系人的 `aliases` / `background`（人设 JSON）/ `relationship_tags` /
 `related_contacts`（已解析成姓名）以及 **`is_virtual`**（是否为智能体扮演的虚拟人物）。

@@ -78,6 +78,12 @@ pub struct SearchContactsRequest {
     /// 是否包含已归档联系人（热冷分离）
     #[serde(default)]
     pub include_archived: bool,
+    /// 是否把虚拟角色（`is_virtual = 1`）混进普通联系人结果
+    ///
+    /// 默认 false：虚拟角色有自己的接口 `/api/virtual_entities`，
+    /// 两套列表互不干扰（此前是混在一起的）。
+    #[serde(default)]
+    pub include_virtual: bool,
 }
 
 /// 搜索事件请求
@@ -1132,7 +1138,7 @@ async fn search_contacts(
     };
     // S-10: 限制 limit 上限
     let limit = cap_limit(req.limit);
-    match async_memory.search_contacts(&req.query, limit, scope, req.user_id.as_deref(), req.include_archived).await {
+    match async_memory.search_contacts(&req.query, limit, scope, req.user_id.as_deref(), req.include_archived, req.include_virtual).await {
         Ok(contacts) => ApiResponse::success(contacts),
         Err(e) => {
             error!("搜索联系人失败: {}", e);
@@ -1824,7 +1830,7 @@ async fn smart_search(
     for search_type in &req.types {
         match search_type.as_str() {
             "contacts" => {
-                if let Ok(contacts) = async_memory.search_contacts(&req.query, safe_limit, req.scope, req.user_id.as_deref(), false).await {
+                if let Ok(contacts) = async_memory.search_contacts(&req.query, safe_limit, req.scope, req.user_id.as_deref(), false, false).await {
                     response.contacts = contacts.into_iter().map(|c| serde_json::to_value(c).unwrap_or_default()).collect();
                 }
             }

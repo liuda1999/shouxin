@@ -84,7 +84,7 @@ impl SyncMemory {
         limit: usize,
     ) -> Result<Vec<ContactDetail>, ShouxinError> {
         self.runtime
-            .block_on(self.async_memory.search_contacts(query, limit, Scope::User, None, false))
+            .block_on(self.async_memory.search_contacts(query, limit, Scope::User, None, false, false))
     }
 
     /// 搜索事件

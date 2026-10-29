@@ -223,8 +223,9 @@ impl AsyncMemory {
         scope: Scope,
         user_id: Option<&str>,
         include_archived: bool,
+        include_virtual: bool,
     ) -> Result<Vec<ContactDetail>, ShouxinError> {
-        self.manager.search_contacts(query, limit, scope, user_id, include_archived).await
+        self.manager.search_contacts(query, limit, scope, user_id, include_archived, include_virtual).await
     }
 
     /// 联系人全息详情：人设 + 关联联系人 + 关联事件 + 相关记忆原文

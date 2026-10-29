@@ -877,6 +877,7 @@ impl ThreeLibraryMemoryManager {
         scope: Scope,
         user_id: Option<&str>,
         include_archived: bool,
+        include_virtual: bool,
     ) -> Result<Vec<ContactDetail>, ShouxinError> {
         // 获取所有者信息：scope=User 时使用传入的 user_id
         let owner_type = self.get_owner_type(&scope);
@@ -886,7 +887,7 @@ impl ThreeLibraryMemoryManager {
         };
         
         // 从关系库搜索联系人索引（使用 owner 过滤）
-        let trait_contacts = self.relational_store.search_contacts_with_owner(query, owner_type, &owner_id, limit, include_archived).await?;
+        let trait_contacts = self.relational_store.search_contacts_with_owner(query, owner_type, &owner_id, limit, include_archived, include_virtual).await?;
 
         // 补齐画像字段：别名 / 画像 / 关系标签 / 关联联系人
         //
