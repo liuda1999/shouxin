@@ -746,14 +746,6 @@ impl BackgroundTaskQueue {
                 e.description.clone()
             };
 
-            let event_time = match e.time_info.as_deref() {
-                Some(ti) if !ti.is_empty() => {
-                    chrono::DateTime::parse_from_rfc3339(ti)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now())
-                }
-                _ => Utc::now(),
-            };
 
             let mut contact_ids: Vec<String> = e.related_person_ids.iter()
                     .filter(|pid| !character_id_map.contains_key(*pid))
@@ -776,8 +768,21 @@ impl BackgroundTaskQueue {
             }
 
             let contact_ids_json = serde_json::to_string(&contact_ids).unwrap_or("[]".to_string());
-            let event_parsed_time = crate::utils::parse_event_time(&e.description, Utc::now());
-            let event_start = event_parsed_time.unwrap_or(event_time);
+            // 时间优先级：time_info → time 字段 → 事件描述 → **对话原文**。
+            //
+            // 最后一层兜底是因为小模型经常把时间词从描述里删掉
+            // （原文"上周三……季度复盘"，描述写成"负责数据部分"），
+            // 事件时间就会退化成写入时间。对话里通常只有一个时间表达，
+            // 用它兜底比"全部变成今天"更接近事实。
+            let now = Utc::now();
+            let event_start = crate::utils::try_resolve_event_time(
+                e.time_info.as_deref(),
+                e.time.as_deref(),
+                &e.description,
+                now,
+            )
+            .or_else(|| crate::utils::parse_event_time(&task.conversation_text, now))
+            .unwrap_or(now);
             let mut event_index = crate::core::EventIndex {
                 event_id: e.event_id.clone(),
                 contact_ids: contact_ids_json,
@@ -798,7 +803,7 @@ impl BackgroundTaskQueue {
                 is_merged: false,
                 merge_target_id: None,
                 last_merge_check_at: None,
-                event_time: event_parsed_time,
+                event_time: Some(event_start),
                 importance_score: e.importance as f32,
                 is_archived: false,
                 archived_at: None,
@@ -864,7 +869,7 @@ impl BackgroundTaskQueue {
                 &e.event_id,
                 &contact_ids,
                 &dedup_key,
-                event_parsed_time.unwrap_or(event_time),
+                event_start,
                 e.importance,
                 owner_type,
                 owner_id,

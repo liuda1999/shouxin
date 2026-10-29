@@ -1162,6 +1162,15 @@ struct ContactDetailQuery {
     /// 返回的相关记忆条数上限
     #[serde(default)]
     memory_limit: Option<usize>,
+    /// 时间范围起点：`30d` / `4w` / `12h` / `2026-09-30` / RFC3339
+    ///
+    /// 用于"查某个人近一个月跟我有关的事"这类时间线查询。
+    /// 只过滤事件；`memory` 仍按最近对话返回。
+    #[serde(default)]
+    since: Option<String>,
+    /// 时间范围终点，格式同 `since`；只写日期时按当天 23:59:59 处理
+    #[serde(default)]
+    until: Option<String>,
 }
 
 /// 联系人全息详情：人设 + 关联联系人 + 关联事件 + 相关记忆原文
@@ -1189,7 +1198,15 @@ async fn get_contact_detail(
     let memory_limit = cap_limit(q.memory_limit.unwrap_or(10)).min(50);
 
     match async_memory
-        .get_contact_detail(&contact_id, scope, q.user_id.as_deref(), event_limit, memory_limit)
+        .get_contact_detail(
+            &contact_id,
+            scope,
+            q.user_id.as_deref(),
+            event_limit,
+            memory_limit,
+            q.since.as_deref(),
+            q.until.as_deref(),
+        )
         .await
     {
         Ok(detail) => ApiResponse::success(detail),

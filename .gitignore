@@ -110,3 +110,6 @@ data_smoke/
 .smoke5*.err
 .smoke6*.log
 .smoke6*.err
+.acc2_*.json
+.audit_dryrun.json
+.relcheck.err

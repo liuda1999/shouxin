@@ -6,10 +6,64 @@ use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveTime, TimeZone, Timelike
 use regex::Regex;
 use std::collections::HashMap;
 
+/// 事件时间的统一解析入口（模型给出多种字段时的优先级）
+///
+/// 优先级：`time_info`（可能已是 ISO 8601，也可能是"上周三"这类自然语言）
+///        → `time` 字段 → 事件描述里的时间词 → 参考时间（兜底）。
+///
+/// 为什么需要这个函数：原实现只对 `time_info` 做 RFC3339 解析，
+/// 遇到"上周三""三个月前"直接失败并回落到**写入时间**，
+/// 于是所有历史事件看起来都发生在今天 —— "查某人近一个月的事"完全失真。
+pub fn try_resolve_event_time(
+    time_info: Option<&str>,
+    time_raw: Option<&str>,
+    description: &str,
+    reference: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    fn one(raw: Option<&str>, reference: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let s = raw?.trim();
+        if s.is_empty() {
+            return None;
+        }
+        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+            return Some(dt.with_timezone(&Utc));
+        }
+        // 纯日期（模型有时只给 2026-10-21）
+        if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            return d
+                .and_hms_opt(9, 0, 0)
+                .map(|t| Utc.from_utc_datetime(&t));
+        }
+        parse_event_time(s, reference)
+    }
+
+    one(time_info, reference)
+        .or_else(|| one(time_raw, reference))
+        .or_else(|| parse_event_time(description, reference))
+}
+
+/// 同上，但保证有值（解析不出来就用参考时间）
+pub fn resolve_event_time(
+    time_info: Option<&str>,
+    time_raw: Option<&str>,
+    description: &str,
+    reference: DateTime<Utc>,
+) -> DateTime<Utc> {
+    try_resolve_event_time(time_info, time_raw, description, reference).unwrap_or(reference)
+}
+
 pub fn parse_event_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let text = text.trim();
     if text.is_empty() {
         return None;
+    }
+
+    // "上个月底 / 上月月初" 这类表达里含有"月底/月初"，
+    // 必须先按"上个月"整体解析，否则会被 parse_month_edge 当成**本月**的月底。
+    if text.contains("上个月") || text.contains("上月") {
+        if let Some(dt) = parse_relative_time(text, reference_time) {
+            return Some(dt);
+        }
     }
 
     if let Some(dt) = parse_month_edge(text, reference_time) {
@@ -211,6 +265,9 @@ fn parse_explicit_clock(text: &str) -> Option<(u32, u32)> {
 
 
 static_regex!(re_days_later, r"(\d+)\s*天后?");
+// 过去时间（事件绝大多数是"已经发生"的，必须能落到正确的过去日期）
+static_regex!(re_time_ago, r"([一二两三四五六七八九十\d]+)\s*(天|日|周|星期|个月|年)前");
+static_regex!(re_last_year_month, r"去年\s*(\d{1,2})\s*月");
 
 /// 解析相对日期：今天 / 明天 / 后天 / N天后，并叠加时段
 /// 默认截止时间：`days` 天后的**本地** 23:59:59（返回 UTC）
@@ -259,10 +316,80 @@ fn parse_month_edge(text: &str, reference_time: DateTime<Utc>) -> Option<DateTim
 fn parse_relative_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let today = reference_time.date_naive();
 
+    // 去年 X 月：落到该月 1 号（"去年十一月在杭州分部"这类历史事实）
+    if let Some(caps) = re_last_year_month().captures(text) {
+        let month: u32 = caps.get(1)?.as_str().parse().ok()?;
+        return build_datetime(today.year() - 1, month, 1, 9, 0);
+    }
+    if let Some(pos) = text.find("去年") {
+        // 中文月份（"去年十一月""去年十二月"）：必须先匹配"十一/十二"再匹配"一/二"
+        const CN_MONTHS: &[(&str, u32)] = &[
+            ("十二", 12), ("十一", 11), ("十", 10), ("九", 9), ("八", 8),
+            ("七", 7), ("六", 6), ("五", 5), ("四", 4), ("三", 3), ("二", 2), ("一", 1),
+        ];
+        let tail = &text[pos + "去年".len()..];
+        let month = CN_MONTHS
+            .iter()
+            .find(|(cn, _)| tail.contains(cn))
+            .map(|(_, m)| *m)
+            .unwrap_or(1);
+        return build_datetime(today.year() - 1, month, 1, 9, 0);
+    }
+
+    // 上个月 / 上月（中旬 → 15 号，初 → 1 号，底/末 → 28 号，否则同日）
+    if text.contains("上个月") || text.contains("上月") {
+        let (year, month) = if today.month() == 1 {
+            (today.year() - 1, 12)
+        } else {
+            (today.year(), today.month() - 1)
+        };
+        let day = if text.contains("中旬") {
+            15
+        } else if text.contains("初") {
+            1
+        } else if text.contains("底") || text.contains("末") {
+            28
+        } else {
+            today.day().min(28)
+        };
+        return build_datetime(year, month, day, 9, 0);
+    }
+
     let (day_offset, default_hour, default_minute) =
-        if let Some(caps) = re_days_later().captures(text) {
+        // 注意顺序：`re_days_later` 的正则写成 `天后?`（"后"可选），
+        // 会把"3天前"当成"3天后"。必须先匹配"…前"。
+        if let Some(caps) = re_time_ago().captures(text) {
+            // "3天前 / 两周前 / 三个月前 / 两年前"（"两"不在 \d 里，用容错表兜底）
+            let n: i64 = caps
+                .get(1)?
+                .as_str()
+                .parse()
+                .ok()
+                .or_else(|| match caps.get(1).map(|m| m.as_str()) {
+                    Some("一") => Some(1),
+                    Some("两") | Some("二") => Some(2),
+                    Some("三") => Some(3),
+                    Some("几") => Some(3),
+                    _ => None,
+                })?;
+            let unit = caps.get(2)?.as_str();
+            let days = match unit {
+                "天" | "日" => n,
+                "周" | "星期" => n * 7,
+                "个月" => n * 30,
+                "年" => n * 365,
+                _ => return None,
+            };
+            (-days, 9, 0)
+        } else if let Some(caps) = re_days_later().captures(text) {
             let days = caps.get(1)?.as_str().parse::<i64>().ok()?;
             (days, 9, 0)
+        } else if text.contains("大前天") {
+            (-3, 9, 0)
+        } else if text.contains("前天") {
+            (-2, 9, 0)
+        } else if text.contains("昨天") || text.contains("昨日") {
+            (-1, 9, 0)
         } else if text.contains("今天") || text.contains("今日") {
             (0, reference_time.hour(), reference_time.minute())
         } else if text.contains("明天") || text.contains("明日") {
@@ -309,12 +436,23 @@ fn parse_weekday_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateT
 
     let next_week = text.contains("下周") || text.contains("下星期");
     let this_week = text.contains("本周") || text.contains("这周") || text.contains("本星期");
+    // 上周 / 上上周：事件已经发生，落到过去那一周的同一天
+    let weeks_back = if text.contains("上上周") || text.contains("上上星期") {
+        2
+    } else if text.contains("上周") || text.contains("上星期") {
+        1
+    } else {
+        0
+    };
 
     let days_until = if next_week {
         // 下周的同一星期几：距离"下周一"还有 (7 - days_since_monday) 天，再加上目标星期几的偏移。
         // 例：今天周三(2) → 下周一 = 7-2+0 = 5 天后；下周三 = 7-2+2 = 7 天后。
         // （旧公式 `(offset - since + 7) % 7 + 7` 会多算一周，把"下周一"推到 11-09）
         (7 - days_since_monday + target_offset).max(1)
+    } else if weeks_back > 0 {
+        // 上周三 / 上上周三：本周一往前推 N 周，再偏移到目标星期几
+        target_offset - days_since_monday - weeks_back * 7
     } else if this_week {
         // 本周：允许指向已经过去的那一天
         target_offset - days_since_monday
@@ -477,6 +615,30 @@ mod tests {
         let dt = result.unwrap();
         assert_eq!(dt.weekday(), Weekday::Wed);
         assert_eq!(dt.hour(), 14);
+    }
+
+    /// 回归：事件是已发生的事，"上周三 / 三个月前 / 去年十一月"必须落到过去日期
+    ///
+    /// 原实现只覆盖"今天/明天/后天/N天后"，过去时间解析失败会退化成写入时间，
+    /// 导致所有历史事件看起来都发生在今天，时间线查询（近一个月）失真。
+    #[test]
+    fn test_parse_past_times() {
+        use chrono::TimeZone;
+        // 2026-10-30 是周五
+        let r = Utc.with_ymd_and_hms(2026, 10, 30, 12, 0, 0).unwrap();
+        let d = |s: &str| parse_event_time(s, r).map(|x| x.date_naive().to_string());
+
+        assert_eq!(d("昨天下午"), Some("2026-10-29".to_string()));
+        assert_eq!(d("前天上午"), Some("2026-10-28".to_string()));
+        assert_eq!(d("大前天"), Some("2026-10-27".to_string()));
+        assert_eq!(d("3天前"), Some("2026-10-27".to_string()));
+        assert_eq!(d("两周前"), Some("2026-10-16".to_string()));
+        assert_eq!(d("三个月前"), Some("2026-08-01".to_string()));
+        assert_eq!(d("上周三"), Some("2026-10-21".to_string()));
+        assert_eq!(d("上上周三"), Some("2026-10-14".to_string()));
+        assert_eq!(d("去年十一月"), Some("2025-11-01".to_string()));
+        assert_eq!(d("上个月中旬"), Some("2026-09-15".to_string()));
+        assert_eq!(d("上个月底"), Some("2026-09-28".to_string()));
     }
 
     #[test]

@@ -240,9 +240,19 @@ impl AsyncMemory {
         user_id: Option<&str>,
         event_limit: usize,
         memory_limit: usize,
+        since: Option<&str>,
+        until: Option<&str>,
     ) -> Result<serde_json::Value, ShouxinError> {
         self.manager
-            .get_contact_detail(contact_id, scope, user_id, event_limit, memory_limit)
+            .get_contact_detail(
+                contact_id,
+                scope,
+                user_id,
+                event_limit,
+                memory_limit,
+                since,
+                until,
+            )
             .await
     }
 

@@ -1,0 +1,310 @@
+{
+ "user": "acc3",
+ "phase": "after",
+ "generated_at": "2026-10-29T23:56:23.757648+00:00",
+ "extraction": {
+  "total": 225,
+  "completed": 224,
+  "failed": 0,
+  "pending": 0,
+  "rejected_as_expected": 1,
+  "by_cat": {
+   "alias": {
+    "n": 45,
+    "completed": 45
+   },
+   "relation": {
+    "n": 35,
+    "completed": 35
+   },
+   "timeline": {
+    "n": 8,
+    "completed": 8
+   },
+   "dupname": {
+    "n": 8,
+    "completed": 8
+   },
+   "virtual": {
+    "n": 4,
+    "completed": 4
+   },
+   "edge": {
+    "n": 8,
+    "completed": 7
+   },
+   "long": {
+    "n": 2,
+    "completed": 2
+   },
+   "fact": {
+    "n": 30,
+    "completed": 30
+   },
+   "event": {
+    "n": 30,
+    "completed": 30
+   },
+   "todo": {
+    "n": 25,
+    "completed": 25
+   },
+   "multi": {
+    "n": 30,
+    "completed": 30
+   }
+  },
+  "cases_completed": 224
+ },
+ "contacts": {
+  "count": 164,
+  "archived": 0,
+  "expected_unique_names": 46,
+  "recall_hit": 39,
+  "recall_rate": 0.8478,
+  "missing": [
+   "滕飞",
+   "孙悟空",
+   "林黛玉",
+   "哆啦A梦",
+   "福尔摩斯",
+   "白露",
+   "唐棣"
+  ],
+  "fabricated": [],
+  "fabricated_count": 0
+ },
+ "alias": {
+  "pairs": 45,
+  "extracted_into_aliases": 42,
+  "extracted_rate": 0.9333,
+  "resolvable_by_alias": 42,
+  "resolve_rate": 0.9333,
+  "miss": [
+   "包蓉/蓉蓉",
+   "滕飞/飞哥",
+   "黎晚/Nora"
+  ]
+ },
+ "profiles": {
+  "contacts": 164,
+  "with_profile": 39,
+  "coverage": 0.2378,
+  "valid_json_with_5_fields": 39,
+  "valid_rate": 1.0,
+  "bad_samples": [],
+  "new_since_last_audit": 39,
+  "updated_since_last_audit": 0
+ },
+ "relations": {
+  "pairs": 37,
+  "recorded": 10,
+  "rate": 0.2703,
+  "evaluable_pairs": 21,
+  "evaluable_recorded": 10,
+  "evaluable_rate": 0.4762,
+  "miss": [
+   "沈亦舟-程澜",
+   "傅思远-钟毓",
+   "邵北-黎晚",
+   "霍云开-薛宁",
+   "房晓-秦朗",
+   "尹柯-路遥",
+   "章鸣-阮青",
+   "包蓉-苗禾",
+   "简宁-岑野",
+   "柯明-滕飞",
+   "屈洋-汤沐",
+   "闻笙-岑溪",
+   "商陆-迟野",
+   "柏川-容与",
+   "江照-温言",
+   "沈亦舟-程澜",
+   "霍云开-薛宁",
+   "房晓-滕飞",
+   "章鸣-岑溪",
+   "简宁-容与"
+  ]
+ },
+ "timeline": {
+  "contacts_checked": 8,
+  "events_total": 15,
+  "events_with_time": 15,
+  "time_field_rate": 1.0,
+  "since_30d_ok": 8,
+  "since_30d_bad": 0,
+  "samples": [
+   {
+    "name": "沈亦舟",
+    "all": 3,
+    "last_30d": 2,
+    "since_echo": "2026-09-29T23:56:25.169759800+00:00"
+   },
+   {
+    "name": "沈亦舟",
+    "all": 3,
+    "last_30d": 2,
+    "since_echo": "2026-09-29T23:56:25.208801500+00:00"
+   },
+   {
+    "name": "沈亦舟",
+    "all": 3,
+    "last_30d": 2,
+    "since_echo": "2026-09-29T23:56:25.251240900+00:00"
+   },
+   {
+    "name": "沈亦舟",
+    "all": 3,
+    "last_30d": 2,
+    "since_echo": "2026-09-29T23:56:25.276431800+00:00"
+   }
+  ]
+ },
+ "api_coverage": {
+  "passed": 28,
+  "total": 28,
+  "rate": 1.0,
+  "items": [
+   {
+    "api": "GET /health",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "POST /api/memory/add",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "GET /api/memory/extract_status/:id",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "POST /api/memory/search/semantic",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "POST /api/memory/search/events",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "POST /api/memory/search/contacts",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "POST /api/memory/search/history",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "POST /api/search/smart",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "POST /api/vector/search",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "GET /api/contacts/:id/detail",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "GET /api/contacts/:id/detail?since=30d",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "detail 返回 stats.since",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "POST /api/todos",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "GET /api/todos",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "PUT /api/todos/:id/complete",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "DELETE /api/todos/:id",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "GET /api/events/pending_merges",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "GET /api/heartbeat/status",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "GET /api/heartbeat/pending_questions",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "POST /api/virtual_entities",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "GET /api/virtual_entities",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "GET /api/virtual_entities/:id",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "GET /api/virtual_entities/check/:name",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "PUT /api/virtual_entities/:id",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "DELETE /api/virtual_entities/:id",
+    "ok": true,
+    "detail": "200"
+   },
+   {
+    "api": "POST /api/files/upload",
+    "ok": true,
+    "detail": "200 {'success': True, 'data': {'file_id': 'b0d1c664-fa8f-4967-b6a9-f52f68dcebd0', 'f"
+   },
+   {
+    "api": "GET /api/files/:id",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "api": "GET /api/files/:id/text",
+    "ok": true,
+    "detail": ""
+   }
+  ]
+ }
+}

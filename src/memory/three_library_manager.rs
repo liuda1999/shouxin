@@ -15,6 +15,45 @@ use crate::core::Embedding;
 use crate::core::contact::Scope;
 use crate::config::settings::{EventSettings, ExtractionSettings};
 use crate::error::ShouxinError;
+
+/// 解析时间边界：`30d` / `4w` / `12h` / `2026-09-30` / RFC3339
+///
+/// - 相对窗口（d/w/h 后缀）表示"从现在往前推"，只对 `since` 有意义；
+/// - 纯日期：`since` 取当天 00:00:00，`until` 取当天 23:59:59（含当天）；
+/// - 解析失败返回 None（不过滤），调用方不会因为写错格式拿到 500。
+fn parse_time_bound(raw: Option<&str>, is_until: bool) -> Option<DateTime<Utc>> {
+    use chrono::TimeZone;
+
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    if let Some(n) = s.strip_suffix('d').and_then(|v| v.parse::<i64>().ok()) {
+        return Some(Utc::now() - chrono::Duration::days(n));
+    }
+    if let Some(n) = s.strip_suffix('w').and_then(|v| v.parse::<i64>().ok()) {
+        return Some(Utc::now() - chrono::Duration::weeks(n));
+    }
+    if let Some(n) = s.strip_suffix('h').and_then(|v| v.parse::<i64>().ok()) {
+        return Some(Utc::now() - chrono::Duration::hours(n));
+    }
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let naive = if is_until {
+            d.and_hms_opt(23, 59, 59)
+        } else {
+            d.and_hms_opt(0, 0, 0)
+        }?;
+        return Some(Utc.from_utc_datetime(&naive));
+    }
+
+    None
+}
 use crate::memory::any_vector_store::AnyVectorStore;
 use crate::memory_extractor::{DataDispatcher, ExtractedElements};
 use crate::service::background_queue::{BackgroundTaskQueue, ExtractionTask};
@@ -972,6 +1011,8 @@ impl ThreeLibraryMemoryManager {
         user_id: Option<&str>,
         event_limit: usize,
         memory_limit: usize,
+        since: Option<&str>,
+        until: Option<&str>,
     ) -> Result<serde_json::Value, ShouxinError> {
         use serde_json::json;
 
@@ -1032,11 +1073,28 @@ impl ThreeLibraryMemoryManager {
             .collect();
 
         // 3) 关联事件（event_index.contact_ids 里有该 id 的事件）
-        let events = self
+        let mut events = self
             .relational_store
             .search_events_by_contact(contact_id, owner_type, &owner_id)
             .await
             .unwrap_or_default();
+
+        // 时间线过滤：`since=30d` 表示"近一个月"。
+        //
+        // 每条事件本身都带 event_time / time_range_start，客户端也能自己筛；
+        // 这里做在服务端是为了**先筛后截断**：event_limit 上限 100，
+        // 关系长的人事件多，先截断再筛会把近期事件漏掉。
+        let since_ts = parse_time_bound(since, false);
+        let until_ts = parse_time_bound(until, true);
+        let time_filtered = since_ts.is_some() || until_ts.is_some();
+        if time_filtered {
+            events.retain(|e| {
+                let t = e.event_time.unwrap_or(e.time_range_start);
+                since_ts.map(|s| t >= s).unwrap_or(true)
+                    && until_ts.map(|u| t <= u).unwrap_or(true)
+            });
+        }
+
         let events_json: Vec<serde_json::Value> = events
             .iter()
             .take(event_limit)
@@ -1130,6 +1188,9 @@ impl ThreeLibraryMemoryManager {
                 "event_count": events.len(),
                 "memory_count": conversations.len(),
                 "related_count": related_ids.len(),
+                // 回显时间窗口，便于调用方确认过滤生效
+                "since": since_ts.map(|t| t.to_rfc3339()),
+                "until": until_ts.map(|t| t.to_rfc3339()),
             }
         }))
     }
