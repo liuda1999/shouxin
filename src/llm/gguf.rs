@@ -328,7 +328,10 @@ impl GgufClient {
             } else {
                 format!("{}\n\n{}", system_text, user_text)
             };
-            return content;
+            // 用模型自己的 [INST] 格式：这是指令跟随的关键。
+            // 之前它会把分词器打崩，是因为提示词被整段送进分词器；
+            // 现在分词已按 128 字符分段（见 tokenize_chunked），可以再试。
+            return format!("[INST] {} [/INST]", content);
 
             // Gemma 没有 system 角色，惯例是把 system 内容并入第一条 user 消息
             if arch.contains("gemma") {

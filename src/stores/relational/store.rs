@@ -2259,31 +2259,60 @@ impl RelationalStore {
         Ok(ambiguities)
     }
 
-    pub async fn get_active_contacts_for_profile_update(&self, max_updates_per_day: u32) -> Result<Vec<crate::core::ContactIndex>, ShouxinError> {
+    /// 挑出本轮该生成/更新画像的联系人
+    ///
+    /// 语义（与产品约定一致，不是"谁空就补谁"）：
+    /// 1. **没有画像的必须补上**，不看"最近 7 天有没有互动"——
+    ///    旧实现带了 `last_interaction_at >= date('now','-7 days')`，
+    ///    导致老联系人的画像空缺被永久跳过（用户明确要求"不能漏掉"）。
+    /// 2. **有画像但今天又被提到**（last_interaction_at > 上次画像时间）→ 更新，
+    ///    这就是"早一次晚一次"的来源。
+    /// 3. **今天完全没被提到**（没有新互动）→ 不选，不消耗资源、不计尝试次数。
+    /// 4. `max_updates_per_day` 只是**资源节奏**（当天最多跑几次），
+    ///    不是"这个联系人只能更新两次"；用完就明天继续，空缺不会被吞掉。
+    ///
+    /// 排序：先补空缺（从没画像的），再按最近互动时间排；
+    /// 已归档的放最后（仍会被补，但优先级最低）。
+    pub async fn get_contacts_needing_profile(
+        &self,
+        max_updates_per_day: u32,
+    ) -> Result<Vec<crate::core::ContactIndex>, ShouxinError> {
         let rows = query(
             r#"
-            SELECT id, name, aliases, is_self, created_at, last_interaction_at,
-                   related_contact_ids, relationship_tags, relation_weight, background, notes,
-                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score
-            FROM contact_index
-            WHERE is_self = 0 AND is_agent = 0 AND is_archived = 0 AND is_virtual = 0
-            AND last_interaction_at >= date('now', '-7 days')
-            AND (background IS NULL OR background = '')
-            -- 垃圾名字直接不选：关系短语/超长串不可能生成有效画像，
-            -- 但它们按"最近互动时间"排序时会一直占住前 3 个名额，
-            -- 导致整轮心跳 actions=0、队列永远推不动（242 条压测复现过）。
-            AND length(name) BETWEEN 2 AND 8
-            AND name NOT LIKE '%的%'
-            AND name NOT LIKE '%和%'
-            -- 今天已经用完 2 次重试额度的也不要再选：否则每轮都白跑一次模型
-            AND NOT EXISTS (
-                SELECT 1 FROM contact_profile_update_log l
-                WHERE l.contact_id = contact_index.id
-                  AND substr(l.updated_at, 1, 10) = date('now')
-                GROUP BY l.contact_id
-                HAVING SUM(l.update_count_today) >= ?1
-            )
-            ORDER BY last_interaction_at DESC
+            SELECT ci.id, ci.name, ci.aliases, ci.is_self, ci.created_at, ci.last_interaction_at,
+                   ci.related_contact_ids, ci.relationship_tags, ci.relation_weight,
+                   ci.background, ci.notes, ci.owner_type, ci.owner_id, ci.is_agent,
+                   ci.parent_agent_id, ci.is_virtual, ci.is_archived, ci.archived_at, ci.activity_score
+            FROM contact_index ci
+            LEFT JOIN (
+                SELECT contact_id, MAX(updated_at) AS last_update
+                FROM contact_profile_update_log
+                GROUP BY contact_id
+            ) l ON l.contact_id = ci.id
+            WHERE ci.is_self = 0 AND ci.is_agent = 0 AND ci.is_virtual = 0
+              -- 垃圾名字不选：它们永远解析不出画像，却会占住前面几个名额
+              AND length(ci.name) BETWEEN 2 AND 8
+              AND ci.name NOT LIKE '%的%'
+              AND ci.name NOT LIKE '%和%'
+              -- 今天用掉的额度（只是节奏控制，不是永久上限）
+              AND NOT EXISTS (
+                  SELECT 1 FROM contact_profile_update_log t
+                  WHERE t.contact_id = ci.id
+                    AND substr(t.updated_at, 1, 10) = date('now')
+                  GROUP BY t.contact_id
+                  HAVING SUM(t.update_count_today) >= ?1
+              )
+              AND (
+                    -- (1) 从没生成过画像：一定要补（不限时间窗口）
+                    ci.background IS NULL OR ci.background = ''
+                    -- (2) 有新互动：最近一次互动晚于上次画像时间
+                    OR (l.last_update IS NOT NULL AND ci.last_interaction_at > l.last_update)
+              )
+            ORDER BY
+              -- 先补空缺，再按互动新近程度；归档的放最后
+              CASE WHEN ci.background IS NULL OR ci.background = '' THEN 0 ELSE 1 END,
+              ci.is_archived ASC,
+              ci.last_interaction_at DESC
             LIMIT 3
             "#,
         )

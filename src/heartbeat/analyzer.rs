@@ -30,6 +30,58 @@ const MAX_PROFILE_UPDATES_PER_DAY: u32 = 2;
 /// 3. 带前缀文本：`以下是JSON：\n```json\n{...}\n````
 /// 4. 截断的markdown代码块：```` ```json\n{... ````（LLM输出被截断，无结束标记）
 /// 5. 截断的JSON：`{"key": "val`（LLM输出被截断，JSON不完整）
+fn balance_json(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    let mut stack: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for ch in input.chars() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                out.push(ch);
+            }
+            '{' | '[' => {
+                stack.push(ch);
+                out.push(ch);
+            }
+            '}' => {
+                if stack.last() == Some(&'{') {
+                    stack.pop();
+                }
+                out.push(ch);
+            }
+            ']' => {
+                if stack.last() == Some(&'[') {
+                    stack.pop();
+                }
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+
+    if in_string {
+        out.push('"');
+    }
+    while let Some(open) = stack.pop() {
+        out.push(if open == '{' { '}' } else { ']' });
+    }
+    out
+}
+
 fn extract_json_from_response(response: &str) -> String {
     let trimmed = response.trim();
 
@@ -554,7 +606,7 @@ impl HeartbeatAnalyzer {
 
         if contact_ids.is_empty() {
             debug!("No contact IDs found from names, checking fallback...");
-            let existing_contacts = self.rel_store.get_active_contacts_for_profile_update(self.profile_max_updates_per_day).await?;
+            let existing_contacts = self.rel_store.get_active_contacts(owner_type, owner_id, 50).await?;
             debug!("Fallback: looking for contacts in event '{}', found {} active contacts",
                 event.summary, existing_contacts.len());
             for contact in existing_contacts.iter().take(20) {
@@ -646,7 +698,7 @@ impl HeartbeatAnalyzer {
     async fn analyze_contact_relations(&self) -> Result<Vec<HeartbeatAction>, ShouxinError> {
         let mut actions = Vec::new();
 
-        let contacts = self.rel_store.get_active_contacts_for_profile_update(self.profile_max_updates_per_day).await?;
+        let contacts = self.rel_store.get_contacts_needing_profile(self.profile_max_updates_per_day).await?;
 
         for contact in contacts {
             if let Some(profile) = self.generate_contact_profile(&contact).await? {
@@ -669,16 +721,6 @@ impl HeartbeatAnalyzer {
             debug!("Skipping profile update for {}: frequency limit", contact.name);
             return Ok(None);
         }
-
-        // 先记账，再调模型。
-        //
-        // 原来的顺序是"生成完再记账"，但画像提示词会让 llama.cpp 分词器偶发 abort
-        // （C++ 异常跨 FFI，进程直接死），这条路径根本走不到记账那一步。
-        // 结果是同一个联系人每次重启都被重新选中、再次崩溃，队列永远推不动
-        // （242 条压测里就卡在"排包括架"这类垃圾名字上）。
-        // 改成先记账：崩了也算一次尝试，配合每天 2 次上限与选人时的排除条件，
-        // 崩溃两次后该联系人会被跳过，其余联系人可以继续。
-        self.record_profile_update(&contact.id).await?;
 
         debug!("Generating profile for contact: {}", contact.name);
 
@@ -721,6 +763,22 @@ impl HeartbeatAnalyzer {
                 }
             }
         }
+
+        // 没有证据就不生成：不占额度、不记尝试次数。
+        //
+        // 产品语义（用户明确要求）：某个人今天完全没被提到、也没有和他相关的事，
+        // 这一天就不更新他——这是心跳该做的"该不该更新"的判断，
+        // 而不是拿"每天 2 次"去硬卡。这里就是那个判断：
+        // 既没有事件、也没有任何一段对话提到他 → 直接跳过。
+        if events.is_empty() && conversation_block.trim().is_empty() {
+            debug!("跳过 {}：没有任何事件/对话证据，本轮不更新", contact.name);
+            return Ok(None);
+        }
+
+        // 记账放在**取证之后、调模型之前**：
+        // 这样"没证据"的跳过不消耗额度；而真的调了模型（哪怕随后进程崩了）
+        // 也算一次尝试，避免同一条输入让服务反复重启-崩溃。
+        self.record_profile_update(&contact.id).await?;
 
         let prompt = format!(
             r#"根据以下信息生成联系人画像。
@@ -770,7 +828,7 @@ impl HeartbeatAnalyzer {
         match tokio::time::timeout(Duration::from_secs(90), self.llm_client.chat(messages)).await {
             Ok(Ok(response)) => {
                 // P0-1: LLM可能返回markdown代码块包裹的JSON，需要提取
-                let json_str = extract_json_from_response(&response);
+                let json_str = balance_json(&extract_json_from_response(&response));
                 if let Ok(profile_json) = serde_json::from_str::<serde_json::Value>(&json_str) {
                     let profile = ContactProfile {
                         contact_id: contact.id.clone(),

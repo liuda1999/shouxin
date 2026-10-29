@@ -80,3 +80,13 @@ data_stress*/
 .grind*.err
 .server_p*.log
 .server_p*.err
+.backlog*.log
+.backlog*.err
+.fill*.log
+.fill*.err
+.inst*.log
+.inst*.err
+.smoke_server*.log
+.smoke_server*.err
+.tmp/
+data_smoke/
