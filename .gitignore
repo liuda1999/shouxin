@@ -102,3 +102,11 @@ data_smoke/
 .smoke4*.err
 .acc4*.log
 .acc4*.err
+.cross*.log
+.cross*.err
+.acc5*.log
+.acc5*.err
+.smoke5*.log
+.smoke5*.err
+.smoke6*.log
+.smoke6*.err

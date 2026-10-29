@@ -129,6 +129,12 @@ POST /api/memory/add
 联系人的身份是 `contact_index.id`（UUID），**不是姓名**。
 `disambiguation` 只用于消歧（"前端"/"后端"），不参与身份判定。
 
+同名怎么区分：**不是靠名字，是靠多字段投票**。
+姓名 / 别名 / 消歧标签（`disambiguation`）/ 身份线索（`role` → 落到 `notes`）/
+关系标签 / 画像 / 关联事件，各给一份证据；`find_contact_for_person_with_hints`
+按权重打分（标签一致 +100，身份同类异值 −40，别名交集 +30 …）决定"同一个人"还是"新建"。
+身份线索尤其关键：跨对话时模型往往只给姓名，靠上周记下的"身份：前端工程师"才能认出他。
+
 早期实现曾经建过 `UNIQUE(name, owner_id, owner_type)`，后果是三重的：
 两个同名的人无法共存；归档行仍占着名字，新写入拿新 UUID 就撞索引，
 **整条对话的 contacts/events/todos 全部回滚**；

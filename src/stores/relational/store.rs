@@ -2194,34 +2194,19 @@ impl RelationalStoreTrait for RelationalStore {
 impl RelationalStore {
     /// 按姓名或别名找联系人（不区分同名者）
     ///
-    /// 这是给"只知道名字"的调用方（心跳画像、关系分析）用的包装，
-    /// 内部按无消歧标签处理。写入路径请用 `find_contact_for_person`。
+    /// 给"只知道名字"的调用方（心跳画像、关系分析）用的包装。
+    /// 写入路径请用 `find_contact_for_person_with_hints`。
     pub async fn find_contact_by_any_name(
         &self,
         name: &str,
         owner_type: crate::core::contact::OwnerType,
         owner_id: &str,
     ) -> Result<Option<crate::core::ContactIndex>, ShouxinError> {
-        self.find_contact_for_person(name, "", owner_type, owner_id)
+        self.find_contact_for_person_with_hints(name, "", &[], None, owner_type, owner_id)
             .await
     }
 
-    /// 按「姓名（或别名） + 同名消歧标签」找联系人
-    ///
-    /// 设计前提：**姓名不唯一**，每个联系人一个独立 UUID。
-    /// 判定规则（宁可合并，也不乱建号）：
-    ///
-    /// | 入参标签 | 库里候选 | 结论 |
-    /// |---------|---------|------|
-    /// | "前端" | 有同名且标签="前端" | 同一个人，复用原 id |
-    /// | "前端" | 同名但全部无标签 | 同一个人第一次被区分出来 → 复用它并补标签 |
-    /// | "前端" | 同名但标签都是"后端"等别的值 | **不同的人 → 新建** |
-    /// | 空 | 有同名且无标签 | 同一个人 |
-    /// | 空 | 同名都有标签（指代含糊） | 归到最近互动的那个，不新建 |
-    ///
-    /// 注意：**不能**过滤 `is_archived = 0`。归档行仍然是同一个人，
-    /// 跳过他会在归档后给他重复建号，写库时还可能覆盖掉原有关系数据。
-    /// 正确语义是老联系人被重新提到 → 找到它 → 复活（见 MemoryWriter::build_contact_index）。
+    /// 同上，但只带同名消歧标签
     pub async fn find_contact_for_person(
         &self,
         name: &str,
@@ -2229,7 +2214,45 @@ impl RelationalStore {
         owner_type: crate::core::contact::OwnerType,
         owner_id: &str,
     ) -> Result<Option<crate::core::ContactIndex>, ShouxinError> {
-        // 同名可能有多条，这里一次取候选，再在内存里按标签判定
+        self.find_contact_for_person_with_hints(
+            name,
+            disambiguation,
+            &[],
+            None,
+            owner_type,
+            owner_id,
+        )
+        .await
+    }
+
+    /// 按「姓名 + 消歧标签 + 别名 + 身份线索」找联系人
+    ///
+    /// 设计前提：**姓名不唯一**，身份是 `contact_index.id`。
+    /// 一个联系人不是"一个名字"，而是 姓名 / 别名 / 消歧标签 / 关系标签 / 备注(身份线索) /
+    /// 画像 / 关联事件 的组合 —— 同名时用这些字段区分，而不是只比姓名。
+    ///
+    /// 打分维度：
+    /// - 消歧标签完全一致：**强命中**（+100）；
+    /// - 消歧标签为空：可能是"还没被区分出来的同一个人"（+5）；
+    /// - 消歧标签不同且非空：**明确是另一个人**（-100）；
+    /// - 身份线索（role）与候选的 关系标签/备注/画像 有包含关系（+40）；
+    /// - 本次别名与候选的姓名/别名有交集（+30）；
+    /// - 其余按最近交互顺序递减（+10..+1）。
+    ///
+    /// 跨对话场景靠的就是 role：今天说"刘洋是前端的"，明天只说"刘洋"，
+    /// 也能靠 `role="前端"` 命中那条 `notes="身份：前端"` 的记录。
+    ///
+    /// 注意：**不能**过滤 `is_archived = 0`。归档行仍是同一个人，
+    /// 跳过他会在归档后给他重复建号，正确语义是老联系人被重新提到 → 找到它 → 复活。
+    pub async fn find_contact_for_person_with_hints(
+        &self,
+        name: &str,
+        disambiguation: &str,
+        aliases: &[String],
+        role: Option<&str>,
+        owner_type: crate::core::contact::OwnerType,
+        owner_id: &str,
+    ) -> Result<Option<crate::core::ContactIndex>, ShouxinError> {
         let rows = query(
             r#"
             SELECT id, name, aliases, is_self, created_at, last_interaction_at,
@@ -2257,34 +2280,148 @@ impl RelationalStore {
         }
 
         let want = disambiguation.trim().to_lowercase();
-        if !want.is_empty() {
-            // 1) 标签完全一致 → 同一个人
-            if let Some(hit) = candidates
-                .iter()
-                .find(|c| c.disambiguation.trim().to_lowercase() == want)
-            {
-                return Ok(Some(hit.clone()));
-            }
-            // 2) 库里同名但都没有标签：这是同一个人第一次被区分出来，
-            //    复用它（写入时会把标签补上），而不是再建一条
-            if candidates
-                .iter()
-                .all(|c| c.disambiguation.trim().is_empty())
-            {
-                return Ok(candidates.into_iter().next());
-            }
-            // 3) 已有别的标签 → 这是另一个人
+        let role_trimmed = role.map(str::trim).filter(|r| !r.is_empty());
+
+        let mut scored: Vec<(i32, usize)> = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let mut score = (10i32 - i as i32).max(1);
+
+                if !want.is_empty() {
+                    let have = c.disambiguation.trim().to_lowercase();
+                    if have == want {
+                        score += 100;
+                    } else if have.is_empty() {
+                        // 还没被区分出来的同一个人，允许复用（首次补标签）
+                        score += 5;
+                    } else {
+                        // 明确是另一个同名者
+                        score -= 100;
+                    }
+                }
+
+                if let Some(role) = role_trimmed {
+                    if Self::role_matches_contact(c, role) {
+                        score += 40;
+                    } else if Self::role_conflicts_with(c, role) {
+                        // 已知身份是"前端工程师"，这次说"后端工程师" ——
+                        // 同一类身份的不同取值，说明是**另一个人**，不能合并。
+                        score -= 40;
+                    }
+                }
+
+                if Self::alias_overlaps(c, aliases) {
+                    score += 30;
+                }
+
+                (score, i)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let (best_score, best_idx) = scored[0];
+
+        // 被消歧标签明确排斥 → 这是另一个同名者，新建
+        if best_score <= 0 {
             return Ok(None);
         }
 
-        // 入参没有标签：优先无标签的记录；都有标签时归到最近互动的那个
-        if let Some(hit) = candidates
-            .iter()
-            .find(|c| c.disambiguation.trim().is_empty())
-        {
-            return Ok(Some(hit.clone()));
+        // 本次带了标签但没有候选命中同一标签：看**最匹配的那个**候选是否已经有别的标签。
+        //
+        // - 它还没标签（且靠身份线索/别名胜出）→ 这是同一个人第一次被区分出来，复用并补标签；
+        // - 它已有别的标签 → 说明是另一个同名者（这种情况通常是新建）。
+        //
+        // 注意不能要求"所有候选都无标签"：库里只要存在一个带标签的同名者，
+        // 就会把"给某个人补标签"误判成"新建"，实测因此多建了一条（step4）。
+        if !want.is_empty() && best_score < 100 {
+            let best = &candidates[best_idx];
+            if !best.disambiguation.trim().is_empty() {
+                return Ok(None);
+            }
         }
-        Ok(candidates.into_iter().next())
+
+        Ok(Some(candidates.swap_remove(best_idx)))
+    }
+
+    /// 身份线索是否与候选已有信息吻合（互相包含即可，中文短词足够用）
+    fn role_matches_contact(c: &crate::core::ContactIndex, role: &str) -> bool {
+        let r = role.trim().to_lowercase();
+        if r.chars().count() < 2 {
+            return false;
+        }
+        let hay = format!("{} {} {}", c.relationship_tags, c.notes, c.background).to_lowercase();
+        if hay.contains(&r) {
+            return true;
+        }
+        // 反向：role="前端工程师"，候选标签是"前端"
+        let tags: Vec<String> = serde_json::from_str(&c.relationship_tags).unwrap_or_default();
+        tags.iter().any(|t| {
+            let t = t.trim().to_lowercase();
+            t.chars().count() >= 2 && r.contains(&t)
+        })
+    }
+
+    /// 从 `notes` 里解析出已记录的身份线索（写入格式：`身份：前端工程师；身份：产品经理`）
+    fn known_identities(notes: &str) -> Vec<String> {
+        if notes.trim().is_empty() {
+            return Vec::new();
+        }
+        notes
+            .split("；身份：")
+            .map(|part| {
+                part.trim()
+                    .trim_start_matches("身份：")
+                    .trim()
+                    .to_string()
+            })
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    /// 两个身份描述是否互相包含（"前端" vs "前端工程师" → 同一身份）
+    fn identity_overlap(a: &str, b: &str) -> bool {
+        let (a, b) = (a.trim().to_lowercase(), b.trim().to_lowercase());
+        if a.chars().count() < 2 || b.chars().count() < 2 {
+            return false;
+        }
+        a.contains(&b) || b.contains(&a)
+    }
+
+    /// 是否共享同一类身份的**后缀**（"前端工程师" vs "后端工程师" 共享"工程师"）
+    fn shares_identity_suffix(a: &str, b: &str) -> bool {
+        let ca: Vec<char> = a.trim().chars().collect();
+        let cb: Vec<char> = b.trim().chars().collect();
+        let n = ca.len().min(cb.len()).min(3);
+        n >= 2 && ca[ca.len() - n..] == cb[cb.len() - n..]
+    }
+
+    /// 本次身份线索与候选已记录的身份是否**冲突**
+    ///
+    /// 只在"同类身份但取值不同"时判冲突（前端工程师 vs 后端工程师），
+    /// 完全不相关（财务部 vs 我的大学室友）不判冲突 —— 那可能只是补充了另一面信息。
+    fn role_conflicts_with(c: &crate::core::ContactIndex, role: &str) -> bool {
+        let known = Self::known_identities(&c.notes);
+        if known.is_empty() {
+            return false;
+        }
+        if known.iter().any(|k| Self::identity_overlap(k, role)) {
+            return false;
+        }
+        known.iter().any(|k| Self::shares_identity_suffix(k, role))
+    }
+
+    /// 本次提到的别名是否与候选的姓名/别名有交集
+    fn alias_overlaps(c: &crate::core::ContactIndex, aliases: &[String]) -> bool {
+        if aliases.is_empty() {
+            return false;
+        }
+        let cand: Vec<String> = serde_json::from_str(&c.aliases).unwrap_or_default();
+        aliases.iter().any(|a| {
+            let a = a.trim();
+            !a.is_empty()
+                && (c.name == a || cand.iter().any(|x| x.eq_ignore_ascii_case(a)))
+        })
     }
 
     pub async fn get_processing_state(&self) -> Result<crate::heartbeat::types::ProcessingState, ShouxinError> {
@@ -3458,9 +3595,13 @@ impl RelationalStore {
         name: &str,
     ) -> Result<Option<String>, ShouxinError> {
         let pattern = format!("%{}%", name);
-        let row = sqlx::query(
+
+        // 同名可能有多条，这里不能 `LIMIT 1` 随便取一条 ——
+        // 那会把"张三的上级"挂到另一个同名张三身上（画像关系就是这么错的）。
+        // 取候选后按"共同关系标签 / 是否有画像 / 最近交互"打分选最优。
+        let rows = sqlx::query(
             r#"
-            SELECT c.id
+            SELECT c.id, c.relationship_tags, c.background, c.is_archived
             FROM contact_index c
             WHERE c.owner_type = (SELECT owner_type FROM contact_index WHERE id = ?1)
               AND c.owner_id   = (SELECT owner_id   FROM contact_index WHERE id = ?1)
@@ -3474,15 +3615,64 @@ impl RelationalStore {
                       WHERE a.contact_id = c.id AND a.alias LIKE ?3
                  )
               )
-            LIMIT 1
+            ORDER BY c.is_archived ASC, c.last_interaction_at DESC
+            LIMIT 10
             "#,
         )
         .bind(anchor_contact_id)
         .bind(name)
         .bind(&pattern)
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        Ok(row.map(|r| r.get::<String, _>("id")))
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        // anchor 的关系标签，用来判断"是不是同一个圈子里的人"
+        let anchor_tags: Vec<String> = sqlx::query_scalar(
+            "SELECT relationship_tags FROM contact_index WHERE id = ?",
+        )
+        .bind(anchor_contact_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .and_then(|raw: Option<String>| raw)
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+
+        let mut best: Option<(i32, String)> = None;
+        for (i, row) in rows.iter().enumerate() {
+            let id: String = row.get("id");
+            let tags: Vec<String> = row
+                .try_get::<Option<String>, _>("relationship_tags")
+                .ok()
+                .flatten()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default();
+            let background: Option<String> = row.try_get("background").ok().flatten();
+            let archived: i64 = row.try_get("is_archived").unwrap_or(0);
+
+            let mut score = (10i32 - i as i32).max(1);
+            // 共同关系标签：同部门/同项目组的人更可能是画像里说的那个人
+            let overlap = tags
+                .iter()
+                .filter(|t| anchor_tags.iter().any(|a| a == *t))
+                .count() as i32;
+            score += overlap * 3;
+            // 有画像的说明是"活跃且有描述的人"，优先
+            if background.as_deref().map(|b| !b.trim().is_empty()).unwrap_or(false) {
+                score += 2;
+            }
+            // 归档的往后放
+            if archived == 1 {
+                score -= 5;
+            }
+
+            if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+                best = Some((score, id));
+            }
+        }
+
+        Ok(best.map(|(_, id)| id))
     }
 }

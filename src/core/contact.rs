@@ -503,6 +503,8 @@ pub struct ContactPatch {
     pub contact_id: String,
     /// 姓名（None 表示不修改）
     pub name: Option<String>,
+    /// 身份线索（部门/职位/关系），写入 `notes`，供同名跨对话匹配使用
+    pub identity_hint: Option<String>,
     /// 同名消歧标签（None 表示不修改）
     ///
     /// 只在"第一次拿到区分信息"时写一次："刘洋" → "刘洋[前端]"。
@@ -533,6 +535,21 @@ impl ContactPatch {
             contact_id: contact_id.into(),
             ..Default::default()
         }
+    }
+
+    /// 设置身份线索（空字符串视为"不修改"）
+    ///
+    /// 落库形式是 `notes` 里的 `身份：前端工程师`。
+    /// 为什么记在这里：同名的人下周再被提及时，模型往往只给姓名，
+    /// 这条线索就是"认出是同一个刘洋"的依据（见 find_contact_for_person_with_hints）。
+    pub fn with_identity_hint(mut self, hint: Option<String>) -> Self {
+        if let Some(h) = hint {
+            let h = h.trim();
+            if h.chars().count() >= 2 {
+                self.identity_hint = Some(h.to_string());
+            }
+        }
+        self
     }
 
     /// 设置同名消歧标签（空字符串视为"不修改"）
@@ -592,6 +609,20 @@ impl ContactPatch {
             let trimmed = name.trim();
             if !trimmed.is_empty() {
                 contact.name = trimmed.to_string();
+            }
+        }
+        if let Some(ref hint) = self.identity_hint {
+            let h = hint.trim();
+            // 已经记过就不再重复追加，同时给 notes 一个上限，避免长跑后无限膨胀
+            if !h.is_empty() {
+                let current = contact.notes.clone().unwrap_or_default();
+                if !current.contains(h) && current.chars().count() < 200 {
+                    contact.notes = Some(if current.is_empty() {
+                        format!("身份：{}", h)
+                    } else {
+                        format!("{}；身份：{}", current, h)
+                    });
+                }
             }
         }
         if let Some(ref d) = self.disambiguation {

@@ -305,6 +305,10 @@ impl LlmMemoryExtractor {
      只有一个人、或没有区分信息时，填空字符串 ""。不要编造原文没有的区分信息。
    - **区分词不要并进姓名**："前端刘洋"要拆成 name="刘洋" + disambiguation="前端"，
      绝对不能把 name 写成"前端刘洋"；同理"后端大刘"→ name="刘洋"（如果有别名"大刘"就放进 aliases）。
+   - role: 这个人的**身份线索**（部门 / 职位 / 和说话人的关系），如"前端工程师"、"财务部"、"客户方负责人"、
+     "我的大学室友"。原文没有明确依据时填空字符串 ""。
+     它用于**同名时跨对话区分不同的人**：今天说"刘洋是前端的"，下周只说"刘洋"时，
+     系统要靠这条线索认出是同一个刘洋。不要编造。
 2. 事件（events）: 对话中提到的每个独立事件分别提取
    - title: 简短的事件标题（如"产品需求会"、"启动开发"、"技术方案讨论"）
    - description: 一句话描述事件内容，不要输出整个对话全文
@@ -376,10 +380,10 @@ impl LlmMemoryExtractor {
 
 示例11（同名不同人）：
 输入："我们组有两个刘洋，前端刘洋和后端大刘，今天说的是前端刘洋负责的页面改版"
-输出：{"people":[{"name":"刘洋","disambiguation":"前端"}],"events":[{"title":"页面改版","description":"前端刘洋负责页面改版","importance":"short_term","participants":["刘洋"]}],"todos":[],"todo_update_intent":null}
+输出：{"people":[{"name":"刘洋","disambiguation":"前端","role":"前端工程师"}],"events":[{"title":"页面改版","description":"前端刘洋负责页面改版","importance":"short_term","participants":["刘洋"]}],"todos":[],"todo_update_intent":null}
 
 输出JSON（严格按照格式，不要其他文字）：
-{"people":[{"name":"姓名","aliases":[],"disambiguation":""}],"events":[{"title":"事件标题","description":"事件描述","time":"时间（如果有）","importance":"short_term或long_term或critical","participants":["参与人姓名"]}],"todos":[{"title":"待办标题","importance":"low或medium或high","deadline":"截止时间ISO格式（可选）","assigned_to":"负责人（可选）"}],"todo_update_intent":null}
+{"people":[{"name":"姓名","aliases":[],"disambiguation":"","role":""}],"events":[{"title":"事件标题","description":"事件描述","time":"时间（如果有）","importance":"short_term或long_term或critical","participants":["参与人姓名"]}],"todos":[{"title":"待办标题","importance":"low或medium或high","deadline":"截止时间ISO格式（可选）","assigned_to":"负责人（可选）"}],"todo_update_intent":null}
 
 如果没有提取到任何内容，返回：{"people":[],"events":[],"todos":[],"todo_update_intent":null}"#
             .to_string()

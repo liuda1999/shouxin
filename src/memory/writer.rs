@@ -131,7 +131,7 @@ impl MemoryWriter {
     /// 写入一批联系人（字典库权威 + 关系库索引 + 别名索引 + 活跃度）
     ///
     /// 与旧实现的差异：
-    /// - 用 `find_contact_for_person` 按「姓名/别名 + 同名消歧标签」去重；
+    /// - 用 `find_contact_for_person_with_hints` 按「姓名/别名/消歧标签/身份线索」去重；
     /// - 虚拟角色不写入真人体系（旧同步路径没有这个判断）；
     /// - 别名是"并入"，不是覆盖；
     /// - `ContactIndex` 的业务字段来自字典库权威记录，缺失时才回退关系库旧值，
@@ -167,9 +167,11 @@ impl MemoryWriter {
             // 各拿一个独立 UUID；只有姓名相同且标签也相同（或双方都没标签）才归并。
             let mut existing = self
                 .relational
-                .find_contact_for_person(
+                .find_contact_for_person_with_hints(
                     &person.name,
                     &person.disambiguation,
+                    &person.aliases,
+                    person.role.as_deref(),
                     owner_type,
                     owner_id,
                 )
@@ -218,9 +220,11 @@ impl MemoryWriter {
                         final_name = suffix;
                         existing = self
                             .relational
-                            .find_contact_for_person(
+                            .find_contact_for_person_with_hints(
                                 &final_name,
                                 &final_disambiguation,
+                                &person.aliases,
+                                person.role.as_deref(),
                                 owner_type,
                                 owner_id,
                             )
@@ -287,6 +291,8 @@ impl MemoryWriter {
                 .with_owner(owner_type, owner_id)
                 .touched_at(Utc::now())
                 .with_disambiguation(final_disambiguation.clone())
+                // 身份线索写进 notes：同名的人下周再被提到时，靠它认出是同一个
+                .with_identity_hint(person.role.clone())
                 .merge_aliases(merged_aliases.iter().cloned());
             if is_new {
                 // 只有新建时才用提取到的姓名；已存在的记录以字典库为准，避免改名被旧名回滚
@@ -308,9 +314,11 @@ impl MemoryWriter {
                 if msg.contains("UNIQUE constraint failed") {
                     if let Ok(Some(found)) = self
                         .relational
-                        .find_contact_for_person(
+                        .find_contact_for_person_with_hints(
                             &final_name,
                             &final_disambiguation,
+                            &person.aliases,
+                            person.role.as_deref(),
                             owner_type,
                             owner_id,
                         )
@@ -665,6 +673,92 @@ mod tests {
             .unwrap();
         assert_eq!(c.created, 0);
         assert_eq!(c.id_map.get("p3").cloned().unwrap(), id_front);
+    }
+
+    /// 跨对话同名：靠"身份线索（role）"认出是同一个人
+    ///
+    /// 今天说"刘洋是前端工程师"，下周只说"刘洋"（不提部门），
+    /// 系统要能靠已落库的身份线索命中同一条记录，而不是重建一个人。
+    #[tokio::test]
+    async fn test_same_name_cross_conversation_matches_by_role() {
+        let (dict, rel, _dir) = setup().await;
+        let writer = MemoryWriter::new(dict.clone(), rel);
+
+        let mut front = person("p1", "刘洋", &[]);
+        front.disambiguation = "前端".to_string();
+        front.role = Some("前端工程师".to_string());
+        let a = writer.write_contacts(&[front], OwnerType::User, "u1").await.unwrap();
+
+        let mut back = person("p2", "刘洋", &[]);
+        back.disambiguation = "后端".to_string();
+        back.role = Some("后端工程师".to_string());
+        let b = writer.write_contacts(&[back], OwnerType::User, "u1").await.unwrap();
+
+        assert_eq!(a.created, 1);
+        assert_eq!(b.created, 1);
+        let id_front = a.id_map.get("p1").cloned().unwrap();
+        let id_back = b.id_map.get("p2").cloned().unwrap();
+        assert_ne!(id_front, id_back);
+
+        // 跨对话：只说"后端工程师刘洋"，没给 disambiguation
+        let mut later = person("p3", "刘洋", &[]);
+        later.role = Some("后端工程师".to_string());
+        let c = writer.write_contacts(&[later], OwnerType::User, "u1").await.unwrap();
+        assert_eq!(c.created, 0, "应命中已有联系人，而不是新建");
+        assert_eq!(
+            c.id_map.get("p3").cloned().unwrap(),
+            id_back,
+            "身份线索=后端工程师，应命中后端那个刘洋"
+        );
+    }
+
+    /// 回归（真实链路暴露）：同名、都没有消歧标签，但**身份矛盾**时必须分开
+    ///
+    /// "前端工程师刘洋" 与 "后端工程师刘洋" 长得很像，但共享后缀说明是同类身份的不同取值。
+    /// 修复前会把两条合并成一条，notes 变成"身份：前端工程师；身份：后端工程师"。
+    #[tokio::test]
+    async fn test_same_name_conflicting_roles_create_two_contacts() {
+        let (dict, rel, _dir) = setup().await;
+        let writer = MemoryWriter::new(dict.clone(), rel);
+
+        let mut a = person("p1", "刘洋", &[]);
+        a.role = Some("前端工程师".to_string());
+        let r1 = writer.write_contacts(&[a], OwnerType::User, "u1").await.unwrap();
+        assert_eq!(r1.created, 1);
+
+        let mut b = person("p2", "刘洋", &[]);
+        b.role = Some("后端工程师".to_string());
+        let r2 = writer.write_contacts(&[b], OwnerType::User, "u1").await.unwrap();
+
+        assert_eq!(r2.created, 1, "身份矛盾（前端 vs 后端）应视为两个人");
+        assert_ne!(
+            r1.id_map.get("p1").cloned().unwrap(),
+            r2.id_map.get("p2").cloned().unwrap()
+        );
+    }
+
+    /// 同名两条都没有标签时，无标签的新提及归到最近互动的那条，不新建
+    #[tokio::test]
+    async fn test_same_name_without_hints_falls_back_to_recent() {
+        let (dict, rel, _dir) = setup().await;
+        let writer = MemoryWriter::new(dict.clone(), rel);
+
+        let mut a = person("p1", "王强", &[]);
+        a.disambiguation = "测试".to_string();
+        writer.write_contacts(&[a], OwnerType::User, "u1").await.unwrap();
+
+        let mut b = person("p2", "王强", &[]);
+        b.disambiguation = "运维".to_string();
+        let nb = writer.write_contacts(&[b], OwnerType::User, "u1").await.unwrap();
+        let id_recent = nb.id_map.get("p2").cloned().unwrap();
+
+        // 无标签、无身份线索的"王强说…"
+        let c = writer
+            .write_contacts(&[person("p3", "王强", &[])], OwnerType::User, "u1")
+            .await
+            .unwrap();
+        assert_eq!(c.created, 0);
+        assert_eq!(c.id_map.get("p3").cloned().unwrap(), id_recent);
     }
 
     #[tokio::test]
