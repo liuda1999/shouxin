@@ -90,3 +90,7 @@ data_stress*/
 .smoke_server*.err
 .tmp/
 data_smoke/
+.acc*.log
+.acc*.err
+.smoke2*.log
+.smoke2*.err
