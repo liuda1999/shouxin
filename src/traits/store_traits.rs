@@ -297,6 +297,9 @@ pub struct ContactDetail {
     pub related_contacts: Vec<String>,
     /// 关系标签
     pub relationship_tags: Vec<String>,
+    /// 是否虚拟人物（智能体扮演的角色，用于与真实联系人区分）
+    #[serde(default)]
+    pub is_virtual: bool,
 }
 
 /// 事件详情（统一检索返回的完整事件信息）
@@ -521,6 +524,20 @@ pub trait DictionaryStoreTrait: Send + Sync {
 
     /// 通过 conversation_id 获取对话记录 (v0.5.1)
     async fn get_conversation_by_id(&self, id: &str) -> Result<Option<Conversation>, ShouxinError>;
+
+    /// 按 owner + 关键词（姓名/别名）检索最近的对话原文
+    ///
+    /// 用途：联系人详情需要"这个人的相关记忆"（原文证据），
+    /// 而事件摘要里往往没有关系表述。实现必须**有界扫描**，
+    /// 禁止为了这个查询遍历整个字典库。
+    async fn search_conversations_by_owner_keywords(
+        &self,
+        owner_type: crate::core::contact::OwnerType,
+        owner_id: &str,
+        keywords: &[String],
+        scan_limit: usize,
+        limit: usize,
+    ) -> Result<Vec<crate::stores::dictionary::store::ConversationRecord>, ShouxinError>;
 
     /// 列出提取状态为 `failed` 的对话 ID（最多 `limit` 条）
     ///

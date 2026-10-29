@@ -121,7 +121,26 @@ POST /api/memory/add
 
 检索侧（`POST /api/memory/search/contacts`）返回的 `aliases` 是
 `contact_index.aliases` 与 `contact_alias_index` 的**并集**，
-`related_contacts` 已把 ID 解析为姓名。
+`related_contacts` 已把 ID 解析为姓名，`is_virtual` 用于区分真实联系人与虚拟角色。
+
+### 6.2 联系人全息详情（三库联查）
+
+`GET /api/contacts/:id/detail` 是唯一一个同时读三库的联系人接口：
+
+| 数据 | 来源 | 边界 |
+|------|------|------|
+| 人设 / 别名 / 关系标签 / `is_virtual` | SQLite `contact_index` | 单条主键查询 |
+| 关联联系人（ID → 姓名 + 标签） | SQLite `contact_index` 批量 | 由 `related_contact_ids` 决定 |
+| 关联事件 | SQLite `event_index.contact_ids` 反查 | `event_limit`，上限 100 |
+| 相关记忆原文 | Sled 对话时间索引倒序扫描 | 扫描上界 500 条，返回 `memory_limit`，上限 50 |
+
+为什么要单独做：`search_contacts` 只返回联系人自身字段，调用方拿不到
+"他参与过哪些事件""哪段对话提到过他"。智能体要做人物关系推理
+（谁是谁的上级、谁和谁一个项目组），必须一次拿到 **关系 + 事件 + 原文证据**。
+
+> 记忆匹配用的是"姓名或别名逐字命中"，不是向量相似度。
+> 对"这个人出现在哪些对话里"这类**精确溯源**需求，逐字命中比语义召回更可靠，
+> 也不会因为 embedding 漂移把无关对话算进来。
 
 > 早期版本这条链路有 6 处断点（读取硬编码空值、模板/提示词不匹配、关系列从不写等），
 > 表现为"接口永远返回空"，详见 [../CHANGELOG.md](../CHANGELOG.md) 的 C1–C7。

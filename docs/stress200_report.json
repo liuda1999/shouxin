@@ -1,0 +1,202 @@
+{
+  "generated_at": "2026-10-29 22:27:03",
+  "user": "stress242",
+  "checks": {
+    "extraction": {
+      "total": 242,
+      "completed": 242,
+      "failed": 0,
+      "pass": true
+    },
+    "contacts": {
+      "contact_count": 111,
+      "expected_person_slots": 393,
+      "matched": 386,
+      "recall": 0.9822,
+      "missing_examples": [
+        "A047:龙飞",
+        "E001:王建国",
+        "E025:龙飞",
+        "G001:王建国",
+        "G008:周总",
+        "G014:方老师",
+        "G027:龙飞"
+      ],
+      "suspicious_count": 0,
+      "suspicious_examples": [],
+      "is_virtual_flags": 0
+    },
+    "profiles": {
+      "contacts": 111,
+      "with_background": 23,
+      "structured_json": 23,
+      "with_related_contacts": 17,
+      "with_relationship_tags": 20,
+      "coverage": 0.2072,
+      "samples": [
+        {
+          "name": "张伟",
+          "len": 1105,
+          "tags": [
+            "同事"
+          ],
+          "related": [
+            "王强",
+            "李娜",
+            "刘洋"
+          ]
+        },
+        {
+          "name": "王强",
+          "len": 1077,
+          "tags": [
+            "同事"
+          ],
+          "related": [
+            "张伟",
+            "李娜",
+            "刘洋"
+          ]
+        },
+        {
+          "name": "刘洋",
+          "len": 846,
+          "tags": [
+            "同事"
+          ],
+          "related": [
+            "张伟",
+            "王强",
+            "李娜",
+            "外包团队"
+          ]
+        },
+        {
+          "name": "小版",
+          "len": 797,
+          "tags": [
+            "同事"
+          ],
+          "related": [
+            "张伟",
+            "陈静",
+            "刘洋",
+            "王强",
+            "李娜"
+          ]
+        },
+        {
+          "name": "陈总",
+          "len": 732,
+          "tags": [
+            "同事"
+          ],
+          "related": [
+            "张伟",
+            "刘洋",
+            "王强",
+            "李娜"
+          ]
+        },
+        {
+          "name": "孙磊",
+          "len": 728,
+          "tags": [
+            "同事"
+          ],
+          "related": [
+            "赵敏"
+          ]
+        },
+        {
+          "name": "姜涛",
+          "len": 581,
+          "tags": [
+            "同事"
+          ],
+          "related": [
+            "田甜"
+          ]
+        },
+        {
+          "name": "严静",
+          "len": 568,
+          "tags": [
+            "同事"
+          ],
+          "related": [
+            "毛磊"
+          ]
+        }
+      ]
+    },
+    "virtual": {
+      "create_ok": true,
+      "entity_id": "7c2c55e9-79a4-43b3-b677-76a2f46ced99",
+      "found_in_contact_list": true,
+      "is_virtual_flag": true,
+      "detail_is_virtual": true,
+      "real_contact_is_virtual": false,
+      "mention_conversation": "464929cc-68a1-441e-a96f-56a376ad783f",
+      "duplicates_after_mention": 1,
+      "is_virtual_after_mention": true,
+      "pass": true
+    },
+    "contact_detail": {
+      "target": "刘洋",
+      "contact_id": "46e05a38-d5b3-4033-b182-e79e79c26cc5",
+      "has_contact_block": true,
+      "related_contacts": 4,
+      "events": 1,
+      "memories": 10,
+      "stats": {
+        "event_count": 1,
+        "memory_count": 10,
+        "related_count": 4
+      },
+      "sample_event": "请假",
+      "sample_memory": "【补充：预算与人力】\n张伟还提到预算的事。本季度云资源预算是 42 万，目前已经用掉 31 万，剩下 11 万要撑到月底",
+      "pass": true
+    },
+    "relation_sample": {
+      "item": "D001",
+      "status": "completed",
+      "people": [
+        "小王",
+        "小明",
+        "小张"
+      ],
+      "created": [
+        "小王",
+        "小明",
+        "小张"
+      ],
+      "小王": {
+        "exists": true,
+        "aliases": [],
+        "tags": [],
+        "related": [],
+        "background_len": 0
+      },
+      "小明": {
+        "exists": true,
+        "aliases": [],
+        "tags": [],
+        "related": [],
+        "background_len": 0
+      },
+      "小张": {
+        "exists": true,
+        "aliases": [],
+        "tags": [],
+        "related": [],
+        "background_len": 0
+      }
+    },
+    "volume": {
+      "todos": 30,
+      "events": 101,
+      "contacts": 111
+    }
+  }
+}

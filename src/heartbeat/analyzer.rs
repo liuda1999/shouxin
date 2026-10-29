@@ -148,6 +148,13 @@ pub struct HeartbeatAnalyzer {
     llm_client: Arc<dyn LlmClient + Send + Sync>,
     dict_store: Arc<DictionaryStore>,
     rel_store: Arc<RelationalStore>,
+    /// 是否跳过"从对话里抽实体"这一步
+    ///
+    /// 只要后台队列在跑，这一步就是纯重复劳动：
+    /// 队列已经对同一批对话做了 contacts/events/todos 抽取，
+    /// 心跳再抽一遍会让算力翻倍，并产生重复事件。
+    /// 队列自身有失败重放与重启恢复，不需要心跳兜底。
+    skip_conversation_extraction: bool,
 }
 
 impl HeartbeatAnalyzer {
@@ -160,6 +167,7 @@ impl HeartbeatAnalyzer {
             llm_client,
             dict_store,
             rel_store,
+            skip_conversation_extraction: true,
         }
     }
 
@@ -175,15 +183,45 @@ impl HeartbeatAnalyzer {
         Ok(actions)
     }
 
+    /// 显式设置是否跳过多余的对话抽取（默认 true）
+    pub fn with_skip_conversation_extraction(mut self, skip: bool) -> Self {
+        self.skip_conversation_extraction = skip;
+        self
+    }
+
     pub async fn process_new_conversations(
         &self,
         since: DateTime<Utc>,
     ) -> Result<(Vec<HeartbeatAction>, Option<DateTime<Utc>>), ShouxinError> {
         let mut actions = Vec::new();
 
-        let conversations = self.dict_store.get_conversations_since(since).await?;
+        if self.skip_conversation_extraction {
+            // 后台队列是对话抽取的唯一入口，这里直接返回，避免重复 LLM 调用与重复事件。
+            debug!("Skipping heartbeat conversation extraction (background queue owns it)");
+            return Ok((Vec::new(), None));
+        }
 
-        info!("Processing {} new conversations since {}", conversations.len(), since);
+        let all_conversations = self.dict_store.get_conversations_since(since).await?;
+        let total = all_conversations.len();
+
+        // 只处理**后台队列还没处理完**的对话。
+        //
+        // 为什么必须过滤：`BackgroundTaskQueue` 已经在抽取同一批对话（contacts/events/todos）。
+        // 心跳这里再跑一遍，等于对同一段文本做两次 LLM 抽取，后果是
+        //   1) 算力翻倍（200 条语料实测：心跳一启动就把 144 条全部重跑）；
+        //   2) 事件重复入库（事件去重靠相似度合并，阈值以上的会合并，其余会变成重复事件）。
+        // 因此 completed 的直接跳过；pending/failed 的才由心跳兜底。
+        let conversations: Vec<_> = all_conversations
+            .into_iter()
+            .filter(|c| c.extracted_status != "completed")
+            .collect();
+
+        info!(
+            "Processing {} conversations not yet extracted since {} (skipped {} already completed)",
+            conversations.len(),
+            since,
+            total - conversations.len()
+        );
 
         let mut last_conv_ts: Option<DateTime<Utc>> = None;
 
@@ -927,13 +965,29 @@ impl HeartbeatAnalyzer {
 
         debug!("detect_knowledge_conflicts: analyzing {} recent conversations", recent_convs.len());
 
-        let conv_texts: Vec<String> = recent_convs
-            .iter()
-            .enumerate()
-            .map(|(i, c)| format!("对话{} [{}]: {}", i + 1, c.timestamp, c.content))
-            .collect();
-
-        let combined_text = conv_texts.join("\n\n");
+        // 拼接时必须有**字符预算**。
+        //
+        // 原实现把最多 30 段对话全量拼进一个提示词：200 条压测语料下实测拼出
+        // 47658 字符（约 1.5 万 token），远超 context=4096，
+        // 结果每轮心跳都要白跑 30–90 秒，还看不到完整上下文。
+        // 这里从**最新**往前取，累计到 3000 字符为止。
+        const BUDGET_CHARS: usize = 3000;
+        let mut picked: Vec<String> = Vec::new();
+        let mut used = 0usize;
+        for c in recent_convs.iter().rev() {
+            let line = format!("[{}] {}", c.timestamp, c.content);
+            let len = line.chars().count();
+            if used + len > BUDGET_CHARS && !picked.is_empty() {
+                break;
+            }
+            used += len;
+            picked.push(line);
+            if used >= BUDGET_CHARS {
+                break;
+            }
+        }
+        picked.reverse();
+        let combined_text = picked.join("\n\n");
 
         let prompt = format!(
             r#"你是一个智能歧义检测助手。分析以下对话历史，判断是否存在需要用户澄清的歧义、矛盾或不确定信息。

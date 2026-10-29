@@ -1,0 +1,126 @@
+# 守心 ShouXin 配置 —— 压测档（低配 3B + 心跳不自动触发）
+# 用法： SHOUXIN_CONFIG=./config.3b.toml ./shouxin-server
+# 覆盖顺序（后者覆盖前者）：
+#   1. 本文件
+#   2. 同目录下的 config.local.toml（本地覆盖，不进 Git）
+#   3. 环境变量，前缀 SHOUXIN__，层级用双下划线，例如：
+#        SHOUXIN__LLM__PRIMARY=gguf
+#        SHOUXIN__SERVER__PORT=3100
+#   4. 命令行参数（如 --host）优先级最高
+#
+# 切换配置：SHOUXIN_CONFIG=./config.3b.toml ./shouxin-server
+
+# ============ LLM ============
+[llm]
+primary = "gguf"          # gguf | ollama | api
+secondary = "none"        # "none" 表示不启用备用模型
+temperature = 0.7
+max_tokens = 1024
+timeout_secs = 1800       # 整轮抽取超时；纯 CPU 下别开太小
+
+[llm.gguf]
+model_path = "./models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf"
+context_size = 4096
+threads = 16              # 建议 = 物理核心数（超线程通常无益）
+batch_size = 2048         # prompt 分块预填充的块大小
+# 后台服务原则：默认纯 CPU，不占显存；确需 GPU 时改成 true（还需 --features gguf-cuda）
+use_gpu = false
+n_gpu_layers = 0
+# 仅 GPU 模式生效：线程数硬性压在 物理核数 × 该百分比 以内
+gpu_max_cpu_percent = 60
+# KV Cache 是否卸载到 GPU；false = 留在内存（不额外占显存）
+offload_kv_cache = false
+
+# Ollama 后端（可选，仅当 primary/secondary 选 ollama 时生效）
+[llm.ollama]
+model = "ministral-3:3b"  # 按本机 Ollama 实际模型名替换
+endpoint = "http://localhost:11434"
+timeout_secs = 300
+max_retries = 2
+
+# OpenAI 兼容 API 后端（可选）
+[llm.api]
+endpoint = "https://api.openai.com/v1"
+api_key = ""              # 建议用环境变量 SHOUXIN__LLM__API__API_KEY 注入
+model = "gpt-4o-mini"     # 示例值，按你的服务端模型名替换
+timeout_secs = 60
+max_retries = 2
+
+# 心跳专用 LLM（强制纯 CPU，避免后台任务抢显存）
+[llm.heartbeat]
+backend = "gguf"
+model = "./models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf"
+endpoint = "gguf://localhost"
+temperature = 0.3
+max_tokens = 500
+
+# ============ 嵌入模型 ============
+[embedder]
+model_path = ".fastembed_cache"                 # 缓存根目录（相对仓库根）
+model = "intfloat/multilingual-e5-base"         # HuggingFace 仓库 ID，不是路径
+backend = "fastembed"                           # fastembed | hash
+hash_dimension = 768                            # backend=hash 时的向量维度
+fallback_to_hash = true                         # 模型缺失时降级，不阻塞启动
+
+# ============ 心跳 ============
+[heartbeat]
+enabled = true
+# 压测专用：抽取期间不自动跑心跳，避免与后台队列抢同一个模型
+base_interval_secs = 7200
+min_interval_secs = 7200
+max_interval_secs = 7200
+adaptive = false
+idle_threshold_secs = 30
+maintenance_timeout_secs = 30
+llm_timeout_secs = 120
+memory_threshold_mb = 4096      # 超过该内存占用则跳过本轮
+max_consecutive_skips = 3
+
+# ============ 存储 ============
+[storage]
+data_dir = "./data"
+dictionary_dir = "dictionary"
+relational_dir = "relational"
+vector_dir = "vector_store"
+relational_db_file = "relational.db"
+vector_index_file = "vectors.hnsw"
+question_pool_dir = "heartbeat/questions"
+
+# ============ 日志 ============
+[logging]
+level = "info"            # trace | debug | info | warn | error
+dir = "./logs"
+max_file_size_mb = 10
+
+# ============ 主智能体 ============
+[agent]
+primary_agent_id = "primary_agent_default"
+# 内部 API 令牌：用环境变量 SHOUXIN__AGENT__INTERNAL_API_TOKEN 或 config.local.toml 设置，不要写进本文件
+internal_api_token = ""
+
+# ============ HTTP 服务 ============
+[server]
+host = "127.0.0.1"        # 默认只监听本机；需要局域网访问再改 0.0.0.0
+port = 3000
+# 注：命令行 --host 优先级高于这里
+
+# ============ 事件 ============
+[event]
+long_term_hot_limit = 200
+short_term_hot_limit = 100
+
+# ============ 抽取 ============
+[extraction]
+timeout_secs = 1800             # 单次 LLM 提取超时，超时后降级正则
+intent_grace_secs = 300         # 启动时"多旧的 prepared 写入意图"视为崩溃残留
+# 事件相似度阈值（**与嵌入模型强相关**，换模型需要重新校准）
+# e5-base 实测：无关中文短句 0.84–0.89，近重复 0.99+
+event_merge_auto_threshold = 0.96      # > 该值：直接合并为同一事件
+event_merge_pending_threshold = 0.90   # > 该值（且未达上一阈值）：进待确认区
+
+# ============ 待办 ============
+[todo]
+max_pending_before_archive = 50   # 超过该值心跳归档最旧一批
+archive_keep_count = 50           # 归档时保留的 pending 数
+reminder_threshold = 30           # 超过该值生成"任务提醒"
+archive_after_days = 30           # 超过该天数未更新视为陈旧

@@ -67,6 +67,23 @@ check "POST /api/memory/search/semantic" POST "/api/memory/search/semantic" 200 
   "{\"query\":\"接口文档\",\"limit\":3,\"scope\":\"user\",\"user_id\":\"$UID_\"}" '"success"'
 check "POST /api/memory/search/contacts" POST "/api/memory/search/contacts" 200 \
   "{\"query\":\"老王\",\"limit\":3,\"user_id\":\"$UID_\"}" '"success"'
+
+# 联系人详情：等抽取把联系人落库（异步抽取，通常 10–40 秒）
+CCID=""
+for _i in $(seq 1 20); do
+  curl -sS --max-time 20 -X POST "$BASE/api/memory/search/contacts" \
+    -H 'Content-Type: application/json' \
+    -d "{\"query\":\"\",\"limit\":5,\"user_id\":\"$UID_\"}" -o "$TMP/c.json" 2>/dev/null
+  CCID=$(json_get "$TMP/c.json" contact_id)
+  [ -n "$CCID" ] && break
+  sleep 2
+done
+if [ -n "$CCID" ]; then
+  check "GET  /api/contacts/:id/detail" GET "/api/contacts/$CCID/detail?user_id=$UID_" 200 "" '"stats"'
+else
+  skip "GET  /api/contacts/:id/detail" "抽取未产出联系人"
+fi
+check "GET  /api/contacts/:id/detail(不存在)" GET "/api/contacts/no-such-contact/detail?user_id=$UID_" 404 "" ''
 check "POST /api/memory/search/events" POST "/api/memory/search/events" 200 \
   "{\"query\":\"项目\",\"limit\":3,\"owner_type\":\"User\",\"owner_id\":\"$UID_\"}" '"success"'
 check "POST /api/memory/search/history" POST "/api/memory/search/history" 200 \

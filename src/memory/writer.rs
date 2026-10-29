@@ -148,6 +148,17 @@ impl MemoryWriter {
                 person.name, person.aliases, person.contact_id
             );
 
+            // 最后一道闸：关系短语不是人名。
+            //
+            // 抽取链路的 rule_based_contact_filter 已经拦过一次，但事件里的
+            // related_person_ids 会走另一条写入口，绕过那次过滤
+            // （242 条压测里仍出现"调整和人""客户的工程师"这类条目）。
+            // 写入层再拦一次，成本是一个字符串判断。
+            if crate::memory_extractor::extractor::is_relational_phrase(&person.name) {
+                debug!("[MemoryWriter] 跳过关系短语: {}", person.name);
+                continue;
+            }
+
             // 1) 去重：按姓名或别名匹配已有联系人
             let existing = self
                 .relational
@@ -216,7 +227,33 @@ impl MemoryWriter {
                 owner_type,
                 owner_id,
             );
-            self.relational.upsert_contact_index(&contact_index).await?;
+            // 并发/归档竞态兜底：唯一索引冲突时按姓名重新定位再试一次，
+            // 避免因为一个联系人写失败而丢掉整条对话的抽取结果。
+            if let Err(e) = self.relational.upsert_contact_index(&contact_index).await {
+                let msg = e.to_string();
+                if msg.contains("UNIQUE constraint failed") {
+                    if let Ok(Some(found)) = self
+                        .relational
+                        .find_contact_by_any_name(&person.name, owner_type, owner_id)
+                        .await
+                    {
+                        let mut retried = contact_index.clone();
+                        retried.id = found.id.clone();
+                        retried.is_archived = false;
+                        retried.archived_at = None;
+                        self.relational.upsert_contact_index(&retried).await?;
+                        outcome.id_map.insert(person.contact_id.clone(), found.id.clone());
+                        warn!(
+                            "[MemoryWriter] 联系人 '{}' 触发唯一约束，已按姓名归并到已有 ID {}",
+                            person.name, found.id
+                        );
+                    } else {
+                        return Err(e);
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
 
             // 7) 别名索引（供合并候选识别）
             if !person.aliases.is_empty() {
@@ -463,8 +500,10 @@ impl MemoryWriter {
             is_agent: total.is_agent,
             parent_agent_id: total.parent_agent_id.clone(),
             is_virtual: total.is_virtual,
-            is_archived: existing.map(|e| e.is_archived).unwrap_or(false),
-            archived_at: existing.and_then(|e| e.archived_at),
+            // 写入即代表"又有互动"：把可能已被热表裁剪归档的联系人复活，
+            // 否则它虽然能查到（去重命中），却永远不会出现在检索结果里。
+            is_archived: false,
+            archived_at: None,
             activity_score: existing.map(|e| e.activity_score).unwrap_or(0.0),
         }
     }

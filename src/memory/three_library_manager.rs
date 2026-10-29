@@ -796,6 +796,7 @@ impl ThreeLibraryMemoryManager {
                 activity_score: 0.0,
                 related_contacts: Vec::new(),
                 relationship_tags: Vec::new(),
+                is_virtual: false,
             }
         }).collect();
 
@@ -941,11 +942,158 @@ impl ThreeLibraryMemoryManager {
                     activity_score: trait_contact.activity_score,
                     related_contacts,
                     relationship_tags,
+                    is_virtual: profile.map(|p| p.is_virtual).unwrap_or(false),
                 }
             })
             .collect();
 
         Ok(contacts)
+    }
+
+    /// 联系人全息详情：人设 + 关联联系人 + 关联事件 + 相关记忆原文
+    ///
+    /// 为什么需要单独的接口：
+    /// `search_contacts` 只返回联系人自身的画像字段，调用方拿不到
+    /// "这个人参与过哪些事件""哪几段对话提到过他"。
+    /// 智能体要做人物推理（谁是谁的上级、谁和谁一个项目组）时，
+    /// 必须能一次拿到关系 + 事件 + 原文证据。
+    pub async fn get_contact_detail(
+        &self,
+        contact_id: &str,
+        scope: Scope,
+        user_id: Option<&str>,
+        event_limit: usize,
+        memory_limit: usize,
+    ) -> Result<serde_json::Value, ShouxinError> {
+        use serde_json::json;
+
+        let owner_type = self.get_owner_type(&scope);
+        let owner_id = match &scope {
+            Scope::User => user_id.map(|s| s.to_string()).unwrap_or_else(|| self.config.user_id.clone()),
+            Scope::Agent => self.config.agent_id.clone(),
+        };
+
+        // 1) 联系人本体（含 is_virtual / is_agent / background）
+        let contact = self
+            .relational_store
+            .get_contact_by_id(contact_id, owner_type, &owner_id)
+            .await?
+            .ok_or_else(|| ShouxinError::EntityNotFound(format!("联系人不存在: {}", contact_id)))?;
+
+        let aliases: Vec<String> = serde_json::from_str(&contact.aliases).unwrap_or_default();
+        let relationship_tags: Vec<String> =
+            serde_json::from_str(&contact.relationship_tags).unwrap_or_default();
+        let related_ids: Vec<String> =
+            serde_json::from_str(&contact.related_contact_ids).unwrap_or_default();
+        // background 是 NOT NULL 的 TEXT，空串等价于"没有画像"
+        let background = if contact.background.trim().is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(contact.background.clone())
+        };
+
+        // 2) 关联联系人：解析成 id/name/tags，避免只给一堆 UUID
+        let related_profiles = self
+            .relational_store
+            .fetch_contact_profiles(&related_ids)
+            .await
+            .unwrap_or_default();
+        let related_names = self
+            .relational_store
+            .fetch_contact_names(&related_ids)
+            .await
+            .unwrap_or_default();
+        let related_contacts: Vec<serde_json::Value> = related_ids
+            .iter()
+            .map(|id| {
+                let tags: Vec<String> = related_profiles
+                    .get(id)
+                    .and_then(|p| p.relationship_tags.as_ref())
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or_default();
+                json!({
+                    "contact_id": id,
+                    "name": related_names.get(id).cloned().unwrap_or_default(),
+                    "relationship_tags": tags,
+                })
+            })
+            .collect();
+
+        // 3) 关联事件（event_index.contact_ids 里有该 id 的事件）
+        let events = self
+            .relational_store
+            .search_events_by_contact(contact_id, owner_type, &owner_id)
+            .await
+            .unwrap_or_default();
+        let events_json: Vec<serde_json::Value> = events
+            .iter()
+            .take(event_limit)
+            .map(|e| {
+                json!({
+                    "event_id": e.event_id,
+                    "title": e.title.clone().unwrap_or_default(),
+                    "summary": e.summary.clone(),
+                    "event_time": e.event_time.or(Some(e.time_range_start)),
+                    "time_range_start": e.time_range_start,
+                    "time_range_end": e.time_range_end,
+                    "importance": e.importance.clone(),
+                    "status": e.status.clone(),
+                })
+            })
+            .collect();
+
+        // 4) 相关记忆原文：最近对话里包含姓名或任一别名的片段（有界扫描）
+        let mut keywords = vec![contact.name.clone()];
+        keywords.extend(aliases.iter().cloned());
+        let conversations = self
+            .dictionary_store
+            .search_conversations_by_owner_keywords(
+                owner_type,
+                &owner_id,
+                &keywords,
+                500,
+                memory_limit,
+            )
+            .await
+            .unwrap_or_default();
+        let memories_json: Vec<serde_json::Value> = conversations
+            .iter()
+            .map(|c| {
+                let snippet: String = c.content.chars().take(300).collect();
+                json!({
+                    "conversation_id": c.id,
+                    "snippet": snippet,
+                    "timestamp": c.timestamp,
+                    "matched_keyword": keywords
+                        .iter()
+                        .find(|k| !k.is_empty() && c.content.contains(k.as_str()))
+                        .cloned()
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "contact": {
+                "contact_id": contact.id,
+                "name": contact.name,
+                "aliases": aliases,
+                "is_virtual": contact.is_virtual,
+                "is_agent": contact.is_agent,
+                "background": background,
+                "relationship_tags": relationship_tags,
+                "last_interaction_at": contact.last_interaction_at,
+                "activity_score": contact.activity_score,
+            },
+            "related_contacts": related_contacts,
+            "events": events_json,
+            "memories": memories_json,
+            "stats": {
+                "event_count": events.len(),
+                "memory_count": conversations.len(),
+                "related_count": related_ids.len(),
+            }
+        }))
     }
 
     /// 搜索事件

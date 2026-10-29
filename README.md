@@ -276,7 +276,8 @@ bash scripts/bench_cpu.sh models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf
 | POST | `/api/memory/replay_failed` | 批量重放失败的对话 |
 | POST | `/api/memory/search/semantic` | 语义检索（向量） |
 | POST | `/api/memory/search/events` | 事件检索 |
-| POST | `/api/memory/search/contacts` | 联系人检索 |
+| POST | `/api/memory/search/contacts` | 联系人检索（含人设 / 别名 / 关系 / `is_virtual`） |
+| GET | `/api/contacts/:id/detail` | **联系人全息详情**：人设 + 关联联系人 + 关联事件 + 相关记忆原文 |
 | POST | `/api/memory/search/history` | 历史对话检索 |
 | POST | `/api/search/smart` | 多路融合检索 |
 | GET/POST | `/api/todos` | 待办列表 / 新建 |
@@ -297,15 +298,23 @@ bash scripts/bench_cpu.sh models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf
 ## 测试
 
 ```bash
-cargo test --lib      # 69 项单元测试（快，不加载模型）
-cargo test --tests    # 91 项集成测试（会加载真实 ONNX 嵌入模型）
+cargo test --lib      # 单元测试（快，不加载模型）
+cargo test --tests    # 集成测试（会加载真实 ONNX 嵌入模型）
 
-# 全量 API 冒烟（覆盖 routes.rs 里注册的全部 35 个端点，需先启动服务）
+# 全量 API 冒烟（覆盖 routes.rs 注册的全部端点，需先启动服务）
 bash scripts/api_smoke_test.sh
 BASE=http://127.0.0.1:3001 USER_ID=smoke bash scripts/api_smoke_test.sh   # 指定地址/隔离用户
+
+# 200 条验收压测（自造语料：长/短/公式/人物关系/边界）
+python scripts/stress_200.py submit --base http://127.0.0.1:3000 --user stress200
+python scripts/stress_200.py poll   --base http://127.0.0.1:3000 --user stress200
+python scripts/stress_200.py verify --base http://127.0.0.1:3000 --user stress200
+
+# 批量生成联系人画像（心跳每轮只处理 3 个，需要多轮驱动）
+python scripts/gen_personas.py --base http://127.0.0.1:3000 --user stress200 --max-rounds 40
 ```
 
-当前基线：**160 passed / 0 failed**。
+压测结果与发现的问题见 **[docs/STRESS_TEST.md](docs/STRESS_TEST.md)**。
 
 ---
 
@@ -349,6 +358,7 @@ ShouXin/
 | 文档 | 内容 |
 |------|------|
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | **配置详解**：gguf/Ollama/API 三种后端切换、上下文调节、阈值校准 |
+| [docs/STRESS_TEST.md](docs/STRESS_TEST.md) | **200 条压测报告**：语料设计、检查项结论、暴露的缺陷 |
 | [docs/MODEL_SETUP.md](docs/MODEL_SETUP.md) | 推理模型 / 嵌入模型下载与目录布局 |
 | [docs/BUILD.md](docs/BUILD.md) | 构建指南与常见编译错误 |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | CPU 推理性能：基准方法、根因分析、调优 |

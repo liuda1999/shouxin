@@ -849,6 +849,10 @@ pub fn create_router(async_memory: Arc<AsyncMemory>, file_state: Arc<FileApiStat
             axum::routing::post(search_contacts),
         )
         .route(
+            "/api/contacts/:id/detail",
+            axum::routing::get(get_contact_detail),
+        )
+        .route(
             "/api/memory/search/events",
             axum::routing::post(search_events),
         )
@@ -1137,6 +1141,66 @@ async fn search_contacts(
     }
 }
 
+/// 联系人详情查询参数
+#[derive(Debug, Deserialize)]
+struct ContactDetailQuery {
+    /// 操作范围：user / agent
+    #[serde(default)]
+    scope: Option<String>,
+    /// 用户 ID（scope=user 时）
+    #[serde(default)]
+    user_id: Option<String>,
+    /// 返回的事件条数上限
+    #[serde(default)]
+    event_limit: Option<usize>,
+    /// 返回的相关记忆条数上限
+    #[serde(default)]
+    memory_limit: Option<usize>,
+}
+
+/// 联系人全息详情：人设 + 关联联系人 + 关联事件 + 相关记忆原文
+async fn get_contact_detail(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    Path(contact_id): Path<String>,
+    Query(q): Query<ContactDetailQuery>,
+) -> ApiResponse<serde_json::Value> {
+    if let Err(e) = validate_user_id(&q.user_id) {
+        return ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST);
+    }
+    let scope = match q.scope.as_deref() {
+        None | Some("") => Scope::User,
+        Some(s) if s.eq_ignore_ascii_case("user") => Scope::User,
+        Some(s) if s.eq_ignore_ascii_case("agent") => Scope::Agent,
+        Some(s) => {
+            return ApiResponse::error_with_status(
+                format!("invalid scope '{}': expected 'user' or 'agent'", s),
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
+    // 上限保护：联系人详情是聚合查询，不限制条数容易被一个请求拉爆
+    let event_limit = cap_limit(q.event_limit.unwrap_or(20)).min(100);
+    let memory_limit = cap_limit(q.memory_limit.unwrap_or(10)).min(50);
+
+    match async_memory
+        .get_contact_detail(&contact_id, scope, q.user_id.as_deref(), event_limit, memory_limit)
+        .await
+    {
+        Ok(detail) => ApiResponse::success(detail),
+        Err(e) => {
+            // 联系人不存在属于"查无此物"，不该报内部错误
+            if matches!(e, crate::error::ShouxinError::EntityNotFound(_)) {
+                return ApiResponse::error_with_status(
+                    format!("联系人不存在: {}", contact_id),
+                    StatusCode::NOT_FOUND,
+                );
+            }
+            error!("查询联系人详情失败: {}", e);
+            ApiResponse::error("内部错误".to_string())
+        }
+    }
+}
+
 /// 搜索事件
 async fn search_events(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
@@ -1418,14 +1482,7 @@ async fn add_todo(
 
     // 解析截止时间：不填则默认"7 天后 23:59:59"（与抽取链路一致，避免接口强制要求 deadline）
     let deadline = match req.deadline.as_deref().map(str::trim) {
-        None | Some("") => {
-            let date = (Utc::now() + chrono::Duration::days(7)).date_naive();
-            DateTime::<Utc>::from_naive_utc_and_offset(
-                date.and_hms_opt(23, 59, 59)
-                    .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap()),
-                Utc,
-            )
-        }
+        None | Some("") => crate::utils::default_deadline_in_days(7),
         Some(raw) => match DateTime::parse_from_rfc3339(raw) {
             Ok(dt) => dt.with_timezone(&Utc),
             Err(e) => {
@@ -1822,7 +1879,14 @@ use crate::core::contact::OwnerType;
 #[derive(Debug, Deserialize)]
 pub struct AddVirtualCharacterRequest {
     pub name: String,
+    #[serde(default)]
     pub aliases: Vec<AliasInput>,
+    /// 归属用户（不填则 default_user）
+    ///
+    /// 之前这里写死 "default_user"，导致多用户场景下虚拟角色在别人的
+    /// 联系人列表里根本查不到（跨 owner 隔离把创建出来的记录挡在外面）。
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1945,7 +2009,11 @@ async fn add_virtual_entity(
         background: "".to_string(),
         notes: "".to_string(),
         owner_type: OwnerType::User,
-        owner_id: "default_user".to_string(),
+        owner_id: req
+            .user_id
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "default_user".to_string()),
         is_agent: false,
         parent_agent_id: None,
         is_virtual: true,

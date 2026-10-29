@@ -242,8 +242,22 @@ impl GgufClient {
             guard.as_ref().map(|h| h.model.clone())
         };
 
+        // 紧急开关：跳过模型的 Jinja 对话模板，直接用内置模板。
+        //
+        // 为什么需要：llama.cpp 的 `apply_chat_template` 内部会对**整段渲染结果**
+        // 再调一次 `llama_tokenize`（用于识别特殊 token），这条路径绕过了
+        // `infer()` 里的分段分词，于是又会踩到 MSVC std::regex 的递归上限，
+        // 导致 `regex_error(error_stack)` → 进程 abort。
+        // 242 条压测里"抽取全过、画像必崩"就是这个差异造成的。
+        // 打开该开关后，提示词只由 `infer()` 分词（已分段），可规避。
+        let skip_template = std::env::var("SHOUXIN_SKIP_CHAT_TEMPLATE")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false);
+
         if let Some(model) = model {
-            if let Ok(tmpl) = model.chat_template(None) {
+            if skip_template {
+                tracing::debug!("[GGUF] SHOUXIN_SKIP_CHAT_TEMPLATE 已开启，跳过 Jinja 模板");
+            } else if let Ok(tmpl) = model.chat_template(None) {
                 let mut msgs: Vec<llama_cpp_2::model::LlamaChatMessage> = Vec::new();
                 if !system_text.is_empty() {
                     if let Ok(m) = llama_cpp_2::model::LlamaChatMessage::new(
@@ -394,7 +408,18 @@ impl GgufClient {
     async fn infer(&self, prompt: &str) -> Result<String> {
         self.ensure_loaded().await?;
 
-        let prompt_str = prompt.to_string();
+        // 先做分词器安全化处理，再用处理后的文本。
+        //
+        // 背景（真实崩溃）：llama.cpp 的 Mistral 预分词正则形如
+        //   [^\r\n\p{L}\p{N}]?((?=[\p{L}])([^a-z]))*((?=[\p{L}])([^A-Z]))+...
+        // MSVC 的 std::regex 是递归实现，遇到上标/下标/组合符时会在长文本上
+        // 触发 regex_error(error_stack)，而 C++ 异常跨 FFI 抛回 Rust 会直接
+        // `fatal runtime error: Rust cannot catch foreign exceptions` —— **整个进程 abort**。
+        // 200 条压测实测：一条含 ∑/ᵢ/² 的数学公式就让服务崩了，
+        // 队列里 52 条待抽取任务全部中断。
+        // 这里把这类字符替换成 ASCII 等价形式，既不丢语义，也让分词器回到安全路径。
+        let prompt_owned = sanitize_for_tokenizer(prompt);
+        let prompt_str = prompt_owned;
         let max_tokens = self.max_tokens.unwrap_or(512);
         let temperature = self.temperature;
         let context_size = self.context_size;
@@ -445,9 +470,7 @@ impl GgufClient {
 
             context.clear_kv_cache();
 
-            let tokens = model
-                .str_to_token(&prompt_str, AddBos::Never)
-                .map_err(|e| ShouxinError::LLMError(format!("分词失败: {}", e)))?;
+            let tokens = tokenize_chunked(model, &prompt_str)?;
 
             let n_ctx = context.n_ctx() as usize;
             let effective_max_tokens = if tokens.len() + max_tokens as usize > n_ctx {
@@ -620,14 +643,25 @@ impl GgufClient {
 #[async_trait]
 impl LlmClient for GgufClient {
     async fn chat(&self, messages: Vec<Message>) -> Result<String> {
-        let system_text = messages.iter()
-            .find(|m| m.role == MessageRole::System)
-            .map(|m| m.content.trim().to_string())
-            .unwrap_or_default();
-        let user_text = messages.iter()
-            .find(|m| m.role == MessageRole::User)
-            .map(|m| m.content.trim().to_string())
-            .unwrap_or_default();
+        // 净化必须发生在**模板渲染之前**。
+        //
+        // `build_chat_prompt` 会调用 llama.cpp 的 `apply_chat_template`，
+        // 它内部同样要分词（用于校验特殊 token）。之前只在 `infer()` 里净化，
+        // 于是模板渲染这一步仍然拿着原始文本去分词 —— 含 emoji/数学符号/超长串时
+        // 依旧会触发 `regex_error(error_stack)` 并 abort 整个进程。
+        // 压测里"人设生成阶段反复崩溃"就是这个漏点。
+        let system_text = sanitize_for_tokenizer(
+            &messages.iter()
+                .find(|m| m.role == MessageRole::System)
+                .map(|m| m.content.trim().to_string())
+                .unwrap_or_default(),
+        );
+        let user_text = sanitize_for_tokenizer(
+            &messages.iter()
+                .find(|m| m.role == MessageRole::User)
+                .map(|m| m.content.trim().to_string())
+                .unwrap_or_default(),
+        );
 
         let prompt = self.build_chat_prompt(&system_text, &user_text).await;
 
@@ -732,6 +766,161 @@ impl GgufClient {
     }
 }
 
+/// 分段分词：把长文本切成小段分别 tokenize，再拼接结果
+///
+/// 为什么需要：llama.cpp 的预分词用的是 `std::regex`（MSVC 实现）。
+/// 它有一个与**单次输入长度**相关的匹配预算，超了会抛
+/// `regex_error(error_stack): insufficient memory to determine whether the regular expression could match`。
+/// 这个 C++ 异常跨 FFI 抛回 Rust 无法捕获，直接 `fatal runtime error: Rust cannot catch foreign exceptions`
+/// —— **整个服务进程 abort**。
+///
+/// 实测：约 8900 字符的抽取提示（其中含 1100 字符纯数字串）100% 崩溃；
+/// 同样的提示去掉那串数字就正常。把 `thread_stack_size` 提到 32 MB 也无效，
+/// 说明不是 OS 栈，而是 STL 内部的递归上限。
+///
+/// 按 512 字符分段后，单次 regex 输入恒定在 512 以内，
+/// 边界处最多损失一两个 BPE 合并（对提示词无实质影响）。
+fn tokenize_chunked(
+    model: &LlamaModel,
+    text: &str,
+) -> Result<Vec<llama_cpp_2::token::LlamaToken>> {
+    use llama_cpp_2::token::LlamaToken;
+
+    const CHUNK_CHARS: usize = 512;
+
+    // 短文本直接走原路径，避免任何行为变化
+    if text.chars().count() <= CHUNK_CHARS {
+        return model
+            .str_to_token(text, AddBos::Never)
+            .map_err(|e| ShouxinError::LLMError(format!("分词失败: {}", e)));
+    }
+
+    let mut all: Vec<LlamaToken> = Vec::new();
+    let mut buf = String::new();
+    let mut buf_len = 0usize;
+
+    let flush = |buf: &mut String, buf_len: &mut usize, all: &mut Vec<LlamaToken>| -> Result<()> {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let toks = model
+            .str_to_token(buf, AddBos::Never)
+            .map_err(|e| ShouxinError::LLMError(format!("分词失败: {}", e)))?;
+        all.extend(toks);
+        buf.clear();
+        *buf_len = 0;
+        Ok(())
+    };
+
+    for ch in text.chars() {
+        buf.push(ch);
+        buf_len += 1;
+        // 优先在换行处切，减少跨段合并损失
+        if buf_len >= CHUNK_CHARS {
+            flush(&mut buf, &mut buf_len, &mut all)?;
+        }
+        let _ = ch;
+    }
+    flush(&mut buf, &mut buf_len, &mut all)?;
+
+    Ok(all)
+}
+
+/// 把会触发 llama.cpp 分词正则崩溃的字符替换成 ASCII 等价形式
+///
+/// 只处理"数学/排版装饰字符"，不动中日韩文字与常规标点，
+/// 因此不会影响语义，也不会改变入库的原文（本函数只作用于**提示词**）。
+pub(crate) fn sanitize_for_tokenizer(input: &str) -> String {
+    /// 允许进入分词器的字符（白名单）
+    ///
+    /// 为什么用白名单而不是黑名单：触发 llama.cpp 分词正则崩溃的字符集无法穷举
+    /// （emoji、杂项符号、组合符、上下标、区域指示符都试过，仍有漏网），
+    /// 而 LLM 提示词只需要"正常语言文字"。白名单之外一律丢弃，
+    /// 从源头保证分词器只看到它稳定处理过的字符。
+    fn keep_char(c: char) -> bool {
+        let u = c as u32;
+        if u == 0x0A || u == 0x09 {
+            return true;
+        }
+        if (0x20..=0x7E).contains(&u) {
+            return true; // ASCII 可打印
+        }
+        (0x4E00..=0x9FFF).contains(&u)      // CJK 统一表意
+            || (0x3400..=0x4DBF).contains(&u)   // CJK 扩展 A
+            || (0x3000..=0x303F).contains(&u)   // CJK 标点
+            || (0xFF00..=0xFFEF).contains(&u)   // 全角字符
+            || (0x3040..=0x30FF).contains(&u)   // 日文假名
+            || (0xAC00..=0xD7AF).contains(&u)   // 韩文
+            || (0x0370..=0x03FF).contains(&u)   // 希腊字母
+            || (0x0400..=0x04FF).contains(&u)   // 西里尔字母
+            || ((0x2000..=0x206F).contains(&u) && !(0x200B..=0x200F).contains(&u)) // 通用标点
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut chars_since_newline = 0usize;
+    let mut prev: Option<char> = None;
+    let mut run_len = 0usize;
+
+    for ch in input.chars() {
+        // 1) 数学符号映射成 ASCII（保留语义）
+        let mapped: Option<&str> = match ch {
+            '⁰' => Some("0"), '¹' => Some("1"), '²' => Some("2"), '³' => Some("3"),
+            '⁴' => Some("4"), '⁵' => Some("5"), '⁶' => Some("6"), '⁷' => Some("7"),
+            '⁸' => Some("8"), '⁹' => Some("9"), '⁺' => Some("+"), '⁻' => Some("-"),
+            'ⁿ' => Some("n"), 'ᵢ' => Some("i"), 'ⱼ' => Some("j"), 'ₖ' => Some("k"),
+            'ₙ' => Some("n"), 'ₓ' => Some("x"), '₀' => Some("0"), '₁' => Some("1"),
+            '₂' => Some("2"), '₃' => Some("3"), '₄' => Some("4"), '₅' => Some("5"),
+            '₆' => Some("6"), '₇' => Some("7"), '₈' => Some("8"), '₉' => Some("9"),
+            '∑' => Some("sum"), '∏' => Some("prod"), '∫' => Some("int"),
+            '√' => Some("sqrt"), '∞' => Some("inf"), '≈' => Some("~="),
+            '≠' => Some("!="), '≤' => Some("<="), '≥' => Some(">="),
+            '±' => Some("+/-"), '×' => Some("x"), '÷' => Some("/"),
+            '→' => Some("->"), '←' => Some("<-"), '⇒' => Some("=>"),
+            '∂' => Some("d"),
+            _ => None,
+        };
+
+        if let Some(rep) = mapped {
+            out.push_str(rep);
+            chars_since_newline += rep.chars().count();
+            prev = None;
+            run_len = 0;
+            continue;
+        }
+
+        // 2) 白名单之外直接丢
+        if !keep_char(ch) {
+            continue;
+        }
+
+        // 3) 同一字符连续超过 20 次只保留 20 个（折叠 abcabc/!!!! 这类超长同构串）
+        if Some(ch) == prev {
+            run_len += 1;
+        } else {
+            run_len = 1;
+            prev = Some(ch);
+        }
+        if run_len > 20 {
+            continue;
+        }
+
+        // 4) 软换行：每 400 字符插一个换行，打断超长单行
+        if chars_since_newline >= 400 {
+            out.push('\n');
+            chars_since_newline = 0;
+        }
+        chars_since_newline += 1;
+        if ch == '\n' || ch == '\t' {
+            chars_since_newline = 0;
+        }
+
+        out.push(ch);
+    }
+
+    out
+
+}
+
 /// 取物理核心数（拿不到时退回逻辑核数，最少 1）
 pub(crate) fn physical_cores() -> usize {
     let phys = num_cpus::get_physical();
@@ -814,5 +1003,37 @@ mod thread_cap_tests {
         // 0% / 超过 100% 都会被夹到合法区间
         assert_eq!(cap_threads_for_gpu(16, 8, 0), 1);
         assert_eq!(cap_threads_for_gpu(16, 8, 200), 8);
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_for_tokenizer;
+
+    #[test]
+    fn maps_math_symbols_to_ascii() {
+        let s = sanitize_for_tokenizer("μ = (1/n)∑xᵢ，σ = √(∑(xᵢ-μ)²/n)");
+        assert!(!s.contains('∑'));
+        assert!(!s.contains('ᵢ'));
+        assert!(!s.contains('²'));
+        assert!(s.contains("sum"));
+        assert!(s.contains("sqrt"));
+        // 中文标点必须保留
+        assert!(s.contains('，'));
+    }
+
+    #[test]
+    fn strips_emoji_and_symbols() {
+        let s = sanitize_for_tokenizer("今天和 😀 张伟 👨‍💻 一起 review，🚀 下周上线 👀");
+        assert!(!s.contains('😀'));
+        assert!(!s.contains('🚀'));
+        assert!(s.contains("张伟"));
+        assert!(s.contains("review"));
+    }
+
+    #[test]
+    fn keeps_normal_chinese_and_english() {
+        let raw = "张伟说明天上午十点开周会，deadline 是 11-04。";
+        assert_eq!(sanitize_for_tokenizer(raw), raw);
     }
 }

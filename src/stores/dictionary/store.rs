@@ -1176,6 +1176,42 @@ impl DictionaryStoreTrait for DictionaryStore {
         Ok(())
     }
 
+    async fn search_conversations_by_owner_keywords(
+        &self,
+        owner_type: crate::core::contact::OwnerType,
+        owner_id: &str,
+        keywords: &[String],
+        scan_limit: usize,
+        limit: usize,
+    ) -> Result<Vec<ConversationRecord>, ShouxinError> {
+        let mut results = Vec::new();
+        if keywords.is_empty() || limit == 0 || scan_limit == 0 {
+            return Ok(results);
+        }
+
+        // 从时间索引尾部（最新）往前扫，最多 scan_limit 条就停。
+        // 联系人详情是低频按需查询，但仍必须设上界，避免退化成整库遍历。
+        for item in self.conversation_ts_index.iter().rev().take(scan_limit) {
+            if results.len() >= limit {
+                break;
+            }
+            let (_, conv_key_bytes) = item?;
+            let conv_key = String::from_utf8_lossy(&conv_key_bytes);
+            if let Some(conv_data) = self.conversations.get(conv_key.as_bytes())? {
+                if let Ok(record) = serde_json::from_slice::<ConversationRecord>(&conv_data) {
+                    if record.owner_type != owner_type || record.owner_id != owner_id {
+                        continue;
+                    }
+                    if keywords.iter().any(|k| !k.is_empty() && record.content.contains(k.as_str())) {
+                        results.push(record);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     async fn get_conversation_by_id(&self, id: &str) -> Result<Option<Conversation>, ShouxinError> {
         if let Some(conv_key_bytes) = self.id_index.get(id.as_bytes())? {
             let conv_key = String::from_utf8_lossy(&conv_key_bytes);

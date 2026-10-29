@@ -240,6 +240,15 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(std::thread::available_parallelism().map(|p| p.get()).unwrap_or(16))
                 .max_blocking_threads(512)
+                // 默认栈只有 2 MB。llama.cpp 的预分词用的是 MSVC 的 std::regex，
+                // 它是**递归**匹配器，遇到长数字串/长无标点文本时递归深度接近字符数，
+                // 2 MB 栈会直接爆掉：`regex_error(error_stack)`。
+                // 这个 C++ 异常跨 FFI 抛回 Rust 无法被 catch_unwind 捕获，
+                // 结果是 `fatal runtime error: Rust cannot catch foreign exceptions` —— 整个服务 abort。
+                // 200 条压测实测：一条 1100 字符的纯数字串（F014）和一条含数学符号的条目
+                // 各自触发一次，队列里 50+ 条任务全部中断。
+                // 32 MB 足够覆盖单次推理里的分词递归（远小于常见的 8 GB 内存占用）。
+                .thread_stack_size(32 * 1024 * 1024)
                 .enable_all()
                 .build()
                 .expect("Failed to create api_runtime");
@@ -608,7 +617,7 @@ async fn run_api_server(
     // 问题池目录来自配置（原实现写死 ".heartbeat_data"，配置项形同虚设）
     let question_pool_dir = format!(
         "{}/{}",
-        settings.storage.data_dir, settings.storage.question_pool_dir
+        data_root, settings.storage.question_pool_dir
     );
     let question_pool = Arc::new(QuestionPool::new(&question_pool_dir, rel_for_heartbeat.clone()).map_err(|e| anyhow::anyhow!("Failed to create question pool at {}: {}", question_pool_dir, e))?);
     let analyzer = Arc::new(HeartbeatAnalyzer::new(
@@ -648,7 +657,7 @@ async fn run_api_server(
         dictionary: dict_clone.clone(),
         vector_store: vs_file as Arc<dyn VectorStore>,
         embedder: emb_clone.clone(),
-        data_dir: settings.storage.data_dir.clone(),
+        data_dir: data_root.clone(),
     };
     let file_state = Arc::new(file_state);
 

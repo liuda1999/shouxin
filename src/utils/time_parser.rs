@@ -2,7 +2,7 @@
 //!
 //! 提供自然语言时间表达式解析功能
 
-use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use regex::Regex;
 use std::collections::HashMap;
 
@@ -213,6 +213,24 @@ fn parse_explicit_clock(text: &str) -> Option<(u32, u32)> {
 static_regex!(re_days_later, r"(\d+)\s*天后?");
 
 /// 解析相对日期：今天 / 明天 / 后天 / N天后，并叠加时段
+/// 默认截止时间：`days` 天后的**本地** 23:59:59（返回 UTC）
+///
+/// 为什么不用 `(Utc::now() + days).date_naive()`：
+/// 在 UTC+8 的 00:00–08:00 之间，UTC 日期比本地日期**早一天**，
+/// 于是"7 天后"会算成"6 天后"，用户看到的是提前一天的截止日。
+pub fn default_deadline_in_days(days: i64) -> DateTime<Utc> {
+    let target = Local::now() + chrono::Duration::days(days);
+    let date = target.date_naive();
+    let end = date
+        .and_hms_opt(23, 59, 59)
+        .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap());
+    Local
+        .from_local_datetime(&end)
+        .single()
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|| Utc::now() + chrono::Duration::days(days))
+}
+
 /// 解析"月底 / 月初"这类按月边界表达
 ///
 /// 之前 `find_precise_time_expr` 会把"月底"匹配出来，但解析器不支持它，
@@ -367,6 +385,16 @@ mod tests {
         let conv3 = "小陈负责写测试用例，本周五之前要给我。";
         let dt3 = resolve_deadline_in_text(conv3, "写测试用例", now).unwrap();
         assert_eq!(dt3.format("%Y-%m-%d").to_string(), "2026-10-30");
+    }
+
+    /// 回归：默认截止日必须按**本地**日期算，否则 UTC+8 的凌晨会早一天
+    #[test]
+    fn default_deadline_uses_local_date() {
+        use chrono::Local;
+        let dl = default_deadline_in_days(7).with_timezone(&Local);
+        let expect = (Local::now() + chrono::Duration::days(7)).date_naive();
+        assert_eq!(dl.date_naive(), expect, "默认截止日应为本地日期的 7 天后");
+        assert_eq!(dl.time().format("%H:%M:%S").to_string(), "23:59:59");
     }
 
     #[test]

@@ -59,3 +59,14 @@ models/
 
 # 本机工具链路径覆盖（含机器特定绝对路径，不进仓库）
 scripts/toolchain.local.sh
+
+# 压测运行时产物（不要把状态文件和日志提交进仓库）
+.stress*_state*.json
+.persona*.log
+.persona*.err
+.poll*.log
+.poll*.err
+.server_*.log
+.server_*.err
+.supervisor.log
+data_stress*/

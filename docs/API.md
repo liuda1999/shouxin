@@ -85,6 +85,53 @@ POST /api/memory/search/contacts
 { "query": "老王", "limit": 5, "user_id": "default_user" }
 ```
 
+返回每个联系人的 `aliases` / `background`（人设 JSON）/ `relationship_tags` /
+`related_contacts`（已解析成姓名）以及 **`is_virtual`**（是否为智能体扮演的虚拟人物）。
+
+### 联系人全息详情
+
+```http
+GET /api/contacts/:contact_id/detail?user_id=default_user&event_limit=20&memory_limit=10
+```
+
+一次拿到「人设 + 关联联系人 + 关联事件 + 相关记忆原文」，用于人物推理与关系追溯：
+
+```json
+{
+  "success": true,
+  "data": {
+    "contact": {
+      "contact_id": "…", "name": "老王",
+      "aliases": ["王建国"], "is_virtual": false, "is_agent": false,
+      "background": "{\"personal_info\":{…}\",\"social_relations\":[…]}",
+      "relationship_tags": ["同事"], "activity_score": 0.8
+    },
+    "related_contacts": [
+      { "contact_id": "…", "name": "小李", "relationship_tags": ["同事"] }
+    ],
+    "events": [
+      { "event_id": "…", "title": "架构评审会", "summary": "…",
+        "event_time": "2026-11-04T14:00:00Z", "importance": "high", "status": "pending" }
+    ],
+    "memories": [
+      { "conversation_id": "…", "snippet": "老王是我的同事，在研发部做后端…",
+        "timestamp": "2026-10-29T…", "matched_keyword": "老王" }
+    ],
+    "stats": { "event_count": 3, "memory_count": 2, "related_count": 2 }
+  }
+}
+```
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `user_id` | 配置里的默认用户 | 归属用户 |
+| `scope` | `user` | `user` / `agent` |
+| `event_limit` | 20 | 最多返回多少事件（上限 100） |
+| `memory_limit` | 10 | 最多返回多少条记忆原文（上限 50，扫描上界 500 条对话） |
+
+> 相关记忆按「姓名或任一别名逐字命中」筛选，取最近 500 条对话内有界扫描，
+> 不会为了这个查询遍历整个字典库。联系人不存在时返回 **404**。
+
 ### 事件检索
 
 ```http
@@ -201,7 +248,21 @@ DELETE /api/files/:file_id?scope=user&user_id=default_user      # 删除
 GET  /api/virtual_entities                     # 列表
 GET  /api/virtual_entities/:id                 # 详情（含人设）
 GET  /api/virtual_entities/check/:name         # 该名字是否已存在
+POST /api/virtual_entities                     # 新建（可带 user_id）
+PUT  /api/virtual_entities/:id                 # 改名 / 改别名
+DELETE /api/virtual_entities/:id               # 删除（仅限 is_virtual=1）
 ```
+
+创建虚拟角色会同时写入一条 `contact_index` 记录并置 `is_virtual = 1`，
+因此它和真实联系人共用同一套检索/详情接口，靠 `is_virtual` 区分：
+
+```http
+POST /api/virtual_entities
+{ "name": "苏晚晴", "aliases": [{ "name": "晚晴", "alias_type": "nickname" }], "user_id": "default_user" }
+```
+
+> `user_id` 不填时归属 `default_user`。**必须填对**，否则跨 owner 隔离会让你在
+> 自己的联系人列表里查不到这个角色（这是 v0.5.0 修复的一个问题）。
 
 ---
 

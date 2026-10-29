@@ -227,6 +227,24 @@ impl AsyncMemory {
         self.manager.search_contacts(query, limit, scope, user_id, include_archived).await
     }
 
+    /// 联系人全息详情：人设 + 关联联系人 + 关联事件 + 相关记忆原文
+    ///
+    /// 与 `search_contacts` 的区别：后者只给联系人自身字段，
+    /// 本方法额外聚合该联系人参与的事件与提到他的对话原文，
+    /// 供智能体做"人物 + 关系 + 证据"的完整推理。
+    pub async fn get_contact_detail(
+        &self,
+        contact_id: &str,
+        scope: Scope,
+        user_id: Option<&str>,
+        event_limit: usize,
+        memory_limit: usize,
+    ) -> Result<serde_json::Value, ShouxinError> {
+        self.manager
+            .get_contact_detail(contact_id, scope, user_id, event_limit, memory_limit)
+            .await
+    }
+
     /// 搜索事件
     ///
     /// 搜索流程：

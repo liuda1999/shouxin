@@ -35,6 +35,59 @@ pub struct ExtractionTask {
     pub retry_count: u32,
 }
 
+/// 判断输入是否"病态"到不适合送进 LLM 分词器
+///
+/// 三条判据（任一命中即跳过 LLM）：
+/// 1. 数字占比 > 50% 且长度 > 200（纯数字轰炸）；
+/// 2. 同一字符连续出现 > 100 次（"哈哈哈哈…"）；
+/// 3. 连续 > 400 字符没有任何标点或空白（超长单句）。
+///
+/// 这类文本既没有实体也没有关系，正则兜底足够；而送进 llama.cpp 会让
+/// MSVC std::regex 递归爆掉并 abort 整个进程。
+pub(crate) fn is_pathological_input(text: &str) -> bool {
+    let len = text.chars().count();
+    if len < 200 {
+        return false;
+    }
+
+    let digits = text.chars().filter(|c| c.is_ascii_digit()).count();
+    if digits * 2 > len {
+        return true;
+    }
+
+    let mut same_run = 1usize;
+    let mut max_same = 1usize;
+    let mut no_punct_run = 0usize;
+    let mut max_no_punct = 0usize;
+    let mut prev: Option<char> = None;
+
+    for ch in text.chars() {
+        if Some(ch) == prev {
+            same_run += 1;
+            max_same = max_same.max(same_run);
+        } else {
+            same_run = 1;
+        }
+        prev = Some(ch);
+
+        if ch.is_whitespace() || is_punct(ch) {
+            no_punct_run = 0;
+        } else {
+            no_punct_run += 1;
+            max_no_punct = max_no_punct.max(no_punct_run);
+        }
+    }
+
+    max_same > 100 || max_no_punct > 400
+}
+
+fn is_punct(ch: char) -> bool {
+    ch.is_ascii_punctuation()
+        || matches!(ch,
+            '，' | '。' | '、' | '；' | '：' | '？' | '！' | '“' | '”' | '‘' | '’'
+            | '（' | '）' | '《' | '》' | '【' | '】' | '…' | '—' | '·' | '～')
+}
+
 /// 事件合并阈值（进程级，启动时由配置注入）
 ///
 /// 为什么不用硬编码：相似度是**模型相关**的。e5-base 对无关中文短句的余弦相似度
@@ -157,7 +210,25 @@ impl BackgroundTaskQueue {
                     let key_str = String::from_utf8_lossy(&key);
                     if key_str.starts_with(TASK_KEY_PREFIX) {
                         match serde_json::from_slice::<ExtractionTask>(&value) {
-                            Ok(task) => {
+                            Ok(mut task) => {
+                                // 每恢复一次就 +1：进程级崩溃（abort）不会走普通失败计数，
+                                // 如果不在恢复时累加，同一条"毒输入"会让服务无限重启-崩溃。
+                                task.retry_count = task.retry_count.saturating_add(1);
+
+                                if task.retry_count > 3 {
+                                    error!(
+                                        "BackgroundTaskQueue: task {} 已导致进程崩溃 {} 次，放弃该条（保留原文，可手动重放）",
+                                        task.conversation_id, task.retry_count - 1
+                                    );
+                                    let _ = pending_tasks.remove(&key);
+                                    continue;
+                                }
+
+                                // 把累加后的次数写回，保证下次重启还能继续计数
+                                if let Ok(bytes) = serde_json::to_vec(&task) {
+                                    let _ = pending_tasks.insert(key.clone(), bytes);
+                                }
+
                                 info!("BackgroundTaskQueue: recovering task {} (retry: {})",
                                     task.conversation_id, task.retry_count);
                                 if let Err(e) = self.sender.send(task) {
@@ -249,9 +320,25 @@ impl BackgroundTaskQueue {
             task.conversation_text.clone(),
         ).unwrap()];
 
+        // 病态输入直接跳过 LLM，走正则兜底。
+        //
+        // 背景：llama.cpp 的预分词用 MSVC `std::regex`，遇到"超长无标点串/纯数字/
+        // 超长重复字符"时会抛 `regex_error(error_stack)`；该 C++ 异常跨 FFI 抛回
+        // Rust 无法捕获，会直接 abort 整个进程（200 条压测中复现 4 次，
+        // 每次中断 50+ 条排队任务）。这类输入本身也不含实体/关系信息，
+        // 用正则兜底完全够用，没必要冒着崩服务的风险送进模型。
+        let skip_llm = is_pathological_input(&task.conversation_text);
+
         let extracted = match tokio::time::timeout(
             std::time::Duration::from_secs(state.extraction_timeout_secs),
-            state.extractor.extract(&messages),
+            async {
+                if skip_llm {
+                    return Err(ShouxinError::InvalidArgument(
+                        "病态输入（超长无标点/纯数字/超长重复），已跳过 LLM".to_string(),
+                    ));
+                }
+                state.extractor.extract(&messages).await
+            },
         ).await {
             Ok(Ok(elements)) => elements,
             Ok(Err(e)) => {
@@ -845,13 +932,7 @@ impl BackgroundTaskQueue {
                                 extracted_todo.title
                             );
                         }
-                        local.unwrap_or_else(|| {
-                            let date = (Utc::now() + chrono::Duration::days(7)).date_naive();
-                            chrono::DateTime::<Utc>::from_naive_utc_and_offset(
-                                date.and_hms_opt(23, 59, 59).unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap()),
-                                Utc,
-                            )
-                        })
+                        local.unwrap_or_else(|| crate::utils::default_deadline_in_days(7))
                     }
                 };
 
@@ -1032,4 +1113,26 @@ struct WorkerState {
     /// LLM 提取超时（秒），来自 [extraction].timeout_secs
     extraction_timeout_secs: u64,
     pending_tasks: sled::Tree,
+}
+
+#[cfg(test)]
+mod pathological_input_tests {
+    use super::is_pathological_input;
+
+    #[test]
+    fn detects_junk_inputs() {
+        assert!(is_pathological_input(&"1234567890 ".repeat(100)));
+        assert!(is_pathological_input(&"哈".repeat(400)));
+        let long_single = "今天开会讨论了很多事情".to_string() + &"包括架构调整和人员安排".repeat(60);
+        assert!(is_pathological_input(&long_single));
+    }
+
+    #[test]
+    fn keeps_normal_text() {
+        let normal = "老王是我的同事，在研发部做后端。小李和老王是同一个项目组。下周五之前交付接口文档。";
+        assert!(!is_pathological_input(normal));
+
+        let long_doc = "今天开会讨论了系统架构和接口设计。\n".repeat(200);
+        assert!(!is_pathological_input(&long_doc));
+    }
 }

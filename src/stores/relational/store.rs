@@ -1185,7 +1185,7 @@ impl RelationalStore {
 
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT id, aliases, background, relationship_tags, related_contact_ids \
+            "SELECT id, aliases, background, relationship_tags, related_contact_ids, is_virtual \
              FROM contact_index WHERE id IN ({})",
             placeholders
         );
@@ -1205,6 +1205,7 @@ impl RelationalStore {
                     background: row.get::<Option<String>, _>("background"),
                     relationship_tags: row.get::<Option<String>, _>("relationship_tags"),
                     related_contact_ids: row.get::<Option<String>, _>("related_contact_ids"),
+                    is_virtual: row.try_get::<i64, _>("is_virtual").unwrap_or(0) != 0,
                 },
             );
         }
@@ -2127,14 +2128,22 @@ impl RelationalStore {
         owner_type: crate::core::contact::OwnerType,
         owner_id: &str,
     ) -> Result<Option<crate::core::ContactIndex>, ShouxinError> {
+        // 注意：**不能**过滤 is_archived = 0。
+        //
+        // `contact_index` 上有唯一索引 (name, owner_id, owner_type)，归档行同样占用名字。
+        // 如果这里跳过归档行，写入方会给同名联系人分配一个新 id，
+        // 随后 INSERT 直接撞唯一索引，导致**整条对话抽取失败**（contacts/events/todos 全丢）。
+        // 200 条压测实测：活跃联系人超过 50 上限被归档后，
+        // 后续提到这些人的对话 100% 失败（错误码 2067 UNIQUE constraint failed）。
+        // 正确语义是：老联系人被重新提到 → 找到它 → 复活（见 MemoryWriter::build_contact_index）。
         let rows = query(
             r#"
             SELECT id, name, aliases, is_self, created_at, last_interaction_at,
                    related_contact_ids, relationship_tags, relation_weight, background, notes,
                    owner_type, owner_id, is_agent, parent_agent_id, is_virtual, is_archived, archived_at, activity_score
             FROM contact_index
-            WHERE (name = ? OR aliases LIKE ?) AND owner_type = ? AND owner_id = ? AND is_archived = 0
-            ORDER BY last_interaction_at DESC
+            WHERE (name = ? OR aliases LIKE ?) AND owner_type = ? AND owner_id = ?
+            ORDER BY is_archived ASC, last_interaction_at DESC
             LIMIT 1
             "#,
         )
@@ -3260,6 +3269,8 @@ pub struct ContactProfileFields {
     pub relationship_tags: Option<String>,
     /// 关联联系人 ID（JSON 数组字符串）
     pub related_contact_ids: Option<String>,
+    /// 是否虚拟人物（智能体扮演的角色）
+    pub is_virtual: bool,
 }
 
 impl RelationalStore {
