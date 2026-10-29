@@ -1,5 +1,50 @@
 # 变更记录
 
+## [未发布] 2026-10-30 — 虚拟角色独立建表（与真人联系人彻底分离）
+
+### 为什么拆
+
+| 维度 | 真人联系人 | 虚拟角色 |
+|------|-----------|----------|
+| 数据性质 | 从对话**推断**的画像，会过时、要迭代 | **原著设定**，写死的事实，不该被模型改写 |
+| 基数 | 几十个 | 可能上千（神话→历史→番剧） |
+| 同名 | 罕见，同名即同一人 | 常态（雅典娜 / 雅典娜），必须带作品区分 |
+| 生命周期 | 久不联系会衰减、归档 | 不存在"衰减"，除非用户删除 |
+
+共用 `contact_index` 的直接后果（都已复现）：
+- `UNIQUE(name, owner_id, owner_type)` 让「雅典娜（希腊神话）」和「雅典娜（圣斗士）」**不能共存**；
+- 热表 50 条裁剪（`get_active_contacts`）**不区分** `is_virtual`，角色会占满名额把真人挤进冷表；
+- 全项目 **45 处 `is_virtual` 特判**，散落在 11 个文件里。
+
+### 新结构
+
+```sql
+virtual_character(id, name, source_work, canon, persona, category,
+                  is_builtin, is_archived, owner_type, owner_id, created_at, updated_at)
+  UNIQUE(name, IFNULL(source_work,''), owner_id, owner_type)   -- 同名不同作品可共存
+
+virtual_character_alias(id, character_id, alias_name, source_work, alias_type, language)
+event_character_link(event_id, character_id)                    -- 事件↔角色，不复用 contact_ids
+```
+
+- `canon` = 原著设定（不可改写）；`persona` = 扮演用的人设；
+- `contact_index` 只剩真人，`is_virtual` 列保留但恒为 0（历史字段，逐步清理）；
+- 对话里提到角色时：不建真人联系人，写入 `event_character_link`；
+- `GET/POST/PUT/DELETE /api/virtual_entities` 全部改为读写新表；
+- 内置角色（11 个：林克/ChatGPT/马里奥/皮卡丘/孙悟空…）随启动播种到 `system` 名下。
+
+### 数据
+
+当前库里的联系人全部是测试数据，**未做迁移**：直接清空 `contact_index` /
+`event_index` / `todo_list` 后重建，新表由 `init_schema` 自动创建。
+
+### 验收
+
+- `scripts/api_acceptance.py`（联系人/角色专项）：**PASS=19 / FAIL=0**
+  （含"同名不同作品可共存 雅典娜×2"、"角色不在联系人表"、"角色详情不含 contact 结构"）
+- `scripts/api_smoke_test.sh`（全接口）：**PASS=36 / FAIL=0 / SKIP=1**，0 ERROR
+- 单元测试：**85 项全过**（`test_write_contacts_skips_virtual_entity` 改为走新表）
+
 ## [未发布] 2026-10-30 — 联系人冷热两级检索 + 虚拟角色独立列表 + 姓名过滤兼容虚拟角色
 
 ### 1. 冷热两级检索（原设计有、实现漏了）

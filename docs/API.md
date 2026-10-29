@@ -257,14 +257,51 @@ DELETE /api/files/:file_id?scope=user&user_id=default_user      # 删除
 
 ## 虚拟联系人
 
+虚拟角色**存放在独立表**（`virtual_character` / `virtual_character_alias`），
+不在 `contact_index` 里——角色有原著设定（写死的事实），不参与画像迭代、热表裁剪与同名去重。
+
 ```http
-GET  /api/virtual_entities                     # 列表
-GET  /api/virtual_entities/:id                 # 详情（含人设）
-GET  /api/virtual_entities/check/:name         # 该名字是否已存在
-POST /api/virtual_entities                     # 新建（可带 user_id）
-PUT  /api/virtual_entities/:id                 # 改名 / 改别名
-DELETE /api/virtual_entities/:id               # 删除（仅限 is_virtual=1）
+GET  /api/virtual_entities                     # 列表（含内置 + 自建）
+GET  /api/virtual_entities/:id                 # 详情（含别名、原著设定）
+GET  /api/virtual_entities/check/:name         # 该名字是否已存在（按姓名或别名匹配）
+POST /api/virtual_entities                     # 新建
+PUT  /api/virtual_entities/:id                 # 改名字 / 别名 / 设定
+DELETE /api/virtual_entities/:id               # 删除（内置角色不允许删）
 ```
+
+```json
+POST /api/virtual_entities
+{
+  "name": "雅典娜",
+  "source_work": "希腊神话",     // 出自哪部作品 / 哪个体系；同名不同作品可共存
+  "category": "myth",            // myth/history/anime/game/novel/other
+  "canon": "{\"identity\":\"智慧与战争女神\"}",   // 原著设定（不可改写）
+  "persona": "说话冷静、书面语",                    // 扮演用的人设
+  "aliases": [{ "name": "帕拉斯·雅典娜", "alias_type": "official" }],
+  "user_id": "default_user"
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "entity_id": "…", "name": "雅典娜",
+    "source_work": "希腊神话", "category": "myth",
+    "canon": "{\"identity\":\"智慧与战争女神\"}", "persona": "说话冷静、书面语",
+    "is_builtin": false,
+    "aliases": [{ "name": "帕拉斯·雅典娜", "source_work": "希腊神话", "alias_type": "official" }],
+    "created_at": "2026-10-30T…", "updated_at": "2026-10-30T…"
+  }
+}
+```
+
+> 唯一约束是 `(name, IFNULL(source_work,''), owner_id, owner_type)`：
+> 「雅典娜（希腊神话）」和「雅典娜（圣斗士星矢）」可以同时存在。
+> 对话里提到角色时，抽取链路不会给他建真人联系人，而是写入
+> `event_character_link`（事件 ↔ 角色）。
 
 创建虚拟角色会同时写入一条 `contact_index` 记录并置 `is_virtual = 1`，
 因此它和真实联系人共用同一套检索/详情接口，靠 `is_virtual` 区分：

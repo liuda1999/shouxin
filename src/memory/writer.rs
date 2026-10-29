@@ -37,6 +37,8 @@ pub struct ContactWriteOutcome {
     pub updated: usize,
     /// 因命中虚拟角色而跳过的数量
     pub skipped_virtual: usize,
+    /// LLM 临时 person_id → 虚拟角色 id（事件侧用它建立 event↔character 关联）
+    pub character_id_map: std::collections::HashMap<String, String>,
 }
 
 /// 统一写入层
@@ -170,26 +172,34 @@ impl MemoryWriter {
                 .map(|e| e.id.clone())
                 .unwrap_or_else(|| person.contact_id.clone());
 
-            // 2) 先登记映射：即使后面跳过写入（虚拟角色），事件侧也要能解析到 id
-            outcome
-                .id_map
-                .insert(person.contact_id.clone(), final_contact_id.clone());
-
-            // 3) 虚拟角色不进入真人联系人体系
-            let is_virtual = self
+            // 2) 虚拟角色不进入真人联系人体系（判定要在登记 id_map 之前：
+            //    角色 id 不能出现在 contact 映射里，否则事件侧会写出悬空 contact_id）
+            //
+            // 角色现在存在**独立的表**（virtual_character）里，这里只负责：
+            // a) 不再给角色建真人联系人；
+            // b) 把 person_id → character_id 记下来，事件侧据此建立 event↔character 关联
+            //    （之前是把角色 id 塞进 event_index.contact_ids，拆表后那样会变成悬空 id）。
+            let virtual_hit = self
                 .relational
                 .check_virtual_character_match(&person.name)
                 .await
-                .unwrap_or(None)
-                .is_some();
-            if is_virtual {
+                .unwrap_or(None);
+            if let Some(info) = virtual_hit {
                 info!(
-                    "[MemoryWriter] '{}' is a virtual entity, skipping contact creation",
-                    person.name
+                    "[MemoryWriter] '{}' 命中虚拟角色「{}」（出处：{:?}），跳过真人建档",
+                    person.name, info.character.name, info.character.source_work
                 );
+                outcome
+                    .character_id_map
+                    .insert(person.contact_id.clone(), info.character.id.clone());
                 outcome.skipped_virtual += 1;
                 continue;
             }
+
+            // 3) 真人：登记映射，事件侧据此解析 contact_id
+            outcome
+                .id_map
+                .insert(person.contact_id.clone(), final_contact_id.clone());
 
             // 4) 合并别名（已有 + 本次提取，去重且忽略大小写与空串）
             let mut merged_aliases: Vec<String> = existing
@@ -604,13 +614,23 @@ mod tests {
     async fn test_write_contacts_skips_virtual_entity() {
         let (dict, rel, _dir) = setup().await;
 
-        // 预置虚拟角色
-        let total = ContactTotal::new("v1".to_string(), "皮卡丘".to_string());
-        let mut index = ContactIndex::from_total(&total);
-        index.is_virtual = true;
-        index.owner_type = OwnerType::User;
-        index.owner_id = "u1".to_string();
-        rel.upsert_contact_index(&index).await.unwrap();
+        // 预置虚拟角色：现在写在**独立表** virtual_character 里，
+        // 不再往 contact_index 里塞 is_virtual=1 的行
+        rel.virtual_alias_store()
+            .init_schema()
+            .await
+            .unwrap();
+        rel.virtual_alias_store()
+            .create(crate::stores::relational::NewVirtualCharacter {
+                name: "皮卡丘".to_string(),
+                source_work: Some("宝可梦".to_string()),
+                category: Some("builtin".to_string()),
+                owner_id: Some("u1".to_string()),
+                is_builtin: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
         let writer = MemoryWriter::new(dict.clone(), rel);
         let outcome = writer
@@ -620,7 +640,9 @@ mod tests {
 
         assert_eq!(outcome.skipped_virtual, 1);
         assert_eq!(outcome.created, 0);
-        assert!(dict.get_contact_total("v1").await.unwrap().is_none());
+        // 角色不会进真人联系人表
+        assert!(outcome.id_map.is_empty());
+        assert_eq!(outcome.character_id_map.len(), 1);
     }
 }
 

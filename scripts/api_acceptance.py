@@ -139,15 +139,25 @@ def main():
     leaked = [n for n, _ in created if n in names]
     check("普通联系人列表不含虚拟角色（默认）", not leaked, f"泄漏 {leaked}")
 
+    # 拆表后角色根本不在 contact_index 里，include_virtual 也不会把它们混进来
     r, _ = req("POST", f"{B}/api/memory/search/contacts",
                {"query": "", "limit": 100, "user_id": U, "include_virtual": True})
     names2 = [c["name"] for c in (r.get("data") or [])]
-    missing = [n for n, _ in created if n not in names2]
-    check("include_virtual=true 能看到虚拟角色", not missing, f"缺 {missing}")
+    still = [n for n, _ in created if n in names2]
+    check("虚拟角色不在联系人表（角色有独立表）", not still, f"混入 {still}")
+
+    # 同名不同作品必须能共存（这是拆表最直接的收益）
+    r1, c1 = req("POST", f"{B}/api/virtual_entities",
+                 {"name": "雅典娜", "source_work": "希腊神话", "category": "myth", "user_id": U})
+    r2, c2 = req("POST", f"{B}/api/virtual_entities",
+                 {"name": "雅典娜", "source_work": "圣斗士星矢", "category": "anime", "user_id": U})
+    check("同名不同作品可共存（雅典娜 ×2）", c1 == 200 and c2 == 200,
+          f"HTTP {c1}/{c2}")
 
     r, _ = req("GET", f"{B}/api/virtual_entities")
-    vnames = [x.get("name") or (x.get("contact") or {}).get("name") for x in (r.get("data") or [])]
-    check("/api/virtual_entities 只返回虚拟角色", all(n in vnames for n, _ in created), f"{len(vnames)} 个")
+    vnames = [x.get("name") for x in (r.get("data") or [])]
+    check("/api/virtual_entities 返回新建的角色", all(n in vnames for n, _ in created),
+          f"共 {len(vnames)} 个")
 
     print("== 5. 联系人详情（人设/关系/事件/记忆） ==")
     r, _ = req("POST", f"{B}/api/memory/search/contacts", {"query": "张伟", "limit": 1, "user_id": U})
@@ -166,14 +176,17 @@ def main():
     else:
         check("详情接口", False, "未找到张伟")
 
-    r, _ = req("POST", f"{B}/api/memory/search/contacts",
-               {"query": "孙悟空", "limit": 1, "user_id": U, "include_virtual": True})
-    vrows = r.get("data") or []
-    if vrows:
-        d, _ = req("GET", f"{B}/api/contacts/{vrows[0]['contact_id']}/detail?user_id={U}")
-        check("虚拟角色详情 is_virtual=true", ((d.get("data") or {}).get("contact") or {}).get("is_virtual") is True)
+    # 角色的详情走独立接口（不再复用 /api/contacts/:id/detail）
+    target = next(((n, i) for n, i in created if i), None)
+    if target:
+        n, vid = target
+        d, code = req("GET", f"{B}/api/virtual_entities/{vid}")
+        data = d.get("data") or {}
+        check("虚拟角色详情（独立接口）", code == 200 and data.get("name") == n, f"{code}")
+        check("角色详情带 source_work 字段", "source_work" in data)
+        check("角色详情不含 contact 结构（与真人分离）", "background" not in data)
     else:
-        check("虚拟角色详情 is_virtual=true", False, "未查到孙悟空")
+        check("虚拟角色详情（独立接口）", False, "创建失败")
 
     print(f"\n== 汇总：PASS={PASS}  FAIL={FAIL} ==")
 

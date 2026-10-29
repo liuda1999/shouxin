@@ -1887,10 +1887,22 @@ pub struct AddVirtualCharacterRequest {
     pub name: String,
     #[serde(default)]
     pub aliases: Vec<AliasInput>,
+    /// 出自哪部作品 / 哪个体系（历史人物可填朝代或史书）
+    #[serde(default)]
+    pub source_work: Option<String>,
+    /// 原著设定（写死的事实）：身份、能力、关系等，JSON 字符串或纯文本
+    #[serde(default)]
+    pub canon: Option<String>,
+    /// 扮演用的人设（说话风格等）
+    #[serde(default)]
+    pub persona: Option<String>,
+    /// myth / history / anime / game / novel / other
+    #[serde(default)]
+    pub category: Option<String>,
     /// 归属用户（不填则 default_user）
     ///
     /// 之前这里写死 "default_user"，导致多用户场景下虚拟角色在别人的
-    /// 联系人列表里根本查不到（跨 owner 隔离把创建出来的记录挡在外面）。
+    /// 列表里根本查不到（跨 owner 隔离把创建出来的记录挡在外面）。
     #[serde(default)]
     pub user_id: Option<String>,
 }
@@ -1906,19 +1918,34 @@ pub struct AliasInput {
 pub struct UpdateVirtualCharacterRequest {
     pub name: Option<String>,
     pub aliases: Option<Vec<AliasInput>>,
+    #[serde(default)]
+    pub source_work: Option<String>,
+    #[serde(default)]
+    pub canon: Option<String>,
+    #[serde(default)]
+    pub persona: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
-/// P0-3: API 规范兼容的虚拟实体响应结构
+/// 虚拟角色响应
+///
+/// 与联系人响应的关键区别：角色有 `source_work` / `canon`（原著设定，写死的事实），
+/// 没有「画像」这个概念——画像会随对话演化，角色设定不会。
 #[derive(Debug, Serialize)]
 pub struct VirtualEntityResponse {
     pub entity_id: String,
     pub name: String,
     pub aliases: Vec<AliasResponse>,
+    pub source_work: Option<String>,
+    pub category: String,
+    pub canon: Option<String>,
+    pub persona: Option<String>,
+    pub is_builtin: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-/// P0-3: API 规范兼容的别名响应结构
 #[derive(Debug, Serialize)]
 pub struct AliasResponse {
     pub name: String,
@@ -1936,26 +1963,19 @@ impl From<&VirtualCharacterAlias> for AliasResponse {
     }
 }
 
-impl From<VirtualCharacterInfo> for VirtualEntityResponse {
-    fn from(info: VirtualCharacterInfo) -> Self {
-        VirtualEntityResponse {
-            entity_id: info.contact.id.clone(),
-            name: info.contact.name.clone(),
-            aliases: info.aliases.iter().map(AliasResponse::from).collect(),
-            created_at: info.contact.created_at,
-            updated_at: info.contact.last_interaction_at,
-        }
-    }
-}
-
 impl From<&VirtualCharacterInfo> for VirtualEntityResponse {
     fn from(info: &VirtualCharacterInfo) -> Self {
         VirtualEntityResponse {
-            entity_id: info.contact.id.clone(),
-            name: info.contact.name.clone(),
+            entity_id: info.character.id.clone(),
+            name: info.character.name.clone(),
             aliases: info.aliases.iter().map(AliasResponse::from).collect(),
-            created_at: info.contact.created_at,
-            updated_at: info.contact.last_interaction_at,
+            source_work: info.character.source_work.clone(),
+            category: info.character.category.clone(),
+            canon: info.character.canon.clone(),
+            persona: info.character.persona.clone(),
+            is_builtin: info.character.is_builtin,
+            created_at: info.character.created_at,
+            updated_at: info.character.updated_at,
         }
     }
 }
@@ -1964,9 +1984,10 @@ async fn list_virtual_entities(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
 ) -> ApiResponse<Vec<VirtualEntityResponse>> {
     let rel_store = async_memory.get_relational_store();
-    match rel_store.virtual_alias_store().get_all_virtual_characters().await {
+    match rel_store.virtual_alias_store().list(None, false, 2000).await {
         Ok(entities) => {
-            let responses: Vec<VirtualEntityResponse> = entities.iter().map(VirtualEntityResponse::from).collect();
+            let responses: Vec<VirtualEntityResponse> =
+                entities.iter().map(VirtualEntityResponse::from).collect();
             ApiResponse::success(responses)
         }
         Err(e) => {
@@ -1978,12 +1999,12 @@ async fn list_virtual_entities(
 
 async fn get_virtual_entity(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
-    Path(contact_id): Path<String>,
+    Path(character_id): Path<String>,
 ) -> ApiResponse<Option<VirtualEntityResponse>> {
     let rel_store = async_memory.get_relational_store();
-    match rel_store.virtual_alias_store().get_virtual_character_by_contact_id(&contact_id).await {
+    match rel_store.virtual_alias_store().get_by_id(&character_id).await {
         Ok(entity) => {
-            let response = entity.map(|info| VirtualEntityResponse::from(&info));
+            let response = entity.as_ref().map(VirtualEntityResponse::from);
             ApiResponse::success(response)
         }
         Err(e) => {
@@ -1997,148 +2018,102 @@ async fn add_virtual_entity(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
     Json(req): Json<AddVirtualCharacterRequest>,
 ) -> ApiResponse<VirtualEntityResponse> {
-    use uuid::Uuid;
-    
+    use crate::stores::relational::NewVirtualCharacter;
+
     let rel_store = async_memory.get_relational_store();
-    let contact_id = Uuid::new_v4().to_string();
-    
-    let contact = crate::core::ContactIndex {
-        id: contact_id.clone(),
+    let aliases: Vec<VirtualCharacterAlias> = req
+        .aliases
+        .iter()
+        .map(|a| {
+            VirtualCharacterAlias::new(
+                String::new(), // create() 内部填
+                a.name.clone(),
+                a.source_work.clone().or_else(|| req.source_work.clone()),
+                a.alias_type.clone(),
+            )
+        })
+        .collect();
+
+    let input = NewVirtualCharacter {
         name: req.name.clone(),
-        aliases: serde_json::to_string(&vec![req.name.clone()]).unwrap_or_default(),
-        is_self: false,
-        created_at: Utc::now(),
-        last_interaction_at: Utc::now(),
-        related_contact_ids: "[]".to_string(),
-        relationship_tags: "[]".to_string(),
-        relation_weight: "".to_string(),
-        background: "".to_string(),
-        notes: "".to_string(),
-        owner_type: OwnerType::User,
-        owner_id: req
-            .user_id
-            .clone()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "default_user".to_string()),
-        is_agent: false,
-        parent_agent_id: None,
-        is_virtual: true,
-        is_archived: false,
-        archived_at: None,
-        activity_score: 0.0,
+        source_work: req.source_work.clone(),
+        canon: req.canon.clone(),
+        persona: req.persona.clone(),
+        category: req.category.clone(),
+        owner_id: req.user_id.clone(),
+        is_builtin: false,
+        aliases,
     };
-    
-    if let Err(e) = rel_store.upsert_contact_index(&contact).await {
-        error!("创建虚拟角色失败: {}", e);
-        return ApiResponse::error("内部错误".to_string());
-    }
-    
-    for alias_input in &req.aliases {
-        let alias = VirtualCharacterAlias::new(
-            contact_id.clone(),
-            alias_input.name.clone(),
-            alias_input.source_work.clone(),
-            alias_input.alias_type.clone(),
-        );
-        if let Err(e) = rel_store.virtual_alias_store().insert_alias(&alias).await {
-            warn!("Failed to insert alias '{}': {}", alias_input.name, e);
-        }
-    }
-    
-    match rel_store.virtual_alias_store().get_virtual_character_by_contact_id(&contact_id).await {
-        Ok(Some(info)) => ApiResponse::success(VirtualEntityResponse::from(&info)),
-        Ok(None) => ApiResponse::error("Failed to retrieve created virtual character".to_string()),
+
+    match rel_store.virtual_alias_store().create(input).await {
+        Ok(info) => ApiResponse::success(VirtualEntityResponse::from(&info)),
         Err(e) => {
-            error!("获取创建的虚拟角色失败: {}", e);
-            ApiResponse::error("内部错误".to_string())
+            error!("创建虚拟角色失败: {}", e);
+            ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST)
         }
     }
 }
 
 async fn update_virtual_entity(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
-    Path(contact_id): Path<String>,
+    Path(character_id): Path<String>,
     Json(req): Json<UpdateVirtualCharacterRequest>,
-) -> ApiResponse<Option<VirtualEntityResponse>> {
+) -> ApiResponse<VirtualEntityResponse> {
     let rel_store = async_memory.get_relational_store();
-    
-    match rel_store.virtual_alias_store().get_virtual_character_by_contact_id(&contact_id).await {
-        Ok(Some(mut info)) => {
-            if let Some(name) = req.name {
-                info.contact.name = name;
-                info.contact.last_interaction_at = Utc::now();
-            }
-            
-            if let Some(aliases) = req.aliases {
-                // F-V1: 原子替换（删除 + 插入同一事务），失败直接返回错误而不是吞掉
-                let new_aliases: Vec<VirtualCharacterAlias> = aliases
+    let store = rel_store.virtual_alias_store();
+
+    match store
+        .update(
+            &character_id,
+            req.name.clone(),
+            req.source_work.clone(),
+            req.canon.clone(),
+            req.persona.clone(),
+            req.category.clone(),
+        )
+        .await
+    {
+        Ok(Some(info)) => {
+            if let Some(alias_inputs) = &req.aliases {
+                let aliases: Vec<VirtualCharacterAlias> = alias_inputs
                     .iter()
-                    .map(|alias_input| {
+                    .map(|a| {
                         VirtualCharacterAlias::new(
-                            contact_id.clone(),
-                            alias_input.name.clone(),
-                            alias_input.source_work.clone(),
-                            alias_input.alias_type.clone(),
+                            character_id.clone(),
+                            a.name.clone(),
+                            a.source_work.clone().or_else(|| req.source_work.clone()),
+                            a.alias_type.clone(),
                         )
                     })
                     .collect();
-
-                if let Err(e) = rel_store
-                    .virtual_alias_store()
-                    .replace_aliases(&contact_id, &new_aliases)
-                    .await
-                {
-                    error!("更新虚拟角色别名失败（已回滚） {}: {}", contact_id, e);
-                    return ApiResponse::error("内部错误".to_string());
+                if let Err(e) = store.replace_aliases(&character_id, &aliases).await {
+                    warn!("替换角色别名失败: {}", e);
                 }
-
-                info.aliases = rel_store
-                    .virtual_alias_store()
-                    .get_aliases_by_contact_id(&contact_id)
-                    .await
-                    .unwrap_or_default();
-                info.contact.last_interaction_at = Utc::now();
             }
-            
-            if let Err(e) = rel_store.upsert_contact_index(&info.contact).await {
-                error!("更新虚拟角色失败: {}", e);
-                return ApiResponse::error("内部错误".to_string());
+            match store.get_by_id(&character_id).await {
+                Ok(Some(info)) => ApiResponse::success(VirtualEntityResponse::from(&info)),
+                _ => ApiResponse::success(VirtualEntityResponse::from(&info)),
             }
-            
-            ApiResponse::success(Some(VirtualEntityResponse::from(&info)))
         }
-        Ok(None) => ApiResponse::error(format!("Virtual character '{}' not found", contact_id)),
+        Ok(None) => ApiResponse::error_with_status("虚拟角色不存在".to_string(), StatusCode::NOT_FOUND),
         Err(e) => {
-            error!("更新虚拟角色查询失败: {}", e);
-            ApiResponse::error("内部错误".to_string())
+            error!("更新虚拟角色失败: {}", e);
+            ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST)
         }
     }
 }
 
 async fn delete_virtual_entity(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
-    Path(contact_id): Path<String>,
+    Path(character_id): Path<String>,
 ) -> ApiResponse<serde_json::Value> {
     let rel_store = async_memory.get_relational_store();
-    
-    rel_store.virtual_alias_store().delete_aliases_by_contact_id(&contact_id).await.ok();
-    
-    match sqlx::query(
-        "DELETE FROM contact_index WHERE id = ? AND is_virtual = 1"
-    )
-    .bind(&contact_id)
-    .execute(async_memory.get_relational_store().pool())
-    .await {
-        Ok(result) => {
-            if result.rows_affected() > 0 {
-                ApiResponse::success(serde_json::json!({}))
-            } else {
-                ApiResponse::error(format!("Virtual character '{}' not found", contact_id))
-            }
-        }
+    match rel_store.virtual_alias_store().delete(&character_id).await {
+        Ok(true) => ApiResponse::success(serde_json::json!({ "deleted": true })),
+        Ok(false) => ApiResponse::error_with_status("虚拟角色不存在".to_string(), StatusCode::NOT_FOUND),
         Err(e) => {
             error!("删除虚拟角色失败: {}", e);
-            ApiResponse::error("内部错误".to_string())
+            ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST)
         }
     }
 }
@@ -2150,7 +2125,7 @@ async fn check_virtual_entity_match(
     let rel_store = async_memory.get_relational_store();
     match rel_store.check_virtual_character_match(&name).await {
         Ok(info) => {
-            let response = info.map(|i| VirtualEntityResponse::from(&i));
+            let response = info.as_ref().map(VirtualEntityResponse::from);
             ApiResponse::success(response)
         }
         Err(e) => {

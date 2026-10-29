@@ -7,7 +7,7 @@ use sqlx::{query, Pool, Row, Sqlite};
 use tracing::debug;
 
 use super::todo_list::{TodoItem, TodoListStore};
-use super::virtual_entity::VirtualCharacterAliasStore;
+use super::virtual_entity::VirtualEntityStore;
 use crate::core::{ContactIndex, EventIndex};
 use crate::error::ShouxinError;
 use async_trait::async_trait;
@@ -26,7 +26,7 @@ pub struct RelationalStore {
     /// 文件存储
     file_store: FileStore,
     /// 虚拟角色别名存储
-    virtual_alias_store: VirtualCharacterAliasStore,
+    virtual_alias_store: VirtualEntityStore,
 }
 
 impl RelationalStore {
@@ -41,7 +41,7 @@ impl RelationalStore {
         Self {
             todo_list_store: TodoListStore::new(pool.clone()),
             file_store: FileStore::new(pool.clone()),
-            virtual_alias_store: VirtualCharacterAliasStore::new(pool.clone()),
+            virtual_alias_store: VirtualEntityStore::new(pool.clone()),
             pool,
         }
     }
@@ -52,7 +52,7 @@ impl RelationalStore {
     }
 
     /// 获取虚拟角色别名存储的引用
-    pub fn virtual_alias_store(&self) -> &VirtualCharacterAliasStore {
+    pub fn virtual_alias_store(&self) -> &VirtualEntityStore {
         &self.virtual_alias_store
     }
 
@@ -417,6 +417,9 @@ impl RelationalStore {
         ).execute(&self.pool).await;
 
         self.file_store.init_schema().await?;
+
+        // 虚拟角色独立表（virtual_character / virtual_character_alias / event_character_link）
+        self.virtual_alias_store.init_schema().await?;
 
         Ok(())
     }

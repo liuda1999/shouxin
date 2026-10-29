@@ -566,6 +566,8 @@ impl BackgroundTaskQueue {
 
         // 保留原变量名，事件保存处仍按它做 person_id → final_contact_id 映射
         let person_id_to_contact_id: HashMap<String, String> = contact_outcome.id_map;
+        // 命中虚拟角色的人：不进 contact_ids，改走 event_character_link
+        let character_id_map = contact_outcome.character_id_map;
 
         if contact_outcome.skipped_virtual > 0 {
             tracing::info!(
@@ -659,8 +661,17 @@ impl BackgroundTaskQueue {
                     } else if best_score > auto_th {
                         // 自动合并到已有事件
                         let contact_ids: Vec<String> = e.related_person_ids.iter()
-                            .map(|pid| person_id_to_contact_id.get(pid).cloned().unwrap_or_else(|| pid.clone()))
+                            .filter(|pid| !character_id_map.contains_key(*pid))
+                            .filter_map(|pid| person_id_to_contact_id.get(pid).cloned())
                             .collect();
+                        let merged_character_ids: Vec<String> = e.related_person_ids.iter()
+                            .filter_map(|pid| character_id_map.get(pid).cloned())
+                            .collect();
+                        let _ = state
+                            .relational
+                            .virtual_alias_store()
+                            .link_event_characters(&best_target_event_id, &merged_character_ids)
+                            .await;
                         match state.relational.update_event_after_merge(
                             &best_target_event_id,
                             &contact_ids,
@@ -745,7 +756,11 @@ impl BackgroundTaskQueue {
             };
 
             let mut contact_ids: Vec<String> = e.related_person_ids.iter()
-                    .map(|pid| person_id_to_contact_id.get(pid).cloned().unwrap_or_else(|| pid.clone()))
+                    .filter(|pid| !character_id_map.contains_key(*pid))
+                    .filter_map(|pid| person_id_to_contact_id.get(pid).cloned())
+                    .collect();
+            let event_character_ids: Vec<String> = e.related_person_ids.iter()
+                    .filter_map(|pid| character_id_map.get(pid).cloned())
                     .collect();
 
             // 如果 contact_ids 为空，尝试从事件描述中匹配已有联系人
@@ -790,6 +805,13 @@ impl BackgroundTaskQueue {
             };
             event_index.compute_auto_invalid_at();
             state.relational.insert_event_index(&event_index).await?;
+            if !event_character_ids.is_empty() {
+                let _ = state
+                    .relational
+                    .virtual_alias_store()
+                    .link_event_characters(&event_index.event_id, &event_character_ids)
+                    .await;
+            }
             tracker.event_ids.push(e.event_id.clone());
 
             // P1-3/P1-7: 将事件写入向量库（复用已生成的 embedding；embedding 失败时跳过）

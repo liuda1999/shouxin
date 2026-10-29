@@ -265,64 +265,67 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn init_builtin_virtual_characters(relational: &RelationalStore) -> Result<(), anyhow::Error> {
-    use shouxin::stores::relational::BuiltInVirtualCharacters;
-    use shouxin::core::contact::OwnerType;
-    use chrono::Utc;
-    
-    let existing = relational.virtual_alias_store().get_all_virtual_characters().await?;
-    let existing_names: std::collections::HashSet<String> = existing.iter()
-        .map(|v| v.contact.name.to_lowercase())
+    use shouxin::stores::relational::{BuiltInVirtualCharacters, NewVirtualCharacter};
+
+    let store = relational.virtual_alias_store();
+    let existing = store.list(None, true, 5000).await?;
+    let existing_names: std::collections::HashSet<String> = existing
+        .iter()
+        .map(|v| v.character.name.to_lowercase())
         .collect();
-    
+
     let mut inserted_count = 0;
-    
+
     for (name, _id, aliases) in BuiltInVirtualCharacters::get_all() {
         if existing_names.contains(&name.to_lowercase()) {
             continue;
         }
-        
-        let contact_id = uuid::Uuid::new_v4().to_string();
-        let contact = shouxin::core::ContactIndex {
-            id: contact_id.clone(),
+
+        // 内置角色统一放在 system 名下，避免和用户自建角色混在一起
+        let alias_list: Vec<shouxin::stores::relational::VirtualCharacterAlias> = aliases
+            .iter()
+            .map(|(alias_name, source_work, alias_type)| {
+                shouxin::stores::relational::VirtualCharacterAlias::new(
+                    String::new(),
+                    alias_name.to_string(),
+                    Some(source_work.to_string()),
+                    Some(alias_type.to_string()),
+                )
+            })
+            .collect();
+
+        let source_work = aliases
+            .first()
+            .map(|(_, work, _)| work.to_string());
+
+        let input = NewVirtualCharacter {
             name: name.to_string(),
-            aliases: serde_json::to_string(&vec![name.to_string()])?,
-            is_self: false,
-            created_at: Utc::now(),
-            last_interaction_at: Utc::now(),
-            related_contact_ids: "[]".to_string(),
-            relationship_tags: "[]".to_string(),
-            relation_weight: "".to_string(),
-            background: "".to_string(),
-            notes: "".to_string(),
-            owner_type: OwnerType::User,
-            owner_id: "system".to_string(),
-            is_agent: false,
-            parent_agent_id: None,
-            is_virtual: true,
-            is_archived: false,
-            archived_at: None,
-            activity_score: 0.0,
+            source_work,
+            canon: None,
+            persona: None,
+            category: Some("builtin".to_string()),
+            owner_id: Some("system".to_string()),
+            is_builtin: true,
+            aliases: alias_list,
         };
-        
-        relational.upsert_contact_index(&contact).await?;
-        
-        for (alias_name, source_work, alias_type) in aliases {
-            let alias = shouxin::stores::relational::VirtualCharacterAlias::new(
-                contact_id.clone(),
-                alias_name.to_string(),
-                Some(source_work.to_string()),
-                Some(alias_type.to_string()),
-            );
-            relational.virtual_alias_store().insert_alias(&alias).await?;
+
+        match store.create(input).await {
+            Ok(_) => {
+                inserted_count += 1;
+                println!("Initialized built-in virtual character: {}", name);
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize built-in virtual character {}: {}", name, e);
+            }
         }
-        
-        inserted_count += 1;
-        println!("Initialized built-in virtual character: {}", name);
     }
-    
-    println!("Built-in virtual characters initialized: {} inserted, {} already existed", 
-        inserted_count, BuiltInVirtualCharacters::get_all().len() - inserted_count);
-    
+
+    println!(
+        "Built-in virtual characters initialized: {} inserted, {} already existed",
+        inserted_count,
+        BuiltInVirtualCharacters::get_all().len() - inserted_count
+    );
+
     Ok(())
 }
 

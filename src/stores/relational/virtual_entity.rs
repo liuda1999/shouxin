@@ -1,35 +1,72 @@
+//! 虚拟角色（历史人物 / 神话 / 动漫 / 小说 / 游戏角色）独立存储
+//!
+//! 为什么**不**和真人联系人放在一张表（`contact_index`）：
+//!
+//! 1. **建模不同**：真人联系人的画像是"从对话里推断、会过时、要迭代"的；
+//!    虚拟角色的设定来自原著/典籍，是**事实**，不该被模型改写，也谈不上"更新频率"。
+//! 2. **基数不同**：一个用户的常联系人通常几十个，而角色可能上千（神话→历史→番剧）。
+//!    共用一张表意味着它们会挤进为"熟人"设计的热表裁剪（50 条）、归档衰减、同名去重规则里。
+//! 3. **同名合法**：`contact_index` 对 (name, owner) 有唯一约束，而"雅典娜"（希腊神话）
+//!    和"雅典娜"（圣斗士）必须能共存——唯一键必须带 `source_work`。
+//!
+//! 因此这里用独立的 `virtual_character` + `virtual_character_alias`，
+//! 事件侧用 `event_character_link` 关联（不复用 `event_index.contact_ids`）。
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{query, Pool, Row, Sqlite};
 use uuid::Uuid;
 
 use crate::core::contact::OwnerType;
-use crate::core::ContactIndex;
 use crate::error::ShouxinError;
+
+/// 虚拟角色
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VirtualCharacter {
+    pub id: String,
+    pub name: String,
+    /// 出自哪部作品 / 哪个体系（历史人物可填朝代或史书）
+    pub source_work: Option<String>,
+    /// 原著设定（写死的事实）：身份、能力、关系、世界观，JSON
+    pub canon: Option<String>,
+    /// 扮演用的人设（说话风格等），JSON
+    pub persona: Option<String>,
+    /// myth / history / anime / game / novel / other
+    pub category: String,
+    /// 内置角色（随程序分发，不允许删除）
+    pub is_builtin: bool,
+    pub is_archived: bool,
+    pub owner_type: OwnerType,
+    pub owner_id: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualCharacterAlias {
     pub id: i64,
-    pub contact_id: String,
+    pub character_id: String,
     pub alias_name: String,
     pub source_work: Option<String>,
     pub alias_type: String,
+    pub language: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
 impl VirtualCharacterAlias {
     pub fn new(
-        contact_id: String,
+        character_id: String,
         alias_name: String,
         source_work: Option<String>,
         alias_type: Option<String>,
     ) -> Self {
         Self {
             id: 0,
-            contact_id,
+            character_id,
             alias_name,
             source_work,
             alias_type: alias_type.unwrap_or_else(|| "nickname".to_string()),
+            language: None,
             created_at: Utc::now(),
         }
     }
@@ -37,248 +74,429 @@ impl VirtualCharacterAlias {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualCharacterInfo {
-    pub contact: ContactIndex,
+    pub character: VirtualCharacter,
     pub aliases: Vec<VirtualCharacterAlias>,
 }
 
-pub struct VirtualCharacterAliasStore {
+/// 新建角色的入参
+#[derive(Debug, Clone, Default)]
+pub struct NewVirtualCharacter {
+    pub name: String,
+    pub source_work: Option<String>,
+    pub canon: Option<String>,
+    pub persona: Option<String>,
+    pub category: Option<String>,
+    pub owner_id: Option<String>,
+    pub is_builtin: bool,
+    pub aliases: Vec<VirtualCharacterAlias>,
+}
+
+pub struct VirtualEntityStore {
     pool: Pool<Sqlite>,
 }
 
-impl VirtualCharacterAliasStore {
+impl VirtualEntityStore {
     pub fn new(pool: Pool<Sqlite>) -> Self {
         Self { pool }
     }
 
-    pub async fn check_virtual_match(&self, name: &str) -> Result<Option<VirtualCharacterInfo>, ShouxinError> {
-        let name_lower = name.to_lowercase();
-        
-        let alias_row = query(
-            r#"
-            SELECT contact_id, alias_name, source_work, alias_type, created_at
-            FROM virtual_character_aliases
-            WHERE LOWER(alias_name) = ?
-            LIMIT 1
-            "#,
-        )
-        .bind(&name_lower)
-        .fetch_optional(&self.pool)
-        .await?;
+    /// 建表（幂等）
+    pub async fn init_schema(&self) -> Result<(), ShouxinError> {
+        let stmts = [
+            r#"CREATE TABLE IF NOT EXISTS virtual_character (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                source_work TEXT,
+                canon TEXT,
+                persona TEXT,
+                category TEXT NOT NULL DEFAULT 'other',
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                owner_type TEXT NOT NULL DEFAULT 'User',
+                owner_id TEXT NOT NULL DEFAULT 'default_user',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+            // 同名不同作品必须能共存 → 唯一键带上 source_work
+            r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_virtual_name_work_owner
+               ON virtual_character(name, IFNULL(source_work, ''), owner_id, owner_type)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_virtual_character_name ON virtual_character(name)"#,
+            r#"CREATE TABLE IF NOT EXISTS virtual_character_alias (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id TEXT NOT NULL,
+                alias_name TEXT NOT NULL,
+                source_work TEXT,
+                alias_type TEXT DEFAULT 'nickname',
+                language TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(character_id, alias_name)
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_virtual_alias_name ON virtual_character_alias(alias_name)"#,
+            // 事件 ↔ 角色：不复用 event_index.contact_ids
+            r#"CREATE TABLE IF NOT EXISTS event_character_link (
+                event_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (event_id, character_id)
+            )"#,
+        ];
+        for s in stmts {
+            query(s).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
 
-        if let Some(row) = alias_row {
-            let contact_id: String = row.get("contact_id");
-            return self.get_virtual_character_by_contact_id(&contact_id).await;
+    /// 按姓名或别名匹配虚拟角色（大小写不敏感）
+    ///
+    /// 用途：对话里提到"孙悟空"时，不要让抽取链路把他当真人建联系人。
+    pub async fn check_virtual_match(
+        &self,
+        name: &str,
+    ) -> Result<Option<VirtualCharacterInfo>, ShouxinError> {
+        let lowered = name.trim().to_lowercase();
+        if lowered.is_empty() {
+            return Ok(None);
         }
 
-        let contact_row = query(
-            r#"
-            SELECT id, name, aliases, is_self, created_at, last_interaction_at,
-                   related_contact_ids, relationship_tags, relation_weight, background, notes,
-                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual
-            FROM contact_index
-            WHERE LOWER(name) = ? AND is_virtual = 1
-            LIMIT 1
-            "#,
+        // 先按别名
+        if let Some(row) = query(
+            r#"SELECT character_id FROM virtual_character_alias
+               WHERE LOWER(alias_name) = ? LIMIT 1"#,
         )
-        .bind(&name_lower)
+        .bind(&lowered)
         .fetch_optional(&self.pool)
-        .await?;
+        .await?
+        {
+            let cid: String = row.get("character_id");
+            return self.get_by_id(&cid).await;
+        }
 
-        if let Some(row) = contact_row {
-            let contact = self.row_to_contact(&row)?;
-            let aliases = self.get_aliases_by_contact_id(&contact.id).await?;
-            return Ok(Some(VirtualCharacterInfo { contact, aliases }));
+        // 再按本名
+        if let Some(row) = query(
+            r#"SELECT id FROM virtual_character
+               WHERE LOWER(name) = ? AND is_archived = 0 LIMIT 1"#,
+        )
+        .bind(&lowered)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            let cid: String = row.get("id");
+            return self.get_by_id(&cid).await;
         }
 
         Ok(None)
     }
 
-    pub async fn get_virtual_character_by_contact_id(&self, contact_id: &str) -> Result<Option<VirtualCharacterInfo>, ShouxinError> {
-        let contact_row = query(
-            r#"
-            SELECT id, name, aliases, is_self, created_at, last_interaction_at,
-                   related_contact_ids, relationship_tags, relation_weight, background, notes,
-                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual
-            FROM contact_index
-            WHERE id = ? AND is_virtual = 1
-            "#,
+    pub async fn get_by_id(&self, id: &str) -> Result<Option<VirtualCharacterInfo>, ShouxinError> {
+        let row = query(
+            r#"SELECT id, name, source_work, canon, persona, category, is_builtin, is_archived,
+                      owner_type, owner_id, created_at, updated_at
+               FROM virtual_character WHERE id = ?"#,
         )
-        .bind(contact_id)
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
-        match contact_row {
+        match row {
             Some(row) => {
-                let contact = self.row_to_contact(&row)?;
-                let aliases = self.get_aliases_by_contact_id(contact_id).await?;
-                Ok(Some(VirtualCharacterInfo { contact, aliases }))
+                let character = Self::row_to_character(&row)?;
+                let aliases = self.get_aliases(&character.id).await?;
+                Ok(Some(VirtualCharacterInfo { character, aliases }))
             }
             None => Ok(None),
         }
     }
 
-    pub async fn get_aliases_by_contact_id(&self, contact_id: &str) -> Result<Vec<VirtualCharacterAlias>, ShouxinError> {
+    pub async fn get_aliases(
+        &self,
+        character_id: &str,
+    ) -> Result<Vec<VirtualCharacterAlias>, ShouxinError> {
         let rows = query(
-            r#"
-            SELECT id, contact_id, alias_name, source_work, alias_type, created_at
-            FROM virtual_character_aliases
-            WHERE contact_id = ?
-            ORDER BY alias_type, alias_name
-            "#,
+            r#"SELECT id, character_id, alias_name, source_work, alias_type, language, created_at
+               FROM virtual_character_alias WHERE character_id = ? ORDER BY id"#,
         )
-        .bind(contact_id)
+        .bind(character_id)
         .fetch_all(&self.pool)
         .await?;
 
-        let mut aliases = Vec::new();
+        let mut out = Vec::new();
         for row in rows {
-            aliases.push(VirtualCharacterAlias {
+            out.push(VirtualCharacterAlias {
                 id: row.get("id"),
-                contact_id: row.get("contact_id"),
+                character_id: row.get("character_id"),
                 alias_name: row.get("alias_name"),
                 source_work: row.get("source_work"),
-                alias_type: row.get("alias_type"),
-                created_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("created_at"))
-                    .unwrap_or_else(|_| Utc::now().into())
-                    .with_timezone(&Utc),
+                alias_type: row
+                    .get::<Option<String>, _>("alias_type")
+                    .unwrap_or_else(|| "nickname".to_string()),
+                language: row.get("language"),
+                created_at: parse_ts(row.get::<String, _>("created_at").as_str()),
             });
         }
-
-        Ok(aliases)
+        Ok(out)
     }
 
-    pub async fn insert_alias(&self, alias: &VirtualCharacterAlias) -> Result<(), ShouxinError> {
+    /// 列出角色。`owner_id` 为 None 表示不过滤归属（管理视图）。
+    pub async fn list(
+        &self,
+        owner_id: Option<&str>,
+        include_archived: bool,
+        limit: usize,
+    ) -> Result<Vec<VirtualCharacterInfo>, ShouxinError> {
+        let mut sql = String::from(
+            "SELECT id, name, source_work, canon, persona, category, is_builtin, is_archived, \
+             owner_type, owner_id, created_at, updated_at FROM virtual_character WHERE 1=1",
+        );
+        if !include_archived {
+            sql.push_str(" AND is_archived = 0");
+        }
+        let rows = match owner_id {
+            Some(oid) => {
+                sql.push_str(" AND owner_id = ? ORDER BY is_builtin DESC, name LIMIT ?");
+                query(&sql).bind(oid).bind(limit as i64).fetch_all(&self.pool).await?
+            }
+            None => {
+                sql.push_str(" ORDER BY is_builtin DESC, name LIMIT ?");
+                query(&sql).bind(limit as i64).fetch_all(&self.pool).await?
+            }
+        };
+
+        let mut out = Vec::new();
+        for row in rows {
+            let character = Self::row_to_character(&row)?;
+            let aliases = self.get_aliases(&character.id).await?;
+            out.push(VirtualCharacterInfo { character, aliases });
+        }
+        Ok(out)
+    }
+
+    /// 新建角色；同名同作品同 owner 视为重复，返回错误
+    pub async fn create(
+        &self,
+        input: NewVirtualCharacter,
+    ) -> Result<VirtualCharacterInfo, ShouxinError> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let owner_id = input
+            .owner_id
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "default_user".to_string());
+        let category = input
+            .category
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "other".to_string());
+
         query(
-            r#"
-            INSERT INTO virtual_character_aliases (contact_id, alias_name, source_work, alias_type, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
+            r#"INSERT INTO virtual_character
+               (id, name, source_work, canon, persona, category, is_builtin, is_archived,
+                owner_type, owner_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'User', ?, ?, ?)"#,
         )
-        .bind(&alias.contact_id)
-        .bind(&alias.alias_name)
-        .bind(&alias.source_work)
-        .bind(&alias.alias_type)
-        .bind(alias.created_at.to_rfc3339())
+        .bind(&id)
+        .bind(&input.name)
+        .bind(&input.source_work)
+        .bind(&input.canon)
+        .bind(&input.persona)
+        .bind(&category)
+        .bind(if input.is_builtin { 1 } else { 0 })
+        .bind(&owner_id)
+        .bind(now.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                ShouxinError::GeneralError(format!(
+                    "同名角色已存在（同一作品下不能重复）：{}",
+                    input.name
+                ))
+            } else {
+                ShouxinError::DatabaseError(e.to_string())
+            }
+        })?;
+
+        // 至少把本名登记成别名，方便按名字匹配
+        let mut alias_names: Vec<String> = vec![input.name.clone()];
+        for a in &input.aliases {
+            if !alias_names.iter().any(|n| n.eq_ignore_ascii_case(&a.alias_name)) {
+                alias_names.push(a.alias_name.clone());
+            }
+        }
+        for (idx, alias_name) in alias_names.iter().enumerate() {
+            let (source, kind) = input
+                .aliases
+                .iter()
+                .find(|a| &a.alias_name == alias_name)
+                .map(|a| (a.source_work.clone(), a.alias_type.clone()))
+                .unwrap_or((input.source_work.clone(), if idx == 0 { "official".into() } else { "nickname".into() }));
+            let _ = query(
+                r#"INSERT OR IGNORE INTO virtual_character_alias
+                   (character_id, alias_name, source_work, alias_type, language, created_at)
+                   VALUES (?, ?, ?, ?, NULL, ?)"#,
+            )
+            .bind(&id)
+            .bind(alias_name)
+            .bind(&source)
+            .bind(&kind)
+            .bind(now.to_rfc3339())
+            .execute(&self.pool)
+            .await;
+        }
+
+        self.get_by_id(&id)
+            .await?
+            .ok_or_else(|| ShouxinError::InternalError("创建角色后读取失败".to_string()))
+    }
+
+    /// 更新角色基本字段（值为 None 的字段保持不变）
+    pub async fn update(
+        &self,
+        id: &str,
+        name: Option<String>,
+        source_work: Option<String>,
+        canon: Option<String>,
+        persona: Option<String>,
+        category: Option<String>,
+    ) -> Result<Option<VirtualCharacterInfo>, ShouxinError> {
+        let existing = self.get_by_id(id).await?;
+        let Some(info) = existing else { return Ok(None) };
+
+        query(
+            r#"UPDATE virtual_character
+               SET name = ?, source_work = ?, canon = ?, persona = ?, category = ?, updated_at = ?
+               WHERE id = ?"#,
+        )
+        .bind(name.unwrap_or(info.character.name))
+        .bind(source_work.or(info.character.source_work))
+        .bind(canon.or(info.character.canon))
+        .bind(persona.or(info.character.persona))
+        .bind(category.unwrap_or(info.character.category))
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        self.get_by_id(id).await
     }
 
-    pub async fn delete_aliases_by_contact_id(&self, contact_id: &str) -> Result<(), ShouxinError> {
-        query("DELETE FROM virtual_character_aliases WHERE contact_id = ?")
-            .bind(contact_id)
+    /// 删除角色（内置角色不允许删除）
+    pub async fn delete(&self, id: &str) -> Result<bool, ShouxinError> {
+        let info = self.get_by_id(id).await?;
+        let Some(info) = info else { return Ok(false) };
+        if info.character.is_builtin {
+            return Err(ShouxinError::InvalidArgument(
+                "内置虚拟角色不允许删除（可改为归档）".to_string(),
+            ));
+        }
+        query("DELETE FROM virtual_character_alias WHERE character_id = ?")
+            .bind(id)
             .execute(&self.pool)
             .await?;
-        Ok(())
+        query("DELETE FROM event_character_link WHERE character_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        let res = query("DELETE FROM virtual_character WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
-    /// 原子替换某虚拟角色的全部别名（删除 + 批量插入在同一个事务内）
-    ///
-    /// 旧实现是"先 delete、再逐条 insert，错误全部 `.ok()` 吞掉"：
-    /// 中途失败会让别名全部丢失，而接口仍返回成功（F-V1）。
+    /// 覆盖式替换别名
     pub async fn replace_aliases(
         &self,
-        contact_id: &str,
+        character_id: &str,
         aliases: &[VirtualCharacterAlias],
     ) -> Result<usize, ShouxinError> {
         let mut tx = self.pool.begin().await?;
-
-        sqlx::query("DELETE FROM virtual_character_aliases WHERE contact_id = ?")
-            .bind(contact_id)
+        sqlx::query("DELETE FROM virtual_character_alias WHERE character_id = ?")
+            .bind(character_id)
             .execute(&mut *tx)
             .await?;
-
         let mut inserted = 0usize;
-        for alias in aliases {
-            let result = sqlx::query(
-                r#"
-                INSERT INTO virtual_character_aliases (contact_id, alias_name, source_work, alias_type, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                "#,
+        for a in aliases {
+            let res = sqlx::query(
+                r#"INSERT OR IGNORE INTO virtual_character_alias
+                   (character_id, alias_name, source_work, alias_type, language, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)"#,
             )
-            .bind(&alias.contact_id)
-            .bind(&alias.alias_name)
-            .bind(&alias.source_work)
-            .bind(&alias.alias_type)
-            .bind(alias.created_at.to_rfc3339())
+            .bind(character_id)
+            .bind(&a.alias_name)
+            .bind(&a.source_work)
+            .bind(&a.alias_type)
+            .bind(&a.language)
+            .bind(a.created_at.to_rfc3339())
             .execute(&mut *tx)
             .await?;
-            inserted += result.rows_affected() as usize;
+            inserted += res.rows_affected() as usize;
         }
-
         tx.commit().await?;
         Ok(inserted)
     }
 
-    pub async fn get_all_virtual_characters(&self) -> Result<Vec<VirtualCharacterInfo>, ShouxinError> {
-        let rows = query(
-            r#"
-            SELECT id, name, aliases, is_self, created_at, last_interaction_at,
-                   related_contact_ids, relationship_tags, relation_weight, background, notes,
-                   owner_type, owner_id, is_agent, parent_agent_id, is_virtual
-            FROM contact_index
-            WHERE is_virtual = 1
-            ORDER BY name
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            let contact = self.row_to_contact(&row)?;
-            let aliases = self.get_aliases_by_contact_id(&contact.id).await?;
-            results.push(VirtualCharacterInfo { contact, aliases });
+    /// 事件 ↔ 角色关联（幂等）
+    pub async fn link_event_characters(
+        &self,
+        event_id: &str,
+        character_ids: &[String],
+    ) -> Result<usize, ShouxinError> {
+        let now = Utc::now().to_rfc3339();
+        let mut n = 0usize;
+        for cid in character_ids {
+            let res = query(
+                r#"INSERT OR IGNORE INTO event_character_link (event_id, character_id, created_at)
+                   VALUES (?, ?, ?)"#,
+            )
+            .bind(event_id)
+            .bind(cid)
+            .bind(&now)
+            .execute(&self.pool)
+            .await?;
+            n += res.rows_affected() as usize;
         }
-
-        Ok(results)
+        Ok(n)
     }
 
-    fn row_to_contact(&self, row: &<Sqlite as sqlx::Database>::Row) -> Result<ContactIndex, ShouxinError> {
-        let created_at_str: String = row.get("created_at");
-        let last_interaction_at_str: String = row.get("last_interaction_at");
-        let is_self: i64 = row.get("is_self");
-        let owner_type_str: String = row.get("owner_type");
-        let owner_id: String = row.get("owner_id");
-        let is_agent_int: i64 = row.try_get("is_agent").unwrap_or(0);
-        let parent_agent_id: Option<String> = row.try_get("parent_agent_id").ok();
-        let is_virtual_int: i64 = row.try_get("is_virtual").unwrap_or(1);
+    pub async fn get_event_characters(
+        &self,
+        event_id: &str,
+    ) -> Result<Vec<String>, ShouxinError> {
+        let rows = query("SELECT character_id FROM event_character_link WHERE event_id = ?")
+            .bind(event_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| r.get::<String, _>("character_id")).collect())
+    }
 
-        let owner_type = match owner_type_str.as_str() {
-            "User" => OwnerType::User,
-            "Contact" => OwnerType::Contact,
+    fn row_to_character(row: &<Sqlite as sqlx::Database>::Row) -> Result<VirtualCharacter, ShouxinError> {
+        let owner_type = match row.get::<String, _>("owner_type").as_str() {
             "Agent" => OwnerType::Agent,
-            "Public" => OwnerType::Public,
             _ => OwnerType::User,
         };
-
-        Ok(ContactIndex {
+        Ok(VirtualCharacter {
             id: row.get("id"),
             name: row.get("name"),
-            aliases: row.get("aliases"),
-            is_self: is_self == 1,
-            created_at: DateTime::parse_from_rfc3339(&created_at_str)
-                .map_err(|e| ShouxinError::GeneralError(e.to_string()))?
-                .with_timezone(&Utc),
-            last_interaction_at: DateTime::parse_from_rfc3339(&last_interaction_at_str)
-                .map_err(|e| ShouxinError::GeneralError(e.to_string()))?
-                .with_timezone(&Utc),
-            related_contact_ids: row.get("related_contact_ids"),
-            relationship_tags: row.get("relationship_tags"),
-            relation_weight: row.get("relation_weight"),
-            background: row.get("background"),
-            notes: row.get("notes"),
+            source_work: row.get("source_work"),
+            canon: row.get("canon"),
+            persona: row.get("persona"),
+            category: row.get::<Option<String>, _>("category").unwrap_or_else(|| "other".into()),
+            is_builtin: row.get::<i64, _>("is_builtin") != 0,
+            is_archived: row.get::<i64, _>("is_archived") != 0,
             owner_type,
-            owner_id,
-            is_agent: is_agent_int != 0,
-            parent_agent_id,
-            is_virtual: is_virtual_int != 0,
-            is_archived: false,
-            archived_at: None,
-            activity_score: 0.0,
+            owner_id: row.get("owner_id"),
+            created_at: parse_ts(row.get::<String, _>("created_at").as_str()),
+            updated_at: parse_ts(row.get::<String, _>("updated_at").as_str()),
         })
     }
+}
+
+fn parse_ts(s: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
 }
 
 pub struct BuiltInVirtualCharacters;

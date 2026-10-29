@@ -472,12 +472,15 @@ impl ThreeLibraryMemoryManager {
         );
         let contact_outcome = writer.write_contacts(&persons, owner_type, &owner_id).await?;
         let person_id_to_contact_id = contact_outcome.id_map;
+        // 命中虚拟角色的人不进 contact_ids（角色在独立表里）
+        let character_id_map = contact_outcome.character_id_map;
 
 
         // 保存事件到关系库
         // P0-4: 将 LLM 临时 person_id 映射为去重后的 final_contact_id
         let map_contact_ids = |raw_ids: &[String]| -> Vec<String> {
             raw_ids.iter()
+                .filter(|pid| !character_id_map.contains_key(*pid))
                 .map(|pid| person_id_to_contact_id.get(pid).cloned().unwrap_or_else(|| pid.clone()))
                 .collect()
         };

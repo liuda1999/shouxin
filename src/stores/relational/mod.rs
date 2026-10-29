@@ -18,7 +18,10 @@ pub use file_store::{FileIndex, FileRelation, FileStore};
 pub use maintenance::{CleanupResult, MaintenanceService, MaintenanceState};
 pub use store::{PendingEventMerge, RelationalStore};
 pub use todo_list::{TodoItem, TodoListStore};
-pub use virtual_entity::{BuiltInVirtualCharacters, VirtualCharacterAlias, VirtualCharacterAliasStore, VirtualCharacterInfo};
+pub use virtual_entity::{
+    BuiltInVirtualCharacters, NewVirtualCharacter, VirtualCharacter, VirtualCharacterAlias,
+    VirtualCharacterInfo, VirtualEntityStore,
+};
 
 use async_trait::async_trait;
 
