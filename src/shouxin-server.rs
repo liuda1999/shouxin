@@ -395,7 +395,12 @@ async fn run_api_server(
     sqlx::query("PRAGMA busy_timeout=5000").execute(&pool).await?;
     sqlx::query("PRAGMA synchronous=NORMAL").execute(&pool).await?;
     let pool_for_shutdown = pool.clone();
-    let relational = RelationalStore::new(pool);
+    // 热表上限来自 [event] 配置：在事件写入的唯一出口处强制，
+    // 保证异步队列 / 同步抽取 / 心跳 / 内部 API 各条链路都会裁剪热表。
+    let relational = RelationalStore::new(pool).with_hot_limits(
+        settings.event.long_term_hot_limit,
+        settings.event.short_term_hot_limit,
+    );
     relational.init_schema().await?;
     init_builtin_virtual_characters(&relational).await?;
     let relational = Arc::new(relational);

@@ -1,5 +1,29 @@
 # 变更记录
 
+## [未发布] 2026-10-30 — 修复：事件热表上限从未在真实链路上生效
+
+事件冷热分层（`archive_oldest_hot_event`）本身实现正确、测试全过，但**触发点只挂在同步抽取路径
+`three_library_manager::add()` 一处**。而真实对话走的是「`POST /api/memory/add` → 入队 →
+后台 worker 写库」（`background_queue.rs`），那条路完全没有检查，热表只增不减，
+冷热分层静默失效且无任何报错。事件的写入入口共有 5 个，只有 1 个接了检查。
+
+### 修复：把触发点收敛到唯一出口
+
+- `RelationalStore` 新增 `hot_limits`（默认 200/100，与 `[event]` 配置一致）与 `with_hot_limits()`；
+- `insert_event_index` 在**成功写入后**（`rows_affected > 0`，去重拦截的不计）自动裁剪热表，
+  于是异步队列 / 同步抽取 / 心跳 / 内部 API 各条链路全部覆盖，不需要在 5 个调用点各补一遍；
+- `shouxin-server.rs` 启动时用 `[event].long_term_hot_limit / short_term_hot_limit` 覆盖默认值。
+
+无 schema 变更、无 API 契约变化。行为差异只有一个：事件热表现在真的会被裁剪。
+
+### 验证
+
+- 新增 `tests/test_event_hot_limit_trigger.rs`（5 项：默认限额自动裁剪 / 自定义限额 /
+  最早优先淘汰 / owner 隔离 / 去重插入不误归档）；原有 14 项归档单元测试全部保持通过。
+- 真实数据端到端：临时配置把上限降到 3/3，投递 12 条真实对话走完整异步队列，
+  结果短期桶 9 条 → 热 3 / 冷 6，长期桶 2 条未超限；`include_archived=true` 能读回全部 11 条。
+  验证用的临时配置与数据目录已删除。
+
 ## [未发布] 2026-10-30 — 文档：明确"模型不写死"
 
 代码侧从来没有绑定具体模型（不认模型名、不校验哈希、不假设词表），但文档只列了 Gemma / Ministral

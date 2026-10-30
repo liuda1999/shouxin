@@ -261,13 +261,19 @@ dir = "./logs"
 max_file_size_mb = 10
 
 [event]
-long_term_hot_limit = 200
-short_term_hot_limit = 100
+long_term_hot_limit = 200    # 长期事件（importance_score > 0.7）热表上限
+short_term_hot_limit = 100   # 短期事件（importance_score <= 0.7）热表上限
 
 [agent]
 primary_agent_id = "primary_agent_default"
 internal_api_token = ""   # 用环境变量注入，不要提交
 ```
+
+**事件冷热分层**按长期 / 短期**两个桶分别计数**，不是全局一个上限：一个桶满了只淘汰自己桶里
+最早的事件。上限在事件写入的**唯一出口** `insert_event_index` 处强制，因此异步队列、同步抽取、
+心跳、内部 API 各条写入链路都会裁剪；超出的事件置 `is_archived = 1`（仍在库里，不是删除），
+默认查询只看热表，查冷表用 `include_archived` / `archived_month`
+（见 [API.md](API.md) 的 `POST /api/memory/search/events`）。
 
 > `--host` 优先级高于 `[server]`；`--data-dir` 优先级高于 `[storage].data_dir`。
 > 默认 `./data` 时保持历史布局（Sled 在仓库根的 `.sled_data`），

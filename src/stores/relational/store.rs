@@ -27,7 +27,17 @@ pub struct RelationalStore {
     file_store: FileStore,
     /// 虚拟角色别名存储
     virtual_alias_store: VirtualEntityStore,
+    /// 事件热表上限：`(长期, 短期)`。
+    ///
+    /// 在 `insert_event_index` 内部强制，这样无论事件从哪条链路写入
+    /// （异步队列 / 同步抽取 / 心跳 / 内部 API），热表都不会无限增长。
+    /// 默认与 `[event]` 配置的默认值一致；服务启动时按配置覆盖。
+    hot_limits: (usize, usize),
 }
+
+/// 事件热表上限的默认值，与 config.toml `[event]` 一致
+const DEFAULT_LONG_TERM_HOT_LIMIT: usize = 200;
+const DEFAULT_SHORT_TERM_HOT_LIMIT: usize = 100;
 
 impl RelationalStore {
     /// 创建新的关系库实例
@@ -42,8 +52,19 @@ impl RelationalStore {
             todo_list_store: TodoListStore::new(pool.clone()),
             file_store: FileStore::new(pool.clone()),
             virtual_alias_store: VirtualEntityStore::new(pool.clone()),
+            hot_limits: (DEFAULT_LONG_TERM_HOT_LIMIT, DEFAULT_SHORT_TERM_HOT_LIMIT),
             pool,
         }
+    }
+
+    /// 指定事件热表上限（长期, 短期）
+    ///
+    /// 服务启动时用 `[event].long_term_hot_limit / short_term_hot_limit` 覆盖默认值。
+    pub fn with_hot_limits(mut self, long_term: usize, short_term: usize) -> Self {
+        if long_term > 0 && short_term > 0 {
+            self.hot_limits = (long_term, short_term);
+        }
+        self
     }
 
     /// 获取文件存储的引用
@@ -831,7 +852,27 @@ impl RelationalStore {
 
         if result.rows_affected() == 0 {
             tracing::debug!("事件已存在（数据库去重拦截）: {}", event.summary);
+            return Ok(());
         }
+
+        // 热表容量强制：在唯一出口处收敛，覆盖全部写入链路。
+        //
+        // 此前只在同步抽取路径（three_library_manager::add）里手动调用过一次，
+        // 而真实对话走的是「异步入队 → 后台 worker 写库」，那条路完全没有检查，
+        // 热表只增不减，冷热分层形同虚设且无任何报错。
+        let is_long_term = event.importance_score > 0.7;
+        let hot_limit = if is_long_term {
+            self.hot_limits.0
+        } else {
+            self.hot_limits.1
+        };
+        self.archive_oldest_hot_event(
+            &format!("{:?}", event.owner_type),
+            &event.owner_id,
+            is_long_term,
+            hot_limit,
+        )
+        .await?;
 
         Ok(())
     }
