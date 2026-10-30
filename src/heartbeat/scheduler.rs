@@ -296,7 +296,7 @@ impl HeartbeatScheduler {
         *self.last_maintenance_only.lock().await = maintenance_only;
 
         if maintenance_only {
-            info!("Manually triggering maintenance-only heartbeat (no LLM)");
+            info!("Triggering maintenance-only heartbeat (no LLM)");
 
             // 仅执行维护心跳（纯 SQL，永不调用 LLM；超时可配置）
             let maintenance_timeout = Duration::from_secs(self.config.maintenance_timeout_secs);
@@ -325,7 +325,7 @@ impl HeartbeatScheduler {
                 }
             }
         } else {
-            info!("Manually triggering full heartbeat (maintenance + LLM)");
+            info!("Triggering full heartbeat (maintenance + LLM)");
 
             // Step 1: 维护心跳（纯 SQL，永不调用 LLM；超时可配置）
             let maintenance_timeout = Duration::from_secs(self.config.maintenance_timeout_secs);

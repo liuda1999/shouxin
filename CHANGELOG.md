@@ -10,6 +10,10 @@
 - 工厂层：同样过滤 `none`/空串，`auto_switch` 改为按"是否真的建成了备客户端"判断；
 - 结果：干净启动只剩 `WARN Admin API token is empty`（未配 `INTERNAL_API_TOKEN` 时的预期提示）。
 
+顺带把心跳日志的措辞改准：`Manually triggering full heartbeat` → `Triggering full heartbeat`。
+调度器的定时首轮与 `POST /api/heartbeat/trigger` 走同一个函数，原来一律写"手动触发"，
+排查时容易误判成"有人在调接口"。
+
 同时给 `docs/TROUBLESHOOTING.md` 补了「1.1.1 启动自检清单」：
 正常启动的日志序列、哪些 WARN 可以忽略、哪些 ERROR 必须处理、
 以及用 `/api/heartbeat/status` 判断心跳是否待命。
