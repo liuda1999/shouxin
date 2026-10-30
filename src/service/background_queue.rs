@@ -755,15 +755,19 @@ impl BackgroundTaskQueue {
                     .filter_map(|pid| character_id_map.get(pid).cloned())
                     .collect();
 
-            // 如果 contact_ids 为空，尝试从事件描述中匹配已有联系人
+            // 如果 contact_ids 为空，尝试从事件文本中匹配已有联系人
+            //
+            // 注意：这里**不能**用 `search_contacts_by_name("")` —— 它的 SQL 是 `name = ''`，
+            // 永远查不到人，所以这段兜底长期是死代码。实测 13 个事件只有 2 个带 contact_ids，
+            // 直接后果是画像的 major_events 永远为空、按联系人查事件查不到。
             if contact_ids.is_empty() {
                 let event_text = format!("{} {}", e.title.as_deref().unwrap_or(""), e.description);
-                if let Ok(existing_contacts) = state.relational.search_contacts_by_name("", &format!("{:?}", owner_type), owner_id).await {
-                    for contact in existing_contacts.iter().take(20) {
-                        if !contact.name.is_empty() && event_text.contains(&contact.name) {
-                            contact_ids.push(contact.id.clone());
-                        }
-                    }
+                if let Ok(existing_contacts) = state
+                    .relational
+                    .get_active_contacts(owner_type, owner_id, 50)
+                    .await
+                {
+                    contact_ids = contacts_mentioned_in(&event_text, &existing_contacts);
                 }
             }
 
@@ -1081,6 +1085,29 @@ impl BackgroundTaskQueue {
 ///
 /// 任一条写入失败即返回错误，由上层任务状态体现为 `failed`，
 /// 避免出现"关系库有事件、字典库无历史"的静默缺口。
+/// 从事件文本中挑出被提到的联系人（姓名或别名逐字出现）
+///
+/// 用于 `related_person_ids` 没能映射出联系人时的兜底：
+/// 早些时候这里调的是 `search_contacts_by_name("")`，而它的 SQL 是 `name = ''`，
+/// 永远返回空，等于兜底从未生效（实测 13 个事件只有 2 个带 contact_ids）。
+fn contacts_mentioned_in(text: &str, contacts: &[crate::core::ContactIndex]) -> Vec<String> {
+    contacts
+        .iter()
+        .filter(|c| !c.is_self)
+        .filter(|c| {
+            if !c.name.is_empty() && text.contains(&c.name) {
+                return true;
+            }
+            // 别名也要认（"老张"这类称呼经常出现在事件描述里）
+            serde_json::from_str::<Vec<String>>(&c.aliases)
+                .unwrap_or_default()
+                .iter()
+                .any(|a| !a.is_empty() && text.contains(a.as_str()))
+        })
+        .map(|c| c.id.clone())
+        .collect()
+}
+
 async fn persist_contact_event_history(
     dictionary: &Arc<dyn DictionaryStoreTrait>,
     event_id: &str,
