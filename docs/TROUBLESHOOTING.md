@@ -273,6 +273,48 @@ grep -i "Profile update blocked" .server.log | tail
 现在过滤规则会要求姓名逐字出现在对话原文中，若仍出现，检查 `.server.log` 里
 `[Contact Filter] Removed ... 对话原文中未出现` 是否生效。
 
+### 4.7 已知偏差：事件生命周期（**暂不修复**，功能可接受）
+
+> 以下两条是 2026-10-30 用受控数据 + 真实 API 实测发现的**已知行为与设计不一致**。
+> 评估结论：不影响正常使用，故保留现状、仅作记录。修的时候按每条给出的位置改即可。
+
+#### 4.7.1 `critical` 事件超过 30 天仍会被兜底归档
+
+- **设计**：`compute_auto_invalid_at`（`src/core/contact.rs:465`）对 `importance_score > 0.95`
+  设 `auto_invalid_at = None`，语义是"永不失效"。
+- **实际**：`cleanup_expired_events`（`src/stores/relational/store.rs`，兜底 SQL）只判断
+  `importance_score > 0.7 AND created_at < now-30d`，**没有 critical 豁免**。
+  实测：score 0.98、40 天前的事件在维护心跳后被置 `is_archived = 1`。
+  日志形如 `[Event Lifecycle] Archived 4 expired events (auto_invalid_at: 1, fallback: 3)`。
+- **影响**：`critical` 保证不了"永久可查"，30 天后落到冷表（数据仍在，默认查询不返回，
+  `include_archived=true` 可读回）。
+- **修复位置**：给兜底 SQL 加 `AND importance_score <= 0.95`。
+
+#### 4.7.2 `importance_score < 0.4` 的事件是**立即物理删除**，不是保留 3 天
+
+- **设计**（`compute_auto_invalid_at`）：≤0.4 给 `+3 天`。
+- **实际**：`cleanup_low_importance_events`（`src/stores/relational/store.rs`）的 SQL 是
+  `DELETE FROM event_index WHERE importance_score < 0.4 AND is_archived = 0`，
+  **没有任何时间条件**，每轮维护心跳执行一次。实测：1 天前、score 0.30 的事件当场被删。
+  日志形如 `[Event Lifecycle] Deleted 1 low importance events (< 0.4)`。
+- **影响**：**这是唯一会真正丢数据的路径**。小模型对琐碎对话常给 0.3~0.4 分，
+  这类事件不会进冷表、无法恢复。
+- **修复位置**：改为归档（`SET is_archived = 1, archived_at = ?`）并加
+  `AND created_at < now-3d`；若仍要删除，至少加同样的时间窗。
+
+#### 4.7.3 附带的三个小不一致（同样暂不处理）
+
+| 项 | 说明 |
+|---|---|
+| `MaintenanceService` 是死代码 | `src/stores/relational/maintenance.rs` 的 1 小时巡检从未被 `start_auto_cleanup()` 启动，且常量（短期 3 天）与真正生效的路径（7 天）不一致。实际清理只由心跳 `executor.rs` 驱动 |
+| `0.95` 边界不一致 | `classify_importance` 用 `>= 0.95` 判 critical，`compute_auto_invalid_at` 用 `> 0.95` 才置 `None`；恰好 0.95 的事件被标 critical 但只留 30 天 |
+| `importance` 字段两套词表 | 后台队列写 `high/medium/low`，`memory_extractor/dispatcher.rs` 写 `long_term/critical`。目前该 dispatch 路径无调用点，实际库里只有前者；一旦启用，按 `importance=high` 过滤会漏 |
+
+**冷热表本身是正常的**（2026-10-30 复测）：按长期 `>0.7` / 短期 `(0,0.7]` 分桶，
+各自独立计数，超限按 `created_at` 淘汰最旧；实测上限配 2 时 6 条短期事件 → 热 2 / 冷 4，
+`include_archived=true` 能全部读回。唯一要知道的特性是**裁剪按桶惰性触发**：
+只有"该桶有新事件写入"时才会裁剪，批量导入后若不再写入，超限会保持原样。
+
 ---
 
 ## 5. 收集诊断信息

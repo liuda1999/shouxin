@@ -134,8 +134,15 @@ meta                    day_index_version                 （日索引版本，�
 - **待确认队列**必须有出口：`GET /api/events/pending_merges` 查询，
   `POST /api/events/pending_merges/:id/resolve` 确认（merge / create / dismiss）。
   没有这个出口，0.75–0.90 区间的事件永远进不了索引 —— 这是早期版本的一个真实缺口。
-- **热冷分层**：热库有容量上限，超出后按活跃度归档到冷库；
-  归档数据**默认参与检索，但降一级优先级**（不是排除）。
+- **热冷分层**：热库按 **长期（`importance_score > 0.7`）** 与 **短期（`(0, 0.7]`）两个桶**
+  各自独立计数，超出 `[event].long_term_hot_limit / short_term_hot_limit` 后，按 `created_at`
+  淘汰**本桶最旧**的事件，置 `is_archived = 1`（数据不删除）。触发点是事件写入的唯一出口
+  `insert_event_index`，覆盖异步队列 / 同步抽取 / 心跳 / 内部 API 各条链路。
+- **冷表默认不可见**：检索接口默认只返回热表（`include_archived=false`），
+  需要查冷表时显式传 `include_archived=true`（可按 `archived_month` 限定月份）。
+  注意裁剪是**按桶惰性触发**：只有该桶有新事件写入时才会裁剪，批量导入后若不再写入，
+  超限会保持原样。已知的行为偏差（critical 超 30 天仍被归档、低分事件被立即物理删除）见
+  [TROUBLESHOOTING.md §4.7](TROUBLESHOOTING.md)。
 
 ---
 
