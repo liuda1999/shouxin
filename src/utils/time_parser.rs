@@ -264,7 +264,7 @@ fn parse_explicit_clock(text: &str) -> Option<(u32, u32)> {
 }
 
 
-static_regex!(re_days_later, r"(\d+)\s*天后?");
+static_regex!(re_days_later, r"([一二两三四五六七八九十\d]+)\s*(天|日|周|星期|个月|月|年)?\s*(?:以后|之后|后)");
 // 过去时间（事件绝大多数是"已经发生"的，必须能落到正确的过去日期）
 static_regex!(re_time_ago, r"([一二两三四五六七八九十\d]+)\s*(天|日|周|星期|个月|年)前");
 static_regex!(re_last_year_month, r"去年\s*(\d{1,2})\s*月");
@@ -381,8 +381,33 @@ fn parse_relative_time(text: &str, reference_time: DateTime<Utc>) -> Option<Date
                 _ => return None,
             };
             (-days, 9, 0)
+        } else if text.contains("半年后") {
+            // "半"不含数字，正则匹配不到，单独处理
+            (180, 9, 0)
         } else if let Some(caps) = re_days_later().captures(text) {
-            let days = caps.get(1)?.as_str().parse::<i64>().ok()?;
+            // "3天后 / 两周后 / 三个月后 / 一年后"
+            //
+            // 原实现只认 `\d+ 天后`，"三个月后复查" 这种最常见的随访表达完全不匹配，
+            // 于是回落到默认截止日（+7 天）——实测把三个月后的复查排到了下周。
+            let n: i64 = caps
+                .get(1)?
+                .as_str()
+                .parse()
+                .ok()
+                .or_else(|| match caps.get(1).map(|m| m.as_str()) {
+                    Some("一") => Some(1),
+                    Some("两") | Some("二") => Some(2),
+                    Some("三") => Some(3),
+                    Some("几") => Some(3),
+                    _ => None,
+                })?;
+            let days = match caps.get(2).map(|m| m.as_str()).unwrap_or("天") {
+                "天" | "日" => n,
+                "周" | "星期" => n * 7,
+                "个月" | "月" => n * 30,
+                "年" => n * 365,
+                _ => n,
+            };
             (days, 9, 0)
         } else if text.contains("大前天") {
             (-3, 9, 0)
@@ -641,6 +666,27 @@ mod tests {
         assert_eq!(d("上个月底"), Some("2026-09-28".to_string()));
     }
 
+    /// 回归：未来的相对表达必须带单位
+    ///
+    /// 原实现只认 "N 天后"，"三个月后复查" 完全不匹配，回落到默认 +7 天，
+    /// 实测把三个月后的复查排到了下周（2026-11-07 而不是 2027-01-28）。
+    #[test]
+    fn test_parse_future_units() {
+        use chrono::TimeZone;
+        // 2026-10-30 是周五
+        let r = Utc.with_ymd_and_hms(2026, 10, 30, 12, 0, 0).unwrap();
+        let d = |s: &str| parse_event_time(s, r).map(|x| x.date_naive().to_string());
+
+        assert_eq!(d("3天后"), Some("2026-11-02".to_string()));
+        assert_eq!(d("两周后"), Some("2026-11-13".to_string()));
+        assert_eq!(d("三个月后"), Some("2027-01-28".to_string())); // 30d × 3
+        assert_eq!(d("半年后"), Some("2027-04-28".to_string())); // 180d
+        assert_eq!(d("一年后"), Some("2027-10-30".to_string()));
+        assert_eq!(d("三个月后复查"), Some("2027-01-28".to_string()));
+        // "N 天后" 不能被 "N 天前" 抢走
+        assert_eq!(d("3天前"), Some("2026-10-27".to_string()));
+    }
+
     #[test]
     fn test_parse_days_later() {
         let ref_time = create_reference_time();
@@ -775,7 +821,7 @@ pub fn resolve_deadline_in_text(
 /// 找出句中所有"精确时间表达"及其结束位置（字节偏移）
 fn find_time_exprs_with_pos(sentence: &str) -> Vec<(String, usize)> {
     let re = match regex::Regex::new(
-        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|\d{1,2}月\d{1,2}日|\d{1,2}号)",
+        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|(?:[一二两三四五六七八九十\d]+\s*(?:天|日|周|星期|个月|月|年)\s*(?:以后|之后|后))|半年后|\d{1,2}月\d{1,2}日|\d{1,2}号)",
     ) {
         Ok(re) => re,
         Err(_) => return Vec::new(),
@@ -801,7 +847,7 @@ fn find_time_exprs(sentence: &str) -> Vec<String> {
 /// 截止日是"下周一"而不是"下季度"（后者会让日期偏到季度初）。
 fn find_precise_time_expr(sentence: &str) -> Option<String> {
     let re = regex::Regex::new(
-        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|上个月|下个月|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|\d{1,2}月\d{1,2}日|\d{1,2}号)",
+        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|上个月|下个月|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|(?:[一二两三四五六七八九十\d]+\s*(?:天|日|周|星期|个月|月|年)\s*(?:以后|之后|后))|半年后|\d{1,2}月\d{1,2}日|\d{1,2}号)",
     )
     .ok()?;
     re.find(sentence).map(|m| m.as_str().to_string())
@@ -857,5 +903,24 @@ mod deadline_tests {
     #[test]
     fn test_resolve_deadline_none_when_no_time_expression() {
         assert!(resolve_deadline_in_text("随便聊聊，没有任何时间。", "随便", ref_time()).is_none());
+    }
+
+    /// 回归：带单位的未来表达要能落到截止时间
+    ///
+    /// 实测背景：待办"提前预约车管所换驾照"在"三个月后要去车管所换驾照"这句里，
+    /// 由于扫描器只认"某月某日/下周X"这类表达，返回 None，最终落成默认 +7 天。
+    #[test]
+    fn test_resolve_deadline_future_units() {
+        let c1 = "三个月后要去车管所换驾照，记得提前预约。";
+        let d1 = resolve_deadline_in_text(c1, "提前预约车管所换驾照", ref_time()).unwrap();
+        assert_eq!(d1.date_naive().to_string(), "2027-01-26");
+
+        let c2 = "半年后要续签租房合同，提前一个月联系房东。";
+        let d2 = resolve_deadline_in_text(c2, "联系房东续签租房合同", ref_time()).unwrap();
+        assert_eq!(d2.date_naive().to_string(), "2027-04-26");
+
+        let c3 = "两周后要交体检报告。";
+        let d3 = resolve_deadline_in_text(c3, "交体检报告", ref_time()).unwrap();
+        assert_eq!(d3.date_naive().to_string(), "2026-11-11");
     }
 }
