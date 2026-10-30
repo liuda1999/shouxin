@@ -1599,9 +1599,9 @@ impl LlmMemoryExtractor {
         let mut start = kw_start.saturating_sub(MAX_LEFT);
         if let Some(pos) = (start..kw_start).rev().find(|&i| STOP.contains(&chars[i])) {
             start = pos + 1;
-        } else {
-            start = kw_start.saturating_sub(8);
         }
+        // 找不到句读时保持上面的 MAX_LEFT 回退，不要再固定左移 8 字：
+        // 8 字会正好切在词中间（"今天又和张伟确认了预算表" 变成 "天又和张伟确认了预算表"）。
         while start < kw_start && STOP.contains(&chars[start]) {
             start += 1;
         }
@@ -1980,6 +1980,25 @@ mod tests {
         assert!(
             titles.iter().any(|t| t.starts_with("让我准备")),
             "应从逗号后的完整分句开始，实际: {:?}",
+            titles
+        );
+    }
+
+    /// 回归：整句没有句读时，标题不能切在词中间
+    ///
+    /// 实测："今天又和张伟确认了预算表的数字，他说周五前给我最终版。"
+    /// 被兜底截成 "天又和张伟确认了预算表的数字"（首字丢失），
+    /// 原因是找不到句号时固定左移 8 字，正好切在"今天"中间。
+    #[test]
+    fn test_fallback_title_does_not_cut_first_char() {
+        let events = LlmMemoryExtractor::fallback_extract_events(
+            "今天又和张伟确认了预算表的数字，他说周五前给我最终版。",
+        );
+        let titles: Vec<String> = events.iter().filter_map(|e| e.title.clone()).collect();
+        assert!(!titles.is_empty(), "应识别出预算相关事件: {:?}", titles);
+        assert!(
+            titles.iter().any(|t| t.starts_with("今天")),
+            "标题不应丢失首字，实际: {:?}",
             titles
         );
     }
