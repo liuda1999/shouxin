@@ -43,6 +43,8 @@ pub struct SchedulerConfig {
     pub maintenance_timeout_secs: u64,
     /// LLM 阶段超时（秒）
     pub llm_timeout_secs: u64,
+    /// 单次画像生成超时（秒）；整轮超时至少要覆盖它
+    pub profile_timeout_secs: u64,
 }
 
 impl Default for SchedulerConfig {
@@ -58,6 +60,7 @@ impl Default for SchedulerConfig {
             enabled: true,
             maintenance_timeout_secs: 30,
             llm_timeout_secs: 120,
+            profile_timeout_secs: 240,
         }
     }
 }
@@ -74,6 +77,7 @@ impl SchedulerConfig {
             enabled: settings.enabled,
             maintenance_timeout_secs: settings.maintenance_timeout_secs,
             llm_timeout_secs: settings.llm_timeout_secs,
+            profile_timeout_secs: settings.profile_timeout_secs,
             memory_threshold_mb: settings.memory_threshold_mb,
             max_consecutive_skips: settings.max_consecutive_skips,
             ..Self::default()
@@ -350,7 +354,14 @@ impl HeartbeatScheduler {
             };
 
             // Step 2: LLM 心跳（超时可配置）
-            let llm_timeout = Duration::from_secs(self.config.llm_timeout_secs);
+            //
+            // 整轮超时不能小于"单次画像超时"，否则画像刚跑到一半就被整轮掐断：
+            // 旧配置 120s 整轮 + 90s 单次，导致画像永远无法落库。
+            let round_secs = self
+                .config
+                .llm_timeout_secs
+                .max(self.config.profile_timeout_secs + 60);
+            let llm_timeout = Duration::from_secs(round_secs);
             let llm_future = self.executor.run_llm_heartbeat();
             let llm_result = tokio::time::timeout(llm_timeout, llm_future).await;
 
@@ -367,10 +378,7 @@ impl HeartbeatScheduler {
                     None
                 }
                 Err(_elapsed) => {
-                    warn!(
-                        "LLM heartbeat timed out after {}s",
-                        self.config.llm_timeout_secs
-                    );
+                    warn!("LLM heartbeat timed out after {}s", round_secs);
                     None
                 }
             };

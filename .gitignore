@@ -117,3 +117,9 @@ data_smoke/
 # 手工启动进程的日志（.run_*）
 .run_*.log
 .run_*.err
+
+# 复查/验证运行日志
+.audit*.log
+.audit*.err
+.fix_run*.log
+.fix_run*.err

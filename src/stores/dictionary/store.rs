@@ -496,6 +496,47 @@ impl DictionaryStore {
         Ok(())
     }
 
+    /// 启动时清理"卡在 processing"的对话
+    ///
+    /// 场景：进程在处理中途被杀（重启 / 崩溃）。队列有重试上限，同一条输入
+    /// 连续把进程搞崩 3 次后会被丢弃（`retry_count > 3`），但字典库里的状态
+    /// 仍停在 `processing`——于是它既不在 pending 里，也不在 failed 列表里，
+    /// 永远不会被重放，且 `dictionary_stats` 里永远挂着一条 processing。
+    ///
+    /// 这里在启动时把它们统一标成 `failed` 并写明原因：
+    /// ① 统计口径干净；② 能被 `/api/memory/replay_failed` 捞到、手动重放。
+    ///
+    /// 时机必须在队列恢复**之前**：恢复成功的任务随后会被重新置为 processing，
+    /// 不会被这条清扫误伤。
+    pub fn reset_stale_processing(&self) -> Result<usize, ShouxinError> {
+        let mut fixed = 0usize;
+        for item in self.conversations.iter() {
+            let (key, bytes) = item?;
+            let mut record: ConversationRecord = match serde_json::from_slice(&bytes) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if record.extracted_status != "processing" {
+                continue;
+            }
+            record.extracted_status = "failed".to_string();
+            record.extraction_error = Some(
+                "进程在处理中途退出，状态已回退为 failed（原文保留，可重放）".to_string(),
+            );
+            self.conversations
+                .insert(&key, serde_json::to_vec(&record)?)?;
+            fixed += 1;
+        }
+        if fixed > 0 {
+            self.conversations.flush()?;
+            tracing::warn!(
+                "字典库：{} 条对话卡在 processing（上次未正常收尾），已标记为 failed，可用 replay_failed 重放",
+                fixed
+            );
+        }
+        Ok(fixed)
+    }
+
     /// 全量重建日索引，返回 (对话数, 天数)
     pub fn rebuild_day_index(&self) -> Result<(u64, u64), ShouxinError> {
         self.day_stats.clear()?;

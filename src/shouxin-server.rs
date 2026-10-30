@@ -408,6 +408,12 @@ async fn run_api_server(
             utc_offset_minutes: settings.storage.utc_offset_minutes,
         },
     )?;
+    // 上次进程若在处理中途退出，对话状态会卡在 processing；先收回成 failed 再恢复队列
+    match dictionary.reset_stale_processing() {
+        Ok(n) if n > 0 => println!("Recovered {} conversation(s) stuck in `processing`", n),
+        Ok(_) => {}
+        Err(e) => eprintln!("reset_stale_processing failed: {}", e),
+    }
     let dictionary = Arc::new(dictionary);
     {
         let (cutoff, offset) = dictionary.day_paging();
@@ -646,7 +652,9 @@ async fn run_api_server(
         .with_profile_limits(
             settings.heartbeat.profile_max_updates_per_day,
             settings.heartbeat.profile_update_interval_hours,
-        ),
+        )
+        // CPU 推理下画像 JSON 需要数分钟，旧硬编码 90s 会让画像永远超时
+        .with_profile_timeout_secs(settings.heartbeat.profile_timeout_secs),
     );
     let executor = Arc::new(HeartbeatExecutor::new(
         analyzer,

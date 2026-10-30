@@ -740,9 +740,30 @@ pub fn resolve_deadline_in_text(
     };
 
     for sentence in candidates {
-        // 同一句里可能有多处时间，逐个尝试（取第一个能解析的）
-        for expr in find_time_exprs(sentence) {
-            if let Some(dt) = parse_event_time(&expr, reference_time) {
+        let exprs = find_time_exprs_with_pos(sentence);
+
+        // 优先认"后面紧跟截止标记"的时间表达。
+        //
+        // 一句话里常有两个时间："周六要和王海涛谈续约……下周一前给我报价单"——
+        // 前者是**事件发生时间**，后者才是**截止时间**。原实现取第一个能解析的，
+        // 于是把截止日错算成周六。这里先扫一遍 "X 前 / X 之前 / X 以前 / 截止 X"。
+        for (expr, end) in &exprs {
+            let tail = sentence[*end..].trim_start();
+            let is_deadline_marker = tail.starts_with("之前")
+                || tail.starts_with("以前")
+                || tail.starts_with("前")
+                || tail.starts_with("截止");
+            if !is_deadline_marker {
+                continue;
+            }
+            if let Some(dt) = parse_event_time(expr, reference_time) {
+                return Some(end_of_day(dt));
+            }
+        }
+
+        // 没有截止标记时，退回"第一个能解析的时间"
+        for (expr, _) in &exprs {
+            if let Some(dt) = parse_event_time(expr, reference_time) {
                 return Some(end_of_day(dt));
             }
         }
@@ -751,15 +772,25 @@ pub fn resolve_deadline_in_text(
     None
 }
 
-/// 找出句中所有"精确时间表达"（按出现顺序）
-fn find_time_exprs(sentence: &str) -> Vec<String> {
+/// 找出句中所有"精确时间表达"及其结束位置（字节偏移）
+fn find_time_exprs_with_pos(sentence: &str) -> Vec<(String, usize)> {
     let re = match regex::Regex::new(
         r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|\d{1,2}月\d{1,2}日|\d{1,2}号)",
     ) {
         Ok(re) => re,
         Err(_) => return Vec::new(),
     };
-    re.find_iter(sentence).map(|m| m.as_str().to_string()).collect()
+    re.find_iter(sentence)
+        .map(|m| (m.as_str().to_string(), m.end()))
+        .collect()
+}
+
+/// 找出句中所有"精确时间表达"（按出现顺序）
+fn find_time_exprs(sentence: &str) -> Vec<String> {
+    find_time_exprs_with_pos(sentence)
+        .into_iter()
+        .map(|(e, _)| e)
+        .collect()
 }
 
 /// 找出句中的"精确时间表达"
@@ -792,6 +823,18 @@ mod deadline_tests {
 
     fn ref_time() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap()
+    }
+
+    /// 同一句里有"事件时间"和"截止时间"时，必须取后者
+    ///
+    /// 回归用例："周六要和供应商王海涛谈续约……下周一前给我报价单" 曾把截止日
+    /// 算成周六（第一个时间表达），导致待办提醒提前两天响。
+    #[test]
+    fn test_resolve_deadline_prefers_marked_deadline_time() {
+        let conversation = "周六要和供应商王海涛谈续约，价格压到八折以内，下周一前给我报价单。";
+        let got = resolve_deadline_in_text(conversation, "提供报价单", ref_time()).unwrap();
+        // 参考时间 2026-10-28（周三）→ 下周一 = 2026-11-02
+        assert_eq!(got.date_naive().to_string(), "2026-11-02", "实际: {}", got);
     }
 
     #[test]

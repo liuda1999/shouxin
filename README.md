@@ -6,7 +6,7 @@
 
 **本地优先、隐私至上的智能体记忆子系统。**
 
-[![version](https://img.shields.io/badge/version-0.6.1-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.6.2-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 

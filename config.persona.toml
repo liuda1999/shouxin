@@ -74,6 +74,12 @@ maintenance_timeout_secs = 30
 llm_timeout_secs = 900
 memory_threshold_mb = 4096      # 超过该内存占用则跳过本轮
 max_consecutive_skips = 3
+# 联系人画像：每人每天最多几次、两次之间最小间隔（小时）
+profile_max_updates_per_day = 2
+profile_update_interval_hours = 8
+# 单次画像生成超时（秒）。CPU 上 4B 模型生成 500 token 的 JSON 需要数分钟，
+# 设太小会让画像永远超时、一条都落不了库
+profile_timeout_secs = 240
 # 画像批处理：当天把每个联系人都尽量跑一遍
 profile_max_updates_per_day = 30
 profile_update_interval_hours = 0

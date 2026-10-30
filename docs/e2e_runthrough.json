@@ -1,75 +1,111 @@
 {
- "user": "e2e_final2",
+ "user": "e2e_postfix",
  "contacts": [
   {
-   "contact_id": "3abd84ba-1af1-4061-9142-d698d863df7e",
+   "contact_id": "367ade52-537c-4402-b8fa-4407ac66a782",
    "name": "罗军",
    "disambiguation": "",
    "aliases": [],
+   "background": "{\"contact_id\":\"367ade52-537c-4402-b8fa-4407ac66a782\",\"personal_info\":{\"name\":\"罗军\",\"aliases\":[],\"known_occupation\":\"技术总监\",\"known_age\":\"未知\",\"known_interests\":[\"主库分库分表决策\"]},\"social_relations\":[{\"relation_type\":\"上级\",\"related_contact_id\":null,\"related_contact_name\":\"陈静\",\"confidence\":0.9},{\"relation_type\":\"上级\",\"related_contact_id\":null,\"related_contact_name\":\"张伟\",\"confidence\":0.9},{\"relation_type\":\"上级\",\"related_contact_id\":null,\"related_contact_name\":\"李娜\",\"confidence\":0.9}],\"major_events\":[],\"objective_evaluation\":\"技术决策果断，具有管理和评估职权，在技术汇报链中处于高层位置\",\"potential_relations\":[],\"last_updated\":\"2026-10-30T04:55:50.482625300Z\"}",
+   "last_interaction_at": "2026-10-30T04:58:08.424883300Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "陈静",
+    "张伟",
+    "李娜"
+   ],
+   "relationship_tags": [
+    "上级"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "8a7b86eb-3665-4cc4-8b05-44e60b8ed1e1",
+   "name": "老周",
+   "disambiguation": "",
+   "aliases": [],
    "background": "",
-   "last_interaction_at": "2026-10-30T01:49:07.606855Z",
+   "last_interaction_at": "2026-10-30T04:57:14.529381700Z",
    "activity_score": 0.0,
    "related_contacts": [],
    "relationship_tags": [],
    "is_virtual": false
   },
   {
-   "contact_id": "d3b7bc66-eeeb-47ed-ba55-c825af004cb2",
+   "contact_id": "8d6e2b01-be7f-4f13-aa76-428a0188fb67",
    "name": "王强",
    "disambiguation": "",
    "aliases": [],
    "background": "",
-   "last_interaction_at": "2026-10-30T01:47:12.959549300Z",
+   "last_interaction_at": "2026-10-30T04:57:14.524797500Z",
    "activity_score": 0.0,
    "related_contacts": [],
    "relationship_tags": [],
    "is_virtual": false
   },
   {
-   "contact_id": "bdcd35e5-0d9b-4d59-9464-2d857f3e5cb7",
+   "contact_id": "f16c37a9-532b-44d0-beda-6dc235ea0c8a",
+   "name": "陈静",
+   "disambiguation": "",
+   "aliases": [
+    "静姐"
+   ],
+   "background": "{\"contact_id\":\"f16c37a9-532b-44d0-beda-6dc235ea0c8a\",\"personal_info\":{\"name\":\"陈静\",\"aliases\":[\"静姐\"],\"known_occupation\":\"视觉稿输出者\",\"known_age\":\"未知\",\"known_interests\":[\"视觉稿\"]},\"social_relations\":[{\"relation_type\":\"同级\",\"related_contact_id\":null,\"related_contact_name\":\"张伟\",\"confidence\":0.9},{\"relation_type\":\"同级\",\"related_contact_id\":null,\"related_contact_name\":\"李娜\",\"confidence\":0.9},{\"relation_type\":\"同级\",\"related_contact_id\":null,\"related_contact_name\":\"王强\",\"confidence\":0.9},{\"relation_type\":\"同级\",\"related_contact_id\":null,\"related_contact_name\":\"龙飞\",\"confidence\":0.9},{\"relation_type\":\"同级\",\"related_contact_id\":null,\"related_contact_name\":\"罗军\",\"confidence\":0.9}],\"major_events\":[{\"event_id\":\"78bb271a-2aa0-45fd-a49d-414bad106af2\",\"summary\":\"项目启动会\",\"timestamp\":\"2026-11-02T09:00:00Z\",\"importance\":\"medium\",\"sentiment\":\"\"}],\"objective_evaluation\":\"工作认真，负责视觉稿输出，但在家庭事务（婆婆生病）发生时需请假，可能导致视觉稿延期。\",\"potential_relations\":[],\"last_updated\":\"2026-10-30T04:56:19.400534700Z\"}",
+   "last_interaction_at": "2026-10-30T04:56:52.997562200Z",
+   "activity_score": 0.0,
+   "related_contacts": [
+    "张伟",
+    "李娜",
+    "王强",
+    "罗军"
+   ],
+   "relationship_tags": [
+    "同级"
+   ],
+   "is_virtual": false
+  },
+  {
+   "contact_id": "e59f266c-9784-42cc-b221-fe97a6179f7f",
    "name": "李娜",
    "disambiguation": "",
-   "aliases": [],
+   "aliases": [
+    "Nina"
+   ],
    "background": "",
-   "last_interaction_at": "2026-10-30T01:46:46.583367900Z",
+   "last_interaction_at": "2026-10-30T04:56:23.055600100Z",
    "activity_score": 0.0,
    "related_contacts": [],
    "relationship_tags": [],
    "is_virtual": false
   },
   {
-   "contact_id": "688668d0-88cc-42b5-87e9-2c98f8bc83c4",
+   "contact_id": "ca2492e8-f73a-470a-b7c8-c4f3f8ff4ce9",
    "name": "张伟",
    "disambiguation": "",
    "aliases": [
     "大炮"
    ],
-   "background": "",
-   "last_interaction_at": "2026-10-30T01:46:46.577308700Z",
+   "background": "{\"contact_id\":\"ca2492e8-f73a-470a-b7c8-c4f3f8ff4ce9\",\"personal_info\":{\"name\":\"张伟\",\"aliases\":[\"大炮\"],\"known_occupation\":\"未知\",\"known_age\":\"未知\",\"known_interests\":[\"反对迁移风险大的技术决策\"]},\"social_relations\":[{\"relation_type\":\"直属上级\",\"related_contact_id\":null,\"related_contact_name\":\"李娜\",\"confidence\":0.8},{\"relation_type\":\"同级\",\"related_contact_id\":null,\"related_contact_name\":\"陈静\",\"confidence\":0.8},{\"relation_type\":\"同级\",\"related_contact_id\":null,\"related_contact_name\":\"罗军\",\"confidence\":0.8}],\"major_events\":[{\"event_id\":\"af1040b4-ea25-4bd8-876b-2ae4c3ef979b\",\"summary\":\"架构评审会\",\"timestamp\":\"2026-11-03T10:00:00Z\",\"importance\":\"medium\",\"sentiment\":\"\"},{\"event_id\":\"78bb271a-2aa0-45fd-a49d-414bad106af2\",\"summary\":\"项目启动会\",\"timestamp\":\"2026-11-02T09:00:00Z\",\"importance\":\"medium\",\"sentiment\":\"\"}],\"objective_evaluation\":\"在技术决策上表现出审慎和反对意见，关注技术迁移的风险，在团队中处于技术总监罗军汇报的同级位置，同时是李娜的直属上级。\",\"potential_relations\":[],\"last_updated\":\"2026-10-30T04:56:50.207321800Z\"}",
+   "last_interaction_at": "2026-10-30T04:56:23.049522900Z",
    "activity_score": 0.0,
-   "related_contacts": [],
-   "relationship_tags": [],
+   "related_contacts": [
+    "李娜",
+    "陈静",
+    "罗军"
+   ],
+   "relationship_tags": [
+    "直属上级",
+    "同级"
+   ],
    "is_virtual": false
   },
   {
-   "contact_id": "5c59c855-f110-429e-8820-04d04937f388",
+   "contact_id": "710eaf42-13bf-44af-bdaa-1306b0deaac3",
    "name": "汤敏",
    "disambiguation": "",
    "aliases": [],
    "background": "",
-   "last_interaction_at": "2026-10-30T01:46:29.455296500Z",
-   "activity_score": 0.0,
-   "related_contacts": [],
-   "relationship_tags": [],
-   "is_virtual": false
-  },
-  {
-   "contact_id": "1452c994-6bdc-4d58-bec7-6d4e32ed39e5",
-   "name": "陈静",
-   "disambiguation": "",
-   "aliases": [],
-   "background": "",
-   "last_interaction_at": "2026-10-30T01:46:02.585168800Z",
+   "last_interaction_at": "2026-10-30T04:55:51.406700Z",
    "activity_score": 0.0,
    "related_contacts": [],
    "relationship_tags": [],
@@ -78,182 +114,118 @@
  ],
  "events": [
   {
-   "event_id": "84c9b724-c704-4a53-a626-26e4244a0eca",
+   "event_id": "9c7dd98e-1562-43bc-bdbb-fdd834d5d6d3",
    "title": "我让龙飞整理一份竞品分析",
    "description": "我让龙飞整理一份竞品分析，周五前给我初稿，重点是三家友商的定价策略。",
    "time_info": "2026-11-06T10:00:00+00:00",
    "importance": "medium",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:47:27.523288200Z",
+   "created_at": "2026-10-30T04:57:29.176290500Z",
    "completed_at": null
   },
   {
-   "event_id": "bddd019f-ed89-4335-a7d9-a738e2fb5af2",
-   "title": "飞转正，让我准备评估材料",
-   "description": "飞转正，让我准备评估材料，评估表周五前交。",
+   "event_id": "2d03fd49-c08a-4daa-8e9d-448bf5a40ef0",
+   "title": "让我准备评估材料",
+   "description": "让我准备评估材料，评估表周五前交。\n---\n合并自: 评估表周五前交 评估表周五前交。",
    "time_info": "2026-11-06T10:00:00+00:00",
    "importance": "medium",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:49:07.619291900Z",
+   "created_at": "2026-10-30T04:58:08.436741400Z",
    "completed_at": null
   },
   {
-   "event_id": "66203511-8304-4bfc-b4c9-bbc49517ba17",
-   "title": "接口文档交付",
-   "description": "必须在下周三之前交付接口文档",
-   "time_info": "2026-11-04T10:00:00+00:00",
-   "importance": "medium",
-   "status": "pending",
-   "related_contacts": [],
-   "created_at": "2026-10-30T01:46:46.595288900Z",
-   "completed_at": null
-  },
-  {
-   "event_id": "347a23c5-6b43-4acb-82a6-d09be5a080bb",
-   "title": "周二的架构评审会上",
-   "description": "周二的架构评审会上，罗军拍板主库分库分表，张伟反对，理由是迁移风险大，最后决定先做读写分离。",
+   "event_id": "af1040b4-ea25-4bd8-876b-2ae4c3ef979b",
+   "title": "架构评审会",
+   "description": "罗军拍板主库分库分表，张伟反对，最终决定先做读写分离",
    "time_info": "2026-11-03T10:00:00+00:00",
    "importance": "medium",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:46:14.590104900Z",
+   "created_at": "2026-10-30T04:55:21.351640500Z",
    "completed_at": null
   },
   {
-   "event_id": "51f388ba-89ab-4cee-9a46-04182e37c0c5",
+   "event_id": "78bb271a-2aa0-45fd-a49d-414bad106af2",
    "title": "项目启动会",
-   "description": "周一上午九点半开项目启动会",
+   "description": "周一上午九点半召开项目启动会",
    "time_info": "2026-11-02T09:00:00+00:00",
    "importance": "medium",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:45:49.732464200Z",
+   "created_at": "2026-10-30T04:54:44.028250400Z",
    "completed_at": null
   },
   {
-   "event_id": "ba37baf8-f32d-43ac-ae7e-39d3ea92ef7c",
-   "title": "叫苏晚晴，她帮我整理会议纪要",
-   "description": "叫苏晚晴，她帮我整理会议纪要，但她不是真人，别把她当成同事。\n---\n合并自: 晚晴，她帮我整理会议纪要 晚晴，她帮我整理会议纪要，但她不是真人，别把她当成同事。\n---\n合并自: 她帮我整理会议纪要 她帮我整理会议纪要，但她不是真人，别把她当成同事。",
-   "time_info": "2026-10-30T01:47:50.317245900+00:00",
+   "event_id": "def2fc0e-6305-4b1b-b51c-d83eb7fbcccd",
+   "title": "她帮我整理会议纪要",
+   "description": "她帮我整理会议纪要，但她不是真人，别把她当成同事。",
+   "time_info": "2026-10-30T04:57:52.727450500+00:00",
    "importance": "medium",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:47:50.317276300Z",
+   "created_at": "2026-10-30T04:57:52.727478100Z",
    "completed_at": null
   },
   {
-   "event_id": "7eab47af-dd81-4334-80c3-c6de493768aa",
+   "event_id": "7cd9fcde-46b3-4d1e-9649-13b74d375d7c",
    "title": "复盘会上大家一致认为",
-   "description": "复盘会上大家一致认为：这次延期主要是需求变更太晚，其次是测试介入太迟。\n---\n合并自: 家一致认为：这次延期主要是需求变更太晚 家一致认为：这次延期主要是需求变更太晚，其次是测试介入太迟。",
-   "time_info": "2026-10-30T01:47:38.296564300+00:00",
+   "description": "复盘会上大家一致认为：这次延期主要是需求变更太晚，其次是测试介入太迟。\n---\n合并自: 这次延期主要是需求变更太晚 这次延期主要是需求变更太晚，其次是测试介入太迟。",
+   "time_info": "2026-10-30T04:57:40.928813200+00:00",
    "importance": "medium",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:47:38.296598200Z",
+   "created_at": "2026-10-30T04:57:40.928852600Z",
    "completed_at": null
   },
   {
-   "event_id": "fe5bb19b-9423-4ad3-b580-65cd14778508",
-   "title": "测试环境故障",
-   "description": "王强测试环境一直起不来",
-   "time_info": "2026-10-30T01:47:12.970651400+00:00",
+   "event_id": "2c30b7bc-ca23-4413-bf06-e73eecfa10ce",
+   "title": "磁盘空间问题",
+   "description": "王强的测试环境无法启动，经老周查看后发现是磁盘满了",
+   "time_info": "2026-10-30T04:57:14.541704100+00:00",
    "importance": "high",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:47:12.970696100Z",
+   "created_at": "2026-10-30T04:57:14.541760600Z",
    "completed_at": null
   },
   {
-   "event_id": "bb246549-c6db-4fcd-8f71-be6266c39037",
-   "title": "都向技术总监罗军汇报",
-   "description": "都向技术总监罗军汇报。",
-   "time_info": "2026-10-30T01:46:02.627794500+00:00",
+   "event_id": "f333a089-fc77-4547-aa24-7e8695468b2d",
+   "title": "但虚线汇报给我",
+   "description": "但虚线汇报给我；陈静和张伟是同级，都向技术总监罗军汇报。",
+   "time_info": "2026-10-30T04:55:05.886928400+00:00",
    "importance": "medium",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:46:02.627826100Z",
+   "created_at": "2026-10-30T04:55:05.886973Z",
    "completed_at": null
   },
   {
-   "event_id": "5341e52a-c6aa-46ee-b77a-8a8b3c753d5f",
-   "title": "级是张伟，但虚线汇报给我",
-   "description": "级是张伟，但虚线汇报给我；陈静和张伟是同级，都向技术总监罗军汇报。",
-   "time_info": "2026-10-30T01:46:02.609459800+00:00",
+   "event_id": "1a6a3cd3-3a30-4d59-b977-c4e29bc780ae",
+   "title": "测试王强",
+   "description": "测试王强、设计陈静（静姐）、还有实习生龙飞。",
+   "time_info": "2026-10-30T04:54:23.824103300+00:00",
    "importance": "medium",
    "status": "pending",
    "related_contacts": [],
-   "created_at": "2026-10-30T01:46:02.609500300Z",
-   "completed_at": null
-  },
-  {
-   "event_id": "96d28157-c511-41fc-8218-f69778c31721",
-   "title": "名 Nina）、测试王强",
-   "description": "名 Nina）、测试王强、设计陈静（静姐）、还有实习生龙飞。",
-   "time_info": "2026-10-30T01:45:28.002131600+00:00",
-   "importance": "medium",
-   "status": "pending",
-   "related_contacts": [],
-   "created_at": "2026-10-30T01:45:28.002202700Z",
+   "created_at": "2026-10-30T04:54:23.826153300Z",
    "completed_at": null
   }
  ],
  "todos": [
   {
-   "todo_id": "99f7fc26-c886-4901-9814-2f6a911d070b",
+   "todo_id": "a7fa72fb-9d0f-4e49-8771-960e0a577a7e",
    "contact_ids": [
-    "5f18ece4-40af-4911-b1d5-380d8d643957"
+    "b13e836f-3457-429a-bf03-1b660f972499"
    ],
-   "owner_id": "e2e_final2",
+   "owner_id": "e2e_postfix",
    "owner_type": "User",
-   "title": "编写接口文档",
+   "title": "交付接口文档",
    "description": null,
    "deadline": "2026-11-04T23:59:59Z",
    "status": "pending",
-   "created_at": "2026-10-30T01:46:46.597958700Z",
-   "completed_at": null,
-   "importance": "medium",
-   "source_event_id": null,
-   "todo_type": "normal",
-   "entity_type": null,
-   "entity_id": null,
-   "is_archived": false,
-   "archived_at": null,
-   "last_updated_at": "2026-10-30T01:46:46.597958700Z"
-  },
-  {
-   "todo_id": "f95e12ef-dca9-4a0c-bcb8-5157a3561e5d",
-   "contact_ids": [
-    "cb6f64fa-8c06-4ea8-81c8-b0cfc41558cf"
-   ],
-   "owner_id": "e2e_final2",
-   "owner_type": "User",
-   "title": "配合联调环境",
-   "description": null,
-   "deadline": "2026-11-04T23:59:59Z",
-   "status": "pending",
-   "created_at": "2026-10-30T01:46:46.599687900Z",
-   "completed_at": null,
-   "importance": "medium",
-   "source_event_id": null,
-   "todo_type": "normal",
-   "entity_type": null,
-   "entity_id": null,
-   "is_archived": false,
-   "archived_at": null,
-   "last_updated_at": "2026-10-30T01:46:46.599687900Z"
-  },
-  {
-   "todo_id": "b7ab0e83-7bf1-4892-8d66-695a628f9933",
-   "contact_ids": [],
-   "owner_id": "e2e_final2",
-   "owner_type": "User",
-   "title": "修复磁盘空间",
-   "description": null,
-   "deadline": "2026-11-06T15:59:59Z",
-   "status": "pending",
-   "created_at": "2026-10-30T01:47:12.974027600Z",
+   "created_at": "2026-10-30T04:56:23.060386600Z",
    "completed_at": null,
    "importance": "high",
    "source_event_id": null,
@@ -262,49 +234,115 @@
    "entity_id": null,
    "is_archived": false,
    "archived_at": null,
-   "last_updated_at": "2026-10-30T01:47:12.974027600Z"
+   "last_updated_at": "2026-10-30T04:56:23.060386600Z"
   },
   {
-   "todo_id": "eb266937-3614-46ec-8808-7dfc1d72954d",
+   "todo_id": "8e00e3e4-c396-42d7-9cfd-2bc53f4df458",
+   "contact_ids": [
+    "6b85edda-a7f3-474f-a6eb-d1b15e5beba9"
+   ],
+   "owner_id": "e2e_postfix",
+   "owner_type": "User",
+   "title": "准备联调环境",
+   "description": null,
+   "deadline": "2026-11-04T23:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-30T04:56:23.062423100Z",
+   "completed_at": null,
+   "importance": "high",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-30T04:56:23.062423100Z"
+  },
+  {
+   "todo_id": "b3d11a08-44a1-4c49-9b79-6824022186c8",
+   "contact_ids": [
+    "554a7f4e-008e-41de-b68d-e7e1fa55fa5b"
+   ],
+   "owner_id": "e2e_postfix",
+   "owner_type": "User",
+   "title": "请两天假",
+   "description": null,
+   "deadline": "2026-11-06T23:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-30T04:56:53.001536100Z",
+   "completed_at": null,
+   "importance": "medium",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-30T04:56:53.001536100Z"
+  },
+  {
+   "todo_id": "a468b21e-0260-4919-accb-2c52e98b9bd6",
    "contact_ids": [],
-   "owner_id": "e2e_final2",
+   "owner_id": "e2e_postfix",
    "owner_type": "User",
    "title": "整理竞品分析初稿",
    "description": null,
    "deadline": "2026-11-06T23:59:59Z",
    "status": "pending",
-   "created_at": "2026-10-30T01:47:27.538485200Z",
+   "created_at": "2026-10-30T04:57:29.185436Z",
    "completed_at": null,
-   "importance": "high",
+   "importance": "medium",
    "source_event_id": null,
    "todo_type": "normal",
    "entity_type": null,
    "entity_id": null,
    "is_archived": false,
    "archived_at": null,
-   "last_updated_at": "2026-10-30T01:47:27.538485200Z"
+   "last_updated_at": "2026-10-30T04:57:29.185436Z"
   },
   {
-   "todo_id": "2fafb959-d104-487c-af24-372c22115fd8",
+   "todo_id": "2c73aede-289a-423f-9492-8484a1e7ac03",
    "contact_ids": [
-    "3abd84ba-1af1-4061-9142-d698d863df7e"
+    "edbd5534-9e04-48f9-bff6-d691ce5b4c07"
    ],
-   "owner_id": "e2e_final2",
+   "owner_id": "e2e_postfix",
    "owner_type": "User",
-   "title": "龙飞转正",
+   "title": "准备评估材料",
    "description": null,
    "deadline": "2026-11-06T23:59:59Z",
    "status": "pending",
-   "created_at": "2026-10-30T01:49:07.633334100Z",
+   "created_at": "2026-10-30T04:58:08.451428300Z",
    "completed_at": null,
-   "importance": "high",
+   "importance": "medium",
    "source_event_id": null,
    "todo_type": "normal",
    "entity_type": null,
    "entity_id": null,
    "is_archived": false,
    "archived_at": null,
-   "last_updated_at": "2026-10-30T01:49:07.633334100Z"
+   "last_updated_at": "2026-10-30T04:58:08.451428300Z"
+  },
+  {
+   "todo_id": "3be9edfb-bdbe-4a19-bcb7-012016e55a87",
+   "contact_ids": [
+    "edbd5534-9e04-48f9-bff6-d691ce5b4c07"
+   ],
+   "owner_id": "e2e_postfix",
+   "owner_type": "User",
+   "title": "提交评估表",
+   "description": null,
+   "deadline": "2026-11-06T23:59:59Z",
+   "status": "pending",
+   "created_at": "2026-10-30T04:58:08.453343Z",
+   "completed_at": null,
+   "importance": "medium",
+   "source_event_id": null,
+   "todo_type": "normal",
+   "entity_type": null,
+   "entity_id": null,
+   "is_archived": false,
+   "archived_at": null,
+   "last_updated_at": "2026-10-30T04:58:08.453343Z"
   }
  ]
 }

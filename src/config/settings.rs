@@ -353,6 +353,16 @@ pub struct HeartbeatSettings {
     /// 同一联系人两次画像更新的最小间隔（小时）
     #[serde(default = "default_profile_update_interval_hours")]
     pub profile_update_interval_hours: i64,
+    /// 单次画像生成的超时（秒）
+    ///
+    /// CPU 推理下 4B 模型生成 500 token 的画像 JSON 需要数分钟，
+    /// 90s 的旧硬编码会让画像**永远超时**（实测 26 次尝试 0 条成功）。
+    #[serde(default = "default_profile_timeout_secs")]
+    pub profile_timeout_secs: u64,
+}
+
+fn default_profile_timeout_secs() -> u64 {
+    240
 }
 
 fn default_profile_max_updates_per_day() -> u32 {
@@ -494,6 +504,7 @@ impl Default for HeartbeatSettings {
             max_consecutive_skips: default_heartbeat_max_skips(),
             profile_max_updates_per_day: default_profile_max_updates_per_day(),
             profile_update_interval_hours: default_profile_update_interval_hours(),
+            profile_timeout_secs: default_profile_timeout_secs(),
         }
     }
 }

@@ -255,6 +255,52 @@ impl GgufClient {
             .unwrap_or(false);
 
         if let Some(model) = model {
+            // 先按模型家族判断，再决定要不要走 Jinja。
+            //
+            // Gemma / Qwen 的模板在 llama.cpp 里必然失败（`ffi error -1`：
+            // llama.cpp 按"消息长度 × 2"预分配缓冲，这两家的模板带大量 Jinja 宏会溢出），
+            // 与其先失败再回退、每次推理刷一条 WARN，不如直接按家族拼格式。
+            let arch = model
+                .meta_val_str("general.architecture")
+                .unwrap_or_default()
+                .to_lowercase();
+            let jinja = model
+                .chat_template(None)
+                .ok()
+                .and_then(|t| t.to_string().ok())
+                .unwrap_or_default();
+            let is_gemma = arch.contains("gemma")
+                || jinja.contains("start_of_turn")
+                || model
+                    .meta_val_str("general.name")
+                    .map(|n| n.to_lowercase().contains("gemma"))
+                    .unwrap_or(false);
+            let is_qwen = arch.contains("qwen") || jinja.contains("im_start");
+
+            if !skip_template && is_gemma {
+                // Gemma 没有 system 角色，惯例是把 system 并进第一条 user 消息
+                let content = if system_text.is_empty() {
+                    user_text.to_string()
+                } else {
+                    format!("{}\n\n{}", system_text, user_text)
+                };
+                return format!(
+                    "<start_of_turn>user\n{}<end_of_turn>\n<start_of_turn>model\n",
+                    content
+                );
+            }
+            if !skip_template && is_qwen {
+                let mut p = String::new();
+                if !system_text.is_empty() {
+                    p.push_str(&format!("<|im_start|>system\n{}<|im_end|>\n", system_text));
+                }
+                p.push_str(&format!(
+                    "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+                    user_text
+                ));
+                return p;
+            }
+
             if skip_template {
                 tracing::debug!("[GGUF] SHOUXIN_SKIP_CHAT_TEMPLATE 已开启，跳过 Jinja 模板");
             } else if let Ok(tmpl) = model.chat_template(None) {
@@ -277,87 +323,28 @@ impl GgufClient {
                     match model.apply_chat_template(&tmpl, &msgs, true) {
                         Ok(p) if !p.is_empty() => return p,
                         Ok(_) => {
-                            tracing::warn!("[GGUF] 对话模板返回空串，回退到内置模板");
+                            tracing::debug!("[GGUF] 对话模板返回空串，改用内置模板");
                         }
                         Err(e) => {
-                            tracing::warn!("[GGUF] 应用模型对话模板失败({})，回退到内置模板", e);
+                            tracing::debug!("[GGUF] 应用模型对话模板失败({})，改用内置模板", e);
                         }
                     }
                 }
             }
         }
 
-        // 兜底 1：按模型家族内置模板
+        // 兜底 1：Mistral / Ministral / Llama 走 `[INST]`
         //
-        // 为什么需要它：`apply_chat_template` 内部按「消息长度 × 2」分配缓冲区，
-        // 遇到 Gemma 4 这类模板（含大量 Jinja 宏、tools 定义）会溢出并返回 `ffi error -1`。
-        // 这里按 `general.architecture` 走内置模板，保证新模型也能拿到正确格式。
-        if let Some(model) = {
-            let guard = self.model_handle.read().await;
-            guard.as_ref().map(|h| h.model.clone())
-        } {
-            let arch = model
-                .meta_val_str("general.architecture")
-                .unwrap_or_default()
-                .to_lowercase();
-
-            // 关键：GGUF 里 Mistral/Ministral 的 `general.architecture` 也是 "llama"，
-            // 但它用的是 `[INST] ... [/INST]` 模板，不是 Llama-3 的
-            // `<|start_header_id|>` 那一套。只用 arch 判断会把 Mistral 当成 Llama-3，
-            // 模型看不懂特殊 token 就把提示词原样复述（实测输出 1717 字符全是
-            // "根据以下信息生成联系人画像。"），画像必然解析失败。
-            //
-            // 这里改为读模型**自带的模板字符串**做标记判断：只做字符串匹配，
-            // 不调用 apply_chat_template（那条路径内部会整段分词，会触发分词器崩溃）。
-            let jinja = model
-                .chat_template(None)
-                .ok()
-                .and_then(|t| t.to_string().ok())
-                .unwrap_or_default();
-            // 纯文本提示：不引入任何特殊 token。
-            //
-            // 为什么不用 [INST]：本机的 llama.cpp 分词器在解析特殊 token
-            // （[INST]/<|...|> 这类）时走的是 MSVC std::regex 分支，遇到长中文提示词
-            // 会抛 regex_error(error_stack)，C++ 异常跨 FFI 直接把进程 abort。
-            // 实测画像提示词只要带 [INST] 就 100% 崩溃（7/7）；
-            // 而不带特殊 token 的抽取提示词当天跑了 480 次推理、0 崩溃。
-            // 因此这里统一走"纯文本 + 明确输出要求"的格式，牺牲一点模板对齐，
-            // 换取进程稳定（模型仍能按 JSON 要求输出）。
-            let content = if system_text.is_empty() {
-                user_text.to_string()
-            } else {
-                format!("{}\n\n{}", system_text, user_text)
-            };
-            // 用模型自己的 [INST] 格式：这是指令跟随的关键。
-            // 之前它会把分词器打崩，是因为提示词被整段送进分词器；
-            // 现在分词已按 128 字符分段（见 tokenize_chunked），可以再试。
-            return format!("[INST] {} [/INST]", content);
-
-            // Gemma 没有 system 角色，惯例是把 system 内容并入第一条 user 消息
-            if arch.contains("gemma") {
-                let content = if system_text.is_empty() {
-                    user_text.to_string()
-                } else {
-                    format!("{}\n\n{}", system_text, user_text)
-                };
-                return format!(
-                    "<start_of_turn>user\n{}<end_of_turn>\n<start_of_turn>model\n",
-                    content
-                );
-            }
-
-            if arch.contains("qwen") {
-                let mut p = String::new();
-                if !system_text.is_empty() {
-                    p.push_str(&format!("<|im_start|>system\n{}<|im_end|>\n", system_text));
-                }
-                p.push_str(&format!(
-                    "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
-                    user_text
-                ));
-                return p;
-            }
-        }
+        // 注意：GGUF 里 Mistral/Ministral 的 `general.architecture` 也是 "llama"，
+        // 但用的是 `[INST]...[/INST]`，不是 Llama-3 的 `<|start_header_id|>`。
+        // 只用 arch 判断会把 Mistral 当 Llama-3，模型看不懂就把提示词原样复述。
+        // Gemma / Qwen 已在上面按家族直接返回，不走这里。
+        let content = if system_text.is_empty() {
+            user_text.to_string()
+        } else {
+            format!("{}\n\n{}", system_text, user_text)
+        };
+        return format!("[INST] {} [/INST]", content);
 
         // 兜底 2：Llama-3 风格（仅当模型确实用 Llama-3 的模板标记时才走这里）
         if system_text.is_empty() {

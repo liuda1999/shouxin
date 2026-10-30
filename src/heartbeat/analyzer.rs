@@ -197,6 +197,11 @@ fn repair_truncated_json(json_str: &str) -> String {
     repaired
 }
 
+/// 单次画像生成的默认超时（秒）
+///
+/// CPU 上 4B 模型生成 500 token 的 JSON 需要数分钟，90s 必然失败。
+pub const DEFAULT_PROFILE_TIMEOUT_SECS: u64 = 240;
+
 pub struct HeartbeatAnalyzer {
     llm_client: Arc<dyn LlmClient + Send + Sync>,
     dict_store: Arc<DictionaryStore>,
@@ -205,6 +210,12 @@ pub struct HeartbeatAnalyzer {
     profile_max_updates_per_day: u32,
     /// 同一联系人两次画像的最小间隔（小时）
     profile_update_interval_hours: i64,
+    /// 单次画像生成的超时（秒）
+    ///
+    /// 原来写死 90s：Gemma-4 这类 4B 模型在纯 CPU 上生成 500 token 的 JSON
+    /// 需要 2-5 分钟，于是**每次都在 90s 被掐断**，画像永远落不了库
+    /// （实测 26 次尝试、0 条成功）。改为可配置，默认给足 240s。
+    profile_timeout_secs: u64,
     /// 是否跳过"从对话里抽实体"这一步
     ///
     /// 只要后台队列在跑，这一步就是纯重复劳动：
@@ -226,6 +237,7 @@ impl HeartbeatAnalyzer {
             rel_store,
             profile_max_updates_per_day: MAX_PROFILE_UPDATES_PER_DAY,
             profile_update_interval_hours: PROFILE_UPDATE_INTERVAL_HOURS,
+            profile_timeout_secs: DEFAULT_PROFILE_TIMEOUT_SECS,
             skip_conversation_extraction: true,
         }
     }
@@ -246,6 +258,12 @@ impl HeartbeatAnalyzer {
     pub fn with_profile_limits(mut self, max_per_day: u32, interval_hours: i64) -> Self {
         self.profile_max_updates_per_day = max_per_day.max(1);
         self.profile_update_interval_hours = interval_hours.max(0);
+        self
+    }
+
+    /// 注入单次画像生成的超时（秒）
+    pub fn with_profile_timeout_secs(mut self, secs: u64) -> Self {
+        self.profile_timeout_secs = secs.max(30);
         self
     }
 
@@ -826,7 +844,12 @@ impl HeartbeatAnalyzer {
         );
 
         let messages = vec![Message::user(&prompt).unwrap()];
-        match tokio::time::timeout(Duration::from_secs(90), self.llm_client.chat(messages)).await {
+        match tokio::time::timeout(
+            Duration::from_secs(self.profile_timeout_secs),
+            self.llm_client.chat(messages),
+        )
+        .await
+        {
             Ok(Ok(response)) => {
                 // P0-1: LLM可能返回markdown代码块包裹的JSON，需要提取
                 let json_str = balance_json(&extract_json_from_response(&response));
@@ -990,7 +1013,10 @@ impl HeartbeatAnalyzer {
                 // 同上：尝试次数已在调用前记录
             }
             Err(_elapsed) => {
-                warn!("Profile generation timed out for contact {} after 90s", contact.id);
+                warn!(
+                    "Profile generation timed out for contact {} after {}s",
+                    contact.id, self.profile_timeout_secs
+                );
                 // P0-2: 超时也记录一次尝试，避免死循环
                 self.record_profile_update(&contact.id).await?;
             }
