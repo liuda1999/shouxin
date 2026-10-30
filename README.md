@@ -6,7 +6,7 @@
 
 **本地优先、隐私至上的智能体记忆子系统。**
 
-[![version](https://img.shields.io/badge/version-0.6.6-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.6.7-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 
@@ -490,7 +490,7 @@ ShouXin/
 
 ## 版本
 
-当前版本 **0.6.6**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
+当前版本 **0.6.7**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 
