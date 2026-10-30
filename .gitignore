@@ -123,3 +123,5 @@ data_smoke/
 .audit*.err
 .fix_run*.log
 .fix_run*.err
+.speed*.log
+.speed*.err
