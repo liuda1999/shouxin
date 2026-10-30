@@ -6,7 +6,7 @@
 
 **本地优先、隐私至上的智能体记忆子系统。**
 
-[![version](https://img.shields.io/badge/version-0.6.5-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.6.6-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 
@@ -69,7 +69,7 @@
 | 层 | 选型 | 版本 | 说明 |
 |----|------|------|------|
 | 语言 | Rust（edition 2021） | ≥ 1.75（开发机 1.99.1） | 全项目单一语言 |
-| HTTP | `axum` + `tower-http` | 0.7 / 0.5 | 主路由 42 个注册 / 35 个唯一路径（另 /admin 2、/internal 2） |
+| HTTP | `axum` + `tower-http` | 0.7 / 0.5 | 主路由 45 个注册 / 38 个唯一路径（另 /admin 2、/internal 2） |
 | 异步运行时 | `tokio` | 1.x（full） | 工作线程栈 32 MB（llama.cpp 分词器需要） |
 | 推理 | `llama-cpp-2`（llama.cpp 绑定） | `=0.1.146` | 纯 CPU，默认不编译 CUDA |
 | 嵌入 | `fastembed` + ONNX Runtime | 4.9.1 | `intfloat/multilingual-e5-base`，缺模型降级哈希 |
@@ -229,7 +229,7 @@ curl -X POST http://127.0.0.1:3000/api/memory/search/contacts \
 curl http://127.0.0.1:3000/api/todos
 ```
 
-也可以直接跑全接口冒烟（覆盖 37 项检查）：
+也可以直接跑全接口冒烟（覆盖 39 项检查）：
 
 ```bash
 BASE=http://127.0.0.1:3000 USER_ID=smoke bash scripts/api_smoke_test.sh
@@ -402,10 +402,10 @@ bash scripts/bench_cpu.sh models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf
 # 单元测试：101 项，不加载模型，秒级
 cargo test --features gguf --lib
 
-# 集成测试：11 个测试文件（会加载真实 ONNX 嵌入模型）
+# 集成测试：13 个测试文件（会加载真实 ONNX 嵌入模型）
 cargo test --features gguf --tests
 
-# 全量 API 冒烟：37 项，覆盖 routes.rs 注册的全部端点（需先启动服务）
+# 全量 API 冒烟：39 项，覆盖 routes.rs 注册的全部端点（需先启动服务）
 BASE=http://127.0.0.1:3000 USER_ID=smoke bash scripts/api_smoke_test.sh
 
 # 联系人 / 虚拟角色专项验收：23 项（热冷回退、同名并存、角色隔离）
@@ -490,7 +490,7 @@ ShouXin/
 
 ## 版本
 
-当前版本 **0.6.5**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
+当前版本 **0.6.6**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 

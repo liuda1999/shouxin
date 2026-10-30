@@ -138,8 +138,10 @@ meta                    day_index_version                 （日索引版本，�
   各自独立计数，超出 `[event].long_term_hot_limit / short_term_hot_limit` 后，按 `created_at`
   淘汰**本桶最旧**的事件，置 `is_archived = 1`（数据不删除）。触发点是事件写入的唯一出口
   `insert_event_index`，覆盖异步队列 / 同步抽取 / 心跳 / 内部 API 各条链路。
-- **冷表默认不可见**：检索接口默认只返回热表（`include_archived=false`），
-  需要查冷表时显式传 `include_archived=true`（可按 `archived_month` 限定月份）。
+- **冷表默认可见**：事件检索默认包含归档（`include_archived` 不传即为 true），
+  只有显式 `hot_only=true` / `include_archived=false` 才只看热表。
+  原因：这是"记忆"系统，短事件 7 天、长事件 30 天后归档，默认排除会让用户反复遇到
+  "我明明记过却搜不到"（v0.6.6 按模拟用户测试结果调整）。
   注意裁剪是**按桶惰性触发**：只有该桶有新事件写入时才会裁剪，批量导入后若不再写入，
   超限会保持原样。已知的行为偏差（critical 超 30 天仍被归档、低分事件被立即物理删除）见
   [TROUBLESHOOTING.md §4.7](TROUBLESHOOTING.md)。

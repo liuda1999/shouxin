@@ -286,8 +286,8 @@ grep -i "Profile update blocked" .server.log | tail
   `importance_score > 0.7 AND created_at < now-30d`，**没有 critical 豁免**。
   实测：score 0.98、40 天前的事件在维护心跳后被置 `is_archived = 1`。
   日志形如 `[Event Lifecycle] Archived 4 expired events (auto_invalid_at: 1, fallback: 3)`。
-- **影响**：`critical` 保证不了"永久可查"，30 天后落到冷表（数据仍在，默认查询不返回，
-  `include_archived=true` 可读回）。
+- **影响**：`critical` 保证不了"永久可查"，30 天后落到冷表（数据仍在；
+  v0.6.6 起事件检索默认包含归档，所以仍能搜到，但热/冷分层语义已被破坏）。
 - **修复位置**：给兜底 SQL 加 `AND importance_score <= 0.95`。
 
 #### 4.7.2 `importance_score < 0.4` 的事件是**立即物理删除**，不是保留 3 天
@@ -312,7 +312,7 @@ grep -i "Profile update blocked" .server.log | tail
 
 **冷热表本身是正常的**（2026-10-30 复测）：按长期 `>0.7` / 短期 `(0,0.7]` 分桶，
 各自独立计数，超限按 `created_at` 淘汰最旧；实测上限配 2 时 6 条短期事件 → 热 2 / 冷 4，
-`include_archived=true` 能全部读回。唯一要知道的特性是**裁剪按桶惰性触发**：
+默认查询即包含归档（v0.6.6 起；`hot_only=true` 才只看热表）。唯一要知道的特性是**裁剪按桶惰性触发**：
 只有"该桶有新事件写入"时才会裁剪，批量导入后若不再写入，超限会保持原样。
 
 ---

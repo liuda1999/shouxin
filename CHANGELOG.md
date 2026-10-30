@@ -1,5 +1,66 @@
 # 变更记录
 
+## [0.6.6] 2026-10-31 — 按模拟用户测试结果修复：入口、备份、说话人、画像空转、待确认出口、历史可见性
+
+用 `scripts/sim_user_test.py` 做了 10 个场景的实用性压力测试（见
+[docs/TEST_SIMULATED_USER.md](docs/TEST_SIMULATED_USER.md)），按结果修掉 6 项、保留 2 项。
+
+### 1. 批量导入（原：只能逐条 POST）
+
+新增 `POST /api/memory/batch`，单批最多 500 条，逐条返回 `conversation_id`。
+每项支持 `timestamp` 与 `messages`。实测：接收 12 条耗时 0.1s（P50 2ms），
+瓶颈仍在抽取队列（2.59 条/分钟）。
+
+### 2. 备份与导出（原：接口全 404）
+
+- `POST /api/backup`：用 `VACUUM INTO` 生成关系库一致性快照，WAL 下无需停服；
+  实测 0.01s / 340KB / `integrity_check=ok`。
+- `GET /api/export?user_id=...`：导出联系人 / 事件 / 待办 JSON，默认含归档。
+
+### 3. 说话人方向（原：两种相反承诺抽成同一种表达）
+
+`/api/memory/add` 与批量接口新增 `messages: [{role, content}]` 通道，
+落库原文与抽取提示词都带「我：/ 对方：」前缀。纯文本接口保持兼容。
+实测 A「我答应发报价给王强」与 B「王强答应发给我」不再完全一致，
+但 B 仍被记成"发送给说话人"——**方向表达仍是 4B 模型的能力上限**，只能靠 `messages` 补足证据。
+
+### 4. 画像空转占位（原：无证据联系人每轮白占 3 个名额）
+
+没有事件、也没有对话提到该联系人时，`generate_contact_profile` 直接返回 `None` 且不写日志，
+于是它每轮都被重新选中。实测 6 个真人因 2 个"幽灵"联系人被拖成 3 轮（3+2+1）。
+修复：新增 `record_profile_skip`（写入 `update_count_today = 0` 的检查记录），
+候选 SQL 改为只认"有新互动"。**不消耗每日 2 次额度**，符合"没新数据就不更新"的原意。
+
+### 5. 待确认合并没有出口（原：48h 后硬删除，且时间比较有 bug）
+
+- 到期改为置 `status='expired' + resolution_action='timeout'`，保留可审计记录，不再静默删除。
+- 时间比较从 `created_at < datetime('now','-48 hours')` 改为 `julianday()`：
+  原写法是字符串比较，RFC3339 的 `T`(0x54) > 空格(0x20)，导致 49 小时的行要滞留一天才被处理。
+  实测 49h/72h/5d 三条现在全部正确标记 expired。
+
+### 6. 默认看不到历史（原：默认排除归档，40 天前的事件搜不到）
+
+`POST /api/memory/search/events` 与 `/api/search/smart` 默认包含归档；
+新增 `hot_only=true`（或显式 `include_archived=false`）退回热表。
+实测 4 条事件：默认 4、`hot_only` 2。
+
+### 未修（有意保留）
+
+- **S9 存量碎片联系人**："复盘""大家一致"这类历史脏数据仍会被常见词命中。这是数据治理，
+  不是代码缺陷；新增的联系人已有"姓名必须逐字出现在原文"的校验，存量需人工确认后清理。
+- **4.7 的两条生命周期偏差**（critical 超 30 天被归档、低分事件被立即物理删除）按既定决定不改，
+  见 [docs/TROUBLESHOOTING.md §4.7](docs/TROUBLESHOOTING.md)。
+
+### 测试
+
+| 项 | 结果 |
+|---|---|
+| 新增 `tests/test_lifecycle_fixes.rs` | 3/3（画像跳过不再重选 / 待确认标记 expired / 快照完整） |
+| `scripts/sim_user_test.py --scenario cheap` | S3/S6/S7 全部转为 PASS；S9 仍为已知问题 |
+| `scripts/sim_user_test.py --scenario s4` | 6 个真人 2 轮建档，幽灵不再占位 |
+| `scripts/sim_user_test.py --scenario llm` | 批量导入、messages、互斥、三库一致性 |
+| 原有套件 | 库测试 101、归档 14、热表触发 5、待办幂等 4，均通过 |
+
 ## [0.6.5] 2026-10-30 — 修复：事件热表上限从未在真实链路上生效
 
 事件冷热分层（`archive_oldest_hot_event`）本身实现正确、测试全过，但**触发点只挂在同步抽取路径

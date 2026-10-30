@@ -30,7 +30,7 @@ use axum::{
     Json,
     Router,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{AsyncMemory, TodoFilter};
@@ -49,11 +49,60 @@ use tracing::{debug, error, info, warn};
 
 // ==================== 请求结构体 ====================
 
+/// 一条带角色的消息
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConversationMessage {
+    /// 角色：`user`/`me`/`self` = 我；`assistant`/`other`/`them` = 对方；其它值原样保留
+    pub role: String,
+    pub content: String,
+}
+
+/// 把「单段文本」或「带角色的消息」统一成落库文本
+///
+/// 带角色时会加 `我：` / `对方：` 前缀，让抽取模型能判断方向，
+/// 也让字典库里的原文保留"谁说的"。
+fn compose_conversation(
+    conversation: &str,
+    messages: &Option<Vec<ConversationMessage>>,
+) -> Result<String, String> {
+    let Some(msgs) = messages.as_ref().filter(|m| !m.is_empty()) else {
+        return Ok(conversation.trim().to_string());
+    };
+
+    let mut lines = Vec::with_capacity(msgs.len());
+    for m in msgs {
+        let content = m.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        let speaker = match m.role.to_ascii_lowercase().as_str() {
+            "user" | "me" | "self" | "human" => "我",
+            "assistant" | "other" | "them" | "bot" | "ai" => "对方",
+            _ => m.role.as_str(),
+        };
+        lines.push(format!("{}：{}", speaker, content));
+    }
+    if lines.is_empty() {
+        return Err("messages 内容为空".to_string());
+    }
+    Ok(lines.join("\n"))
+}
+
 /// 添加对话请求
 #[derive(Debug, Deserialize)]
 pub struct AddConversationRequest {
-    /// 对话内容
+    /// 对话内容（单段文本）
+    ///
+    /// 与 `messages` 二选一：只想丢一段话就用它；需要保留"谁说的"就用 `messages`。
+    #[serde(default)]
     pub conversation: String,
+    /// 分角色消息（可选）
+    ///
+    /// 背景：以前只能传一段字符串，"我答应周五给他报价" 和 "他答应周五给我报价"
+    /// 在数据层完全一样，抽取只能靠猜，方向经常反。这里保留角色后，
+    /// 落库原文与抽取提示词都会带"我/对方"前缀。
+    #[serde(default)]
+    pub messages: Option<Vec<ConversationMessage>>,
     /// 用户 ID（可选）
     pub user_id: Option<String>,
     /// 操作范围（可选，默认为 User）
@@ -66,6 +115,58 @@ pub struct AddConversationRequest {
     /// 否则全部落进"今天"这一页，按天分页就失效了。
     #[serde(default, alias = "occurred_at")]
     pub timestamp: Option<String>,
+}
+
+/// 批量导入的一项
+#[derive(Debug, Deserialize)]
+pub struct BatchConversationItem {
+    #[serde(default)]
+    pub conversation: String,
+    #[serde(default)]
+    pub messages: Option<Vec<ConversationMessage>>,
+    /// 该条对话的真实发生时间（导入历史记录时必须给）
+    #[serde(default, alias = "occurred_at")]
+    pub timestamp: Option<String>,
+}
+
+/// 批量导入请求
+#[derive(Debug, Deserialize)]
+pub struct BatchAddRequest {
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub scope: Scope,
+    pub items: Vec<BatchConversationItem>,
+}
+
+/// 备份请求
+#[derive(Debug, Deserialize, Default)]
+pub struct BackupRequest {
+    /// 备份文件路径（可选，缺省 `./backups/shouxin-<时间>.db`）
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// 导出查询参数
+#[derive(Debug, Deserialize)]
+pub struct ExportQuery {
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub scope: Scope,
+    #[serde(default = "default_export_limit")]
+    pub limit: usize,
+    /// 是否包含已归档（默认 true：导出就是要全量）
+    #[serde(default = "default_true")]
+    pub include_archived: bool,
+}
+
+fn default_export_limit() -> usize {
+    5000
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 搜索联系人请求
@@ -120,8 +221,16 @@ pub struct SearchEventsRequest {
     #[serde(default)]
     pub scope: Scope,
     /// 是否包含已归档事件（热冷分离）
+    ///
+    /// 不传时默认包含；显式传 `false` 等价于 `hot_only=true`。
     #[serde(default)]
-    pub include_archived: bool,
+    pub include_archived: Option<bool>,
+    /// 只看热表（默认 false = 包含归档）
+    ///
+    /// 默认包含归档的理由：这是"记忆"系统，短事件 7 天、长事件 30 天后就归档，
+    /// 若默认排除，用户会遇到"我明明记过却搜不到"。需要只看近期时传 true。
+    #[serde(default)]
+    pub hot_only: bool,
     /// 按归档月份过滤（如 "2026-06"）
     #[serde(default)]
     pub archived_month: Option<String>,
@@ -845,6 +954,12 @@ pub fn create_router(async_memory: Arc<AsyncMemory>, file_state: Arc<FileApiStat
         .route("/health", axum::routing::get(health_check))
         // 记忆管理端点
         .route("/api/memory/add", axum::routing::post(add_conversation))
+        .route(
+            "/api/memory/batch",
+            axum::routing::post(batch_add_conversations),
+        )
+        .route("/api/backup", axum::routing::post(create_backup))
+        .route("/api/export", axum::routing::get(export_data))
         .route("/api/memory/extract_status/:conversation_id", axum::routing::get(extract_status))
         .route(
             "/api/memory/replay/:conversation_id",
@@ -1246,16 +1361,22 @@ async fn add_conversation(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
     Json(req): Json<AddConversationRequest>,
 ) -> ApiResponse<AddConversationResponse> {
+    // 单段文本 / 带角色的 messages 统一成落库文本
+    let text = match compose_conversation(&req.conversation, &req.messages) {
+        Ok(t) => t,
+        Err(e) => {
+            return ApiResponse::error_with_status(e, StatusCode::BAD_REQUEST);
+        }
+    };
     // 空内容直接拒绝：否则会写入一条无意义对话并占用抽取队列
-    let trimmed_len = req.conversation.trim().chars().count();
-    if trimmed_len == 0 {
+    if text.is_empty() {
         return ApiResponse::error_with_status(
             "对话内容为空".to_string(),
             StatusCode::BAD_REQUEST,
         );
     }
     // S-09: 验证 conversation 长度
-    if req.conversation.chars().count() > MAX_CONVERSATION_LEN {
+    if text.chars().count() > MAX_CONVERSATION_LEN {
         return ApiResponse::error_with_status(
             format!("对话内容过长（最大 {} 字符）", MAX_CONVERSATION_LEN),
             StatusCode::BAD_REQUEST,
@@ -1305,7 +1426,7 @@ async fn add_conversation(
     };
 
     match async_memory
-        .add_async_at(&req.conversation, req.user_id.as_deref(), req.scope, occurred_at)
+        .add_async_at(&text, req.user_id.as_deref(), req.scope, occurred_at)
         .await
     {
         Ok(result) => {
@@ -1314,6 +1435,209 @@ async fn add_conversation(
         }
         Err(e) => {
             error!("添加对话失败: {}", e);
+            ApiResponse::error("内部错误".to_string())
+        }
+    }
+}
+
+/// 批量导入对话（单次最多 500 条）
+///
+/// 存在的理由：原先只有逐条 `POST /api/memory/add`，导入历史聊天记录要写循环脚本。
+/// 实测接收端本身极快（P50 2ms），瓶颈在抽取队列，所以这里只负责"快速收下"，
+/// 逐条返回 `conversation_id`，抽取仍交给后台队列。
+async fn batch_add_conversations(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    Json(req): Json<BatchAddRequest>,
+) -> ApiResponse<serde_json::Value> {
+    const MAX_BATCH: usize = 500;
+
+    if req.items.is_empty() {
+        return ApiResponse::error_with_status(
+            "items 不能为空".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    if req.items.len() > MAX_BATCH {
+        return ApiResponse::error_with_status(
+            format!("单批最多 {} 条，当前 {}", MAX_BATCH, req.items.len()),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    if let Err(e) = validate_user_id(&req.user_id) {
+        return ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST);
+    }
+
+    let mut accepted = 0usize;
+    let mut failed = 0usize;
+    let mut items = Vec::with_capacity(req.items.len());
+
+    for (index, item) in req.items.iter().enumerate() {
+        let text = match compose_conversation(&item.conversation, &item.messages) {
+            Ok(t) => t,
+            Err(e) => {
+                failed += 1;
+                items.push(serde_json::json!({"index": index, "success": false, "error": e}));
+                continue;
+            }
+        };
+        if text.is_empty() {
+            failed += 1;
+            items.push(serde_json::json!({
+                "index": index, "success": false, "error": "对话内容为空"
+            }));
+            continue;
+        }
+        if text.chars().count() > MAX_CONVERSATION_LEN {
+            failed += 1;
+            items.push(serde_json::json!({
+                "index": index, "success": false,
+                "error": format!("对话内容过长（最大 {} 字符）", MAX_CONVERSATION_LEN)
+            }));
+            continue;
+        }
+
+        // 时间戳：与单条接口同一套校验，避免历史数据落到今天的页里
+        let occurred_at = match item
+            .timestamp
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            None => None,
+            Some(raw) => match parse_conversation_timestamp(raw) {
+                Ok(ts) => {
+                    let now = Utc::now();
+                    if ts > now + chrono::Duration::days(1) || ts.year() < 2000 {
+                        failed += 1;
+                        items.push(serde_json::json!({
+                            "index": index, "success": false,
+                            "error": format!("timestamp 超出合理范围：{}", raw)
+                        }));
+                        continue;
+                    }
+                    Some(ts)
+                }
+                Err(e) => {
+                    failed += 1;
+                    items.push(serde_json::json!({
+                        "index": index, "success": false,
+                        "error": format!("timestamp 解析失败：{}", e)
+                    }));
+                    continue;
+                }
+            },
+        };
+
+        match async_memory
+            .add_async_at(&text, req.user_id.as_deref(), req.scope, occurred_at)
+            .await
+        {
+            Ok(result) => {
+                accepted += 1;
+                items.push(serde_json::json!({
+                    "index": index,
+                    "success": true,
+                    "conversation_id": result.conversation_id,
+                }));
+            }
+            Err(e) => {
+                failed += 1;
+                items.push(serde_json::json!({
+                    "index": index, "success": false, "error": e.to_string()
+                }));
+            }
+        }
+    }
+
+    ApiResponse::success(serde_json::json!({
+        "accepted": accepted,
+        "failed": failed,
+        "total": req.items.len(),
+        "items": items,
+    }))
+}
+
+/// 在线备份：对关系库做一致性快照（WAL 下安全，不需要停服）
+async fn create_backup(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    req: Option<Json<BackupRequest>>,
+) -> ApiResponse<serde_json::Value> {
+    let path = req
+        .and_then(|Json(r)| r.path)
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "./backups/shouxin-{}.db",
+                Utc::now().format("%Y%m%d-%H%M%S")
+            )
+        });
+
+    match async_memory.get_relational_store().snapshot_to(&path).await {
+        Ok(size) => ApiResponse::success(serde_json::json!({
+            "path": path,
+            "size_bytes": size,
+            "size_mb": (size as f64 / 1024.0 / 1024.0 * 10.0).round() / 10.0,
+            "created_at": Utc::now().to_rfc3339(),
+        })),
+        Err(e) => {
+            error!("生成备份失败: {}", e);
+            ApiResponse::error_with_status(
+                format!("生成备份失败: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        }
+    }
+}
+
+/// 导出：把某个 owner 的联系人 / 事件 / 待办按 JSON 全量吐出
+///
+/// 默认包含归档 —— 导出的语义就是"把这批数据完整带走"，
+/// 若只想导热表，传 `include_archived=false`。
+async fn export_data(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    Query(q): Query<ExportQuery>,
+) -> ApiResponse<serde_json::Value> {
+    let limit = q.limit.clamp(1, 50_000);
+    let uid = q.user_id.as_deref();
+
+    let contacts = async_memory
+        .search_contacts("", limit, q.scope, uid, q.include_archived, true)
+        .await;
+    let events = async_memory
+        .search_events(
+            EventFilter::new()
+                .with_limit(limit)
+                .with_include_archived(q.include_archived),
+            q.scope,
+            uid,
+        )
+        .await;
+    let todos = async_memory
+        .list_todos(
+            TodoFilter::new()
+                .with_limit(limit as i64)
+                .with_include_archived(q.include_archived),
+            q.scope,
+            uid,
+        )
+        .await;
+
+    match (contacts, events, todos) {
+        (Ok(c), Ok(e), Ok(t)) => ApiResponse::success(serde_json::json!({
+            "exported_at": Utc::now().to_rfc3339(),
+            "user_id": q.user_id,
+            "include_archived": q.include_archived,
+            "counts": {"contacts": c.len(), "events": e.len(), "todos": t.len()},
+            "contacts": c,
+            "events": e,
+            "todos": t,
+        })),
+        (c, e, t) => {
+            let err = c.err().map(|x| x.to_string())
+                .or_else(|| e.err().map(|x| x.to_string()))
+                .or_else(|| t.err().map(|x| x.to_string()))
+                .unwrap_or_default();
+            error!("导出失败: {}", err);
             ApiResponse::error("内部错误".to_string())
         }
     }
@@ -1625,9 +1949,10 @@ async fn search_events(
     if let Some(status) = req.status {
         filter = filter.with_status(status);
     }
-    if req.include_archived {
-        filter = filter.with_include_archived(true);
-    }
+    // 默认包含归档（记忆系统的语义是全量可查），显式 `hot_only=true`
+    // 或 `include_archived=false` 才只看热表
+    let include_archived = req.include_archived.unwrap_or(!req.hot_only);
+    filter = filter.with_include_archived(include_archived);
     if let Some(month) = req.archived_month {
         filter = filter.with_archived_month(Some(month));
     }
@@ -2216,8 +2541,10 @@ async fn smart_search(
                 }
             }
             "events" => {
+                // 与 /api/memory/search/events 保持一致：默认包含归档，否则智能检索同样看不到历史
                 let filter = crate::traits::store_traits::EventFilter::default()
                     .with_search_query(req.query.clone())
+                    .with_include_archived(true)
                     .with_limit(safe_limit);
                 if let Ok(events) = async_memory.search_events(filter, req.scope, req.user_id.as_deref()).await {
                     response.events = events.into_iter().map(|e| serde_json::to_value(e).unwrap_or_default()).collect();

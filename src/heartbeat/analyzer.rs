@@ -789,8 +789,12 @@ impl HeartbeatAnalyzer {
         // 这一天就不更新他——这是心跳该做的"该不该更新"的判断，
         // 而不是拿"每天 2 次"去硬卡。这里就是那个判断：
         // 既没有事件、也没有任何一段对话提到他 → 直接跳过。
+        //
+        // 但要留一条"已检查"的痕迹（额度 +0）：否则他会一直留在候选队列里，
+        // 每轮占住 3 个名额之一，把有证据的人挤到后面。
         if events.is_empty() && conversation_block.trim().is_empty() {
             debug!("跳过 {}：没有任何事件/对话证据，本轮不更新", contact.name);
+            self.rel_store.record_profile_skip(&contact.id).await?;
             return Ok(None);
         }
 

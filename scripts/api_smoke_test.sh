@@ -168,6 +168,14 @@ else
 fi
 check "POST /api/memory/replay_failed" POST "/api/memory/replay_failed?limit=5" 200 "" ''
 
+echo "== 9. 批量导入 / 备份 / 导出 =="
+check "POST /api/memory/batch" POST "/api/memory/batch" 200 \
+  "{\"user_id\":\"$UID_\",\"items\":[{\"conversation\":\"批量冒烟：明天和王五对一下合同。\",\"timestamp\":\"2026-10-28 10:00:00\"}]}" \
+  '"accepted":1'
+check "POST /api/backup" POST "/api/backup" 200 '{"path":"./backups/smoke-test.db"}' '"size_bytes"'
+rm -f ./backups/smoke-test.db 2>/dev/null
+check "GET  /api/export" GET "/api/export?user_id=$UID_&limit=50" 200 "" '"counts"'
+
 echo ""
 echo "== 汇总：PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP =="
 if [ "$FAIL" -gt 0 ]; then

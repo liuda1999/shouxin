@@ -61,6 +61,51 @@ Content-Type: application/json
 不传则用当前时间。解析失败、晚于当前时间 1 天以上、或早于 2000-01-01 均返回 **400**。
 时间决定它落在哪一"天"的页里，详见下面的「字典库（原文）」。
 
+**保留"谁说的"（`messages`，与 `conversation` 二选一）**：
+
+```json
+{
+  "user_id": "default_user",
+  "messages": [
+    { "role": "user", "content": "报价单你什么时候能给我？" },
+    { "role": "other", "content": "我周五前发给你。" }
+  ]
+}
+```
+
+`role`：`user`/`me`/`self` → 落库为「我：」；`assistant`/`other`/`them` → 「对方：」；其它值原样保留。
+落库原文与抽取提示词都会带这两个前缀，模型才能判断"是我答应对方，还是对方答应我"。
+**只用 `conversation` 一段纯文本时，这个方向信息是不存在的**——A/B 两句相反的承诺会被抽成同一种表达。
+
+### 批量导入
+
+```http
+POST /api/memory/batch
+Content-Type: application/json
+
+{
+  "user_id": "default_user",
+  "items": [
+    { "conversation": "周一和张总开了预算会。", "timestamp": "2026-10-27 09:30:00" },
+    { "conversation": "周三把方案发过去了。", "timestamp": "2026-10-29 18:10:00" }
+  ]
+}
+```
+
+```json
+{
+  "success": true,
+  "data": { "accepted": 2, "failed": 0, "total": 2,
+            "items": [ { "index": 0, "success": true, "conversation_id": "..." },
+                       { "index": 1, "success": true, "conversation_id": "..." } ] }
+}
+```
+
+- 单批上限 **500 条**；逐条返回结果，单条失败不影响其它条。
+- 每项都支持 `messages` 与 `timestamp`，语义与单条接口完全一致。
+- 接收很快（实测 P50 约 2ms），真正的耗时在后台抽取队列：**约 2.5 条/分钟**（4B 模型、纯 CPU）。
+  导入 100 条约需 39 分钟，建议分批导、先确认队列排空。
+
 ### 查询抽取状态
 
 ```http
@@ -204,6 +249,15 @@ GET /api/contacts/:contact_id/detail?user_id=default_user&event_limit=20&memory_
 POST /api/memory/search/events
 { "query": "项目评审", "limit": 10, "owner_type": "User", "owner_id": "default_user" }
 ```
+
+**默认包含已归档事件**（`include_archived` 不传即为 true）——这是"记忆"系统，短事件 7 天、
+长事件 30 天后会归档，若默认排除，用户会反复遇到"我明明记过却搜不到"。
+
+| 参数 | 说明 |
+|---|---|
+| `hot_only: true` | 只看热表（等价于 `include_archived: false`） |
+| `include_archived: false` | 显式只看热表 |
+| `archived_month: "2026-10"` | 按归档月份过滤 |
 
 ### 历史对话检索
 
@@ -500,6 +554,47 @@ GET /api/contacts/:contact_id/event_archive?limit=100
 ```
 
 按事件时间倒序。
+
+---
+
+## 备份与导出
+
+### 在线备份（关系库快照）
+
+```http
+POST /api/backup
+Content-Type: application/json
+
+{ "path": "./backups/shouxin-20261030.db" }   // 可选，缺省 ./backups/shouxin-<时间>.db
+```
+
+```json
+{ "success": true, "data": { "path": "./backups/shouxin-20261030.db",
+                             "size_bytes": 314572, "size_mb": 0.3,
+                             "created_at": "2026-10-30T16:20:00+00:00" } }
+```
+
+用 SQLite 的 `VACUUM INTO` 生成**一致性快照**，WAL 模式下无需停服。
+不要用 `cp shouxin.db` 代替：WAL 里尚未 checkpoint 的页不会被复制，拷出来的库可能缺最近的写入。
+只备份关系库；字典库（Sled）与向量库（HNSW）需单独复制 `data/` 下对应目录。
+
+### 导出（JSON）
+
+```http
+GET /api/export?user_id=default_user&limit=5000
+```
+
+```json
+{ "success": true, "data": {
+    "exported_at": "2026-10-30T16:20:00+00:00",
+    "include_archived": true,
+    "counts": { "contacts": 12, "events": 48, "todos": 7 },
+    "contacts": [...], "events": [...], "todos": [...]
+} }
+```
+
+默认包含归档（导出的语义是"完整带走"）；只要热表传 `include_archived=false`。
+`limit` 默认 5000，上限 50000。
 
 ---
 

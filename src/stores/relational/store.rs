@@ -2607,12 +2607,13 @@ impl RelationalStore {
                   GROUP BY t.contact_id
                   HAVING SUM(t.update_count_today) >= ?1
               )
-              AND (
-                    -- (1) 从没生成过画像：一定要补（不限时间窗口）
-                    ci.background IS NULL OR ci.background = ''
-                    -- (2) 有新互动：最近一次互动晚于上次画像时间
-                    OR (l.last_update IS NOT NULL AND ci.last_interaction_at > l.last_update)
-              )
+              -- 只认"有新互动"，不再对"画像为空"无条件放行：
+              --   ① 从没检查过（l.last_update IS NULL）→ 入队；
+              --   ② 上次检查之后又有新互动 → 再次入队。
+              -- 之所以去掉原来的「background 为空就一定要补」：
+              -- 检查过但没证据的人（record_profile_skip 会写一条 0 额度日志）会被反复选中，
+              -- 每轮白占 3 个名额中的一个，把真正有证据的人挤到后面。
+              AND (l.last_update IS NULL OR ci.last_interaction_at > l.last_update)
             ORDER BY
               -- 先补空缺，再按互动新近程度；归档的放最后
               CASE WHEN ci.background IS NULL OR ci.background = '' THEN 0 ELSE 1 END,
@@ -2697,9 +2698,38 @@ impl RelationalStore {
         Ok(logs)
     }
 
+    /// 记录一次"已检查但无证据"的画像尝试（**不消耗每日额度**）
+    ///
+    /// 为什么需要：没有事件、也没有对话原文提到该联系人时，`generate_contact_profile`
+    /// 会直接跳过且不写日志。于是这类联系人每轮都会被重新选中，占住每轮 3 个名额之一，
+    /// 把真正有证据的人挤到后面（实测 6 个真人联系人因此用了 3 轮才建档，而非 2 轮）。
+    ///
+    /// 这里写一条 `update_count_today = 0` 的记录：
+    /// - 额度统计是 `SUM(update_count_today)`，加 0 不影响"每天 2 次"的限制；
+    /// - 候选查询以 `last_interaction_at > last_update` 为准，于是该联系人会退出队列，
+    ///   直到他真的又被提到（有新互动）再重新入队——与"没新数据就不更新"的语义一致。
+    pub async fn record_profile_skip(&self, contact_id: &str) -> Result<(), ShouxinError> {
+        let now = Utc::now().to_rfc3339();
+        let result = query(
+            r#"
+            INSERT INTO contact_profile_update_log (contact_id, updated_at, update_count_today)
+            VALUES (?, ?, 0)
+            ON CONFLICT(contact_id, updated_at) DO NOTHING
+            "#,
+        )
+        .bind(contact_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await;
+
+        if let Err(e) = result {
+            return Err(ShouxinError::StorageError(e.to_string()));
+        }
+        Ok(())
+    }
+
     pub async fn record_profile_update(&self, contact_id: &str) -> Result<(), ShouxinError> {
         let now = Utc::now().to_rfc3339();
-
         let result = query(
             r#"
             INSERT INTO contact_profile_update_log (contact_id, updated_at, update_count_today)
@@ -3070,17 +3100,53 @@ impl RelationalStore {
         Ok(())
     }
 
+    /// 过期未处理的待确认合并：标记为 `expired`（**不再物理删除**）
+    ///
+    /// 两个修复点：
+    /// 1. 原实现用 `created_at < datetime('now','-48 hours')` 做字符串比较，而 `created_at`
+    ///    存的是 RFC3339（含 `T` 和时区偏移）。`'T'(0x54) > ' '(0x20)`，导致同一日期内的
+    ///    49 小时记录永远比不出"更早"，实测 49h 的行会滞留一天才被删。
+    ///    改用 `julianday()` 按时间值比较，与时区/格式无关。
+    /// 2. 原实现直接 `DELETE`：既没合并、也没留下任何痕迹，事后无法知道"有条合并被放弃了"。
+    ///    改为置 `status='expired'` + `resolution_action='timeout'`，保留可审计记录。
     pub async fn cleanup_expired_pending_merges(&self) -> Result<usize, ShouxinError> {
         let result = query(
             r#"
-            DELETE FROM pending_event_merge
-            WHERE status = 'pending' AND created_at < datetime('now', '-48 hours')
+            UPDATE pending_event_merge
+            SET status = 'expired',
+                resolved_at = ?1,
+                resolution_action = 'timeout'
+            WHERE status = 'pending'
+              AND julianday(created_at) < julianday('now', '-48 hours')
             "#,
         )
+        .bind(Utc::now().to_rfc3339())
         .execute(&self.pool)
         .await?;
 
         Ok(result.rows_affected() as usize)
+    }
+
+    /// 在线生成 SQLite 快照（WAL 模式下安全，不需要停服）
+    ///
+    /// 用 `VACUUM INTO` 而不是 `fs::copy`：后者在 WAL 模式下会漏掉尚未 checkpoint 的页，
+    /// 拷出来的库可能缺最近的写入。返回快照文件字节数。
+    pub async fn snapshot_to(&self, path: &str) -> Result<u64, ShouxinError> {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| ShouxinError::StorageError(format!("创建备份目录失败: {}", e)))?;
+            }
+        }
+        // VACUUM INTO 的目标是字面量，不能绑定参数；单引号需要转义
+        let escaped = path.replace('\'', "''");
+        query(&format!("VACUUM INTO '{}'", escaped))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ShouxinError::StorageError(format!("生成快照失败: {}", e)))?;
+
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        Ok(size)
     }
 
     pub async fn cleanup_expired_events(&self) -> Result<usize, ShouxinError> {
