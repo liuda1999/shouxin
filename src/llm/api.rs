@@ -69,6 +69,8 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(config: LlmConfig) -> Self {
+        // 注意：endpoint 被直接作为 POST 目标使用，不会补全 `/chat/completions`。
+        // 配置里必须写完整 URL；示例见 config.toml `[llm.api].endpoint`。
         let endpoint = config.endpoint.unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string());
         let api_key = config.extra_params.get("api_key")
             .and_then(|v| v.as_str())

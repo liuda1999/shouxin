@@ -38,9 +38,10 @@ endpoint = "http://localhost:11434"
 timeout_secs = 300
 max_retries = 2
 
-# OpenAI 兼容 API 后端（可选）
+# OpenAI 兼容 API 后端（可选；当前为"标注未验证"状态，启用前请读 docs/CONFIGURATION.md §2.3）
 [llm.api]
-endpoint = "https://api.openai.com/v1"
+# 必须写到 /chat/completions 全路径：客户端直接 POST 此地址，不会自动补全
+endpoint = "https://api.openai.com/v1/chat/completions"
 api_key = ""              # 建议用环境变量 SHOUXIN__LLM__API__API_KEY 注入
 model = "gpt-4o-mini"     # 示例值，按你的服务端模型名替换
 timeout_secs = 60

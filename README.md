@@ -6,7 +6,7 @@
 
 **本地优先、隐私至上的智能体记忆子系统。**
 
-[![version](https://img.shields.io/badge/version-0.6.2-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.6.3-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 
@@ -246,6 +246,9 @@ BASE=http://127.0.0.1:3000 USER_ID=smoke bash scripts/api_smoke_test.sh
 
 配置文件默认 `./config.toml`。**支持三种推理后端**（内置 llama.cpp / Ollama / OpenAI 兼容 API），
 **上下文长度可在配置里自由调节**，完整说明见 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**。
+
+> 云端 API（`primary = "api"`）主链路代码已完整实现，但**尚未做端到端验证**，且心跳侧暂不支持密钥，
+> 详见 [CONFIGURATION.md §2.3](docs/CONFIGURATION.md)（文中以「标注」形式列出两条已知限制）。
 
 覆盖顺序（后者优先）：
 

@@ -324,6 +324,9 @@ pub fn build_heartbeat_client(
             }
         }
         "api" => {
+            // TODO(cloud-api): 心跳侧暂不支持鉴权。HeartbeatLlmSettings 没有 api_key / headers 字段，
+            // 这里只能传空密钥，因此仅能对接无需鉴权的本地/自建网关。
+            // 另注：primary = "api" 时心跳默认仍是 gguf，本地模型照旧加载（见 docs/CONFIGURATION.md §2.3）。
             let config = LlmConfig {
                 model: hb_settings.model.clone(),
                 endpoint: Some(hb_settings.endpoint.clone()),

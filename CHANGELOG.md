@@ -1,6 +1,41 @@
 # 变更记录
 
-## [未发布] 2026-10-30 — 启动自检：清掉一条误报，补齐"什么日志算正常"
+## [0.6.3] 2026-10-30 — 配置标注：云端 API 示例修正与两条已知限制
+
+专项检查"关键配置页能不能找到、能不能把内置模型换成云端 API"时，确认配置文档体系本身是完整的
+（`config.toml` + `docs/CONFIGURATION.md` + README 直达链接 + `scripts/check_config.py`），
+但云端这条路有三处会误导人的地方。本次只做**最小改动**：修示例、标限制，**不实现**新功能。
+
+### 修正：endpoint 必须写全路径
+
+`src/llm/api.rs` 把 `endpoint` 直接当 POST 目标（`.post(&self.endpoint)`），不做 `/chat/completions` 补全。
+而 `config.toml`、`config.toml.example`、`docs/CONFIGURATION.md` 三处示例原来都写成 `https://api.openai.com/v1`，
+照抄必然 404/405。
+
+- 三处示例统一改为 `https://api.openai.com/v1/chat/completions`，并注明"不会自动补全"；
+- `ApiClient::new()` 加一行注释点明该约定（无行为变更）。
+
+### 标注：心跳侧暂不支持 API 密钥
+
+`HeartbeatLlmSettings` 没有 `api_key` / `headers` 字段，工厂心跳分支只能传空密钥
+（`src/llm/factory.rs` 原先就硬编码空串，本次未改行为，只补 `TODO(cloud-api)` 注释）。
+影响：`[llm.heartbeat].backend = "api"` 只能对接无需鉴权的本地/自建网关。
+
+### 标注：换主链路不会停掉本地模型
+
+`primary = "api"` 只影响主链路，`[llm.heartbeat].backend` 默认仍是 `gguf`，启动照旧加载 4.7 GB 本地模型。
+受上一条限制影响，目前无法仅靠改配置彻底切到云端。
+
+### 其它
+
+- `docs/CONFIGURATION.md` §2.3 增加"状态：已实现但未做端到端验证"提示与两条限制清单；
+- README「配置」节加一句指向该提示；版本徽章 0.6.2 → 0.6.3；
+- `Cargo.toml` 版本 0.6.0 → 0.6.3（此前未随 tag 同步，`--version` 输出与 Release 对齐）；
+- 仓库内仍无任何配置档把 `primary` 设为 `api`，也无可运行的端到端验证 —— 属已知缺口，未在本次处理。
+
+---
+
+## 0.6.3 之前的一轮收尾 — 启动自检：清掉一条误报，补齐"什么日志算正常"
 
 收尾重启验证时，启动日志里只剩一条 WARN：`备模型客户端创建失败: 未知的 LLM 来源: none`。
 它其实是误报——`secondary = "none"` 是**显式关闭备模型**，配置层却把它当成一个后端名去构客户端，

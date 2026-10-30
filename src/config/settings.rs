@@ -281,6 +281,10 @@ pub struct ApiBackendSettings {
 fn default_api_timeout() -> u64 { 30 }
 fn default_api_retries() -> u32 { 3 }
 
+/// 心跳专用 LLM 配置。
+///
+/// TODO(cloud-api): 缺少 `api_key` / `headers` 字段，`backend = "api"` 时无法鉴权，
+/// 只能对接无需密钥的本地网关。补齐前请勿把心跳指向需要密钥的云端服务。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatLlmSettings {
     pub backend: String,

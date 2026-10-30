@@ -81,12 +81,18 @@ max_retries = 2
 
 ### 2.3 云端 API（OpenAI 兼容）
 
+> **状态：已实现但未做端到端验证（标注）**
+>
+> 主链路代码完整（`src/llm/api.rs` 实现全部 `LlmClient` 方法），但仓库内没有任何配置档或测试真正跑过
+> `primary = "api"`。启用前请先读本节末尾的两条限制。
+
 ```toml
 [llm]
 primary = "api"
 
 [llm.api]
-endpoint = "https://api.openai.com/v1"   # 任何 OpenAI 兼容网关都可以
+# 必须写到 /chat/completions 全路径：客户端直接 POST 此地址，不会自动补全
+endpoint = "https://api.openai.com/v1/chat/completions"
 api_key = ""                             # 建议用环境变量注入
 model = "gpt-4o-mini"
 timeout_secs = 60
@@ -101,6 +107,17 @@ export SHOUXIN__LLM__API__API_KEY="sk-..."
 
 - 适合机器弱、或想省电省内存；
 - **注意隐私边界**：这条路会把对话内容发到你配置的服务端，与"本地优先"的定位相冲突，按需选择。
+
+**已知限制（待实现，先标注）**
+
+1. **心跳后端暂不支持 API 密钥。** `[llm.heartbeat].backend = "api"` 时密钥被固定为空串
+   （`HeartbeatLlmSettings` 没有 `api_key` 字段），只能对接无需鉴权的本地/自建网关。
+2. **改主链路不会停掉本地模型。** `[llm.heartbeat].backend` 默认仍是 `gguf`，即使
+   `primary = "api"`，启动仍会加载本地 gguf 模型（约 4.7 GB 常驻内存）。
+   受限制 1 影响，目前无法只靠改配置彻底切到云端。
+
+<!-- TODO(cloud-api): 实现 [llm.heartbeat].api_key + headers 透传，并补一条 primary="api" 的端到端测试 -->
+
 
 ### 2.4 主备切换
 
