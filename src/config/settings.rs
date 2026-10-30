@@ -569,6 +569,11 @@ impl Settings {
         let mut settings: Settings = config.try_deserialize()?;
         if let Some(secondary) = secondary_raw {
             settings.llm.secondary = Some(secondary);
+        } else {
+            // `secondary = "none"` 是"显式关闭备模型"，必须在配置层就归一成 None。
+            // 否则工厂会拿 "none" 去建客户端、失败后打一条 WARN，
+            // 并且 `auto_switch` 被误置为 true（没有备模型却以为有）。
+            settings.llm.secondary = None;
         }
         tracing::info!(
             "Loaded config: LLM primary={}, secondary={:?}",

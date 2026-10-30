@@ -26,6 +26,50 @@ grep -A 4 '\[embedder\]' config.toml
 早期最常见的坑就是 `model` 里填了路径，FastEmbed 会去拼
 `.fastembed_cache/.fastembed_cache/onnx/model.onnx`，必然找不到。
 
+### 1.1.1 启动自检清单：哪些日志是正常的
+
+一次干净启动（模型已下载、端口空闲、`config.toml` 默认）应当依次看到：
+
+```
+Loaded config: LLM primary=gguf, secondary=None      ← secondary 为 None 才对
+Relational store initialized
+Dictionary store initialized (按天分页: 每天 4:00 换页, UTC+480 分钟)
+Vector store initialized (path: ./data\vector_store)
+GGUF model loaded successfully, n_gpu_layers=0
+Heartbeat LLM client initialized
+Embedder initialized (backend: fastembed)             ← 若是 hash 见 1.1
+BackgroundTaskQueue: recovered N pending tasks        ← N>0 说明上次有未完成任务，正常续跑
+Heartbeat scheduler started (base=60s ...)
+Next heartbeat in 30s
+Server listening on 127.0.0.1:3000
+Semantic search warmup complete
+```
+
+判定口径：
+
+| 日志 | 性质 | 说明 |
+|------|------|------|
+| `WARN Admin API token is empty` | **正常** | 没配 `INTERNAL_API_TOKEN` 时 `/admin/*` 会拒绝请求；不用管理端可忽略 |
+| `API Bearer token authentication disabled` | **正常** | 未设 `SHOUXIN_API_TOKEN`，仅本机使用可以接受；对外暴露必须设 |
+| `recovered N pending tasks` | **正常** | 崩溃/重启后的续跑，N>0 说明队列在自愈 |
+| `字典库：N 条对话卡在 processing … 已标记为 failed` | **正常（自愈）** | 上次进程死在推理中途；已回退为 failed，可用 `POST /api/memory/replay_failed?limit=N` 重放 |
+| `模型给出的 deadline 不可用，已改用本地时间解析` | **正常** | 小模型日期漂移，本地解析接管 |
+| `ERROR` 任意一条 | **异常** | 逐条看上下文；`ERROR ... write_results failed` 意味着该条抽取未落库 |
+| `panicked at` / `Rust cannot catch foreign exceptions` | **异常** | 分词器/FFI 崩溃，见 2.x |
+
+心跳是否"已待命"可以直接查：
+
+```bash
+curl -s http://127.0.0.1:3000/api/heartbeat/status
+# {"is_running":true,"last_heartbeat":"...","next_heartbeat_in_secs":60,"consecutive_skips":0}
+```
+
+`is_running=true` + `last_heartbeat` 有时间 + `consecutive_skips=0` 即表示调度循环在跑且没有因为内存不足跳过。
+默认首次 30 s 触发，之后按自适应间隔（空闲 120 s）；一轮 LLM 心跳在纯 CPU 上约 25–30 s。
+
+> 备注：主客户端与心跳客户端**各持有一份模型句柄**，实测 RSS 约 11–12 GB（4.7 GB 模型）。
+> mmap 会共享物理页，但两份上下文/KV 仍占内存。内存紧张时优先减小 `context_size`。
+
 ### 1.2 启动即退出，日志里没有 `Server listening`
 
 按顺序看最后一条日志：
@@ -33,7 +77,7 @@ grep -A 4 '\[embedder\]' config.toml
 | 最后一条日志 | 处理 |
 |--------------|------|
 | `[GGUF] 初始化: ...` 之后无输出 | 模型文件不完整/损坏，见 2.1 |
-| `备模型客户端创建失败: 未知的 LLM 来源: none` | 无害警告（`secondary = "none"` 时的正常提示） |
+| `备模型客户端创建失败: 未知的 LLM 来源: none` | **v0.6.3 起不再出现**。`secondary = "none"` 现在会在配置层归一成 `None`；若仍看到这条，说明配置文件里写了一个不存在的后端名 |
 | `Address already in use` | 端口被占：`--host 127.0.0.1:3001` 或结束旧进程 |
 
 ---

@@ -173,7 +173,14 @@ pub async fn build_llm_manager(settings: &LlmSettings) -> Result<LlmClientManage
     let primary = build_client(&settings.primary, settings)?;
     let primary_type = source_to_type(&settings.primary);
 
-    let (secondary, secondary_type) = if let Some(ref sec_source) = settings.secondary {
+    // 兜底归一：即便调用方绕过配置层直接构造 settings，"none"/空串也不应去建客户端
+    let secondary_source = settings
+        .secondary
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
+
+    let (secondary, secondary_type) = if let Some(sec_source) = secondary_source {
         tracing::info!("Building secondary LLM client: {}", sec_source);
         match build_client(sec_source, settings) {
             Ok(client) => (Some(client), Some(source_to_type(sec_source))),
@@ -186,7 +193,7 @@ pub async fn build_llm_manager(settings: &LlmSettings) -> Result<LlmClientManage
         (None, None)
     };
 
-    let auto_switch = settings.secondary.is_some();
+    let auto_switch = secondary.is_some();
     let max_consecutive_failures = 3;
     let health_interval_secs = 30;
 

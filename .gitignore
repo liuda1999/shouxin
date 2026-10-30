@@ -125,3 +125,5 @@ data_smoke/
 .fix_run*.err
 .speed*.log
 .speed*.err
+.startup_*.log
+.startup_*.err
