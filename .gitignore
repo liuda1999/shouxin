@@ -113,3 +113,7 @@ data_smoke/
 .acc2_*.json
 .audit_dryrun.json
 .relcheck.err
+
+# 手工启动进程的日志（.run_*）
+.run_*.log
+.run_*.err

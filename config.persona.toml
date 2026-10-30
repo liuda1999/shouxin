@@ -87,6 +87,10 @@ vector_dir = "vector_store"
 relational_db_file = "relational.db"
 vector_index_file = "vectors.hnsw"
 question_pool_dir = "heartbeat/questions"
+# 字典库"会话日"切分：本地时间 0-4 点的对话仍归前一天，避免零点把一次会话切成两页
+day_cutoff_hour = 4
+# 固定时区偏移（分钟）。留空则跟随系统时区；中国用户可显式写 480
+# utc_offset_minutes = 480
 
 # ============ 日志 ============
 [logging]

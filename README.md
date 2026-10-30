@@ -6,7 +6,7 @@
 
 **本地优先、隐私至上的智能体记忆子系统。**
 
-[![version](https://img.shields.io/badge/version-0.6.0-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.6.1-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 
@@ -48,6 +48,7 @@
 |------|------|
 | **异步抽取** | 写入只做落盘 + 入队，毫秒级返回；抽取在后台队列中进行，失败可重放 |
 | **三库存储** | 关系库（结构化）+ 向量库（语义）+ 字典库（原文，永不删除），写入走强事务 + 补偿 |
+| **原文按天分页** | 每条对话都带发生时间（可指定，用于导入历史）；字典库按"会话日"分页，凌晨 4 点前归前一天，聊到零点也不会被切成两页 |
 | **本地推理** | 内置 `llama.cpp` 推理 GGUF，纯 CPU，无需 GPU / 无需 Ollama |
 | **本地嵌入** | FastEmbed + ONNX（`multilingual-e5-base`），中文语义检索；模型缺失时自动降级为离线哈希嵌入 |
 | **语义检索** | 事件 / 联系人 / 学习素材 / 历史对话多路检索 + 智能融合 |
@@ -68,7 +69,7 @@
 | 层 | 选型 | 版本 | 说明 |
 |----|------|------|------|
 | 语言 | Rust（edition 2021） | ≥ 1.75（开发机 1.99.1） | 全项目单一语言 |
-| HTTP | `axum` + `tower-http` | 0.7 / 0.5 | 36 个路由注册，29 个唯一路径 |
+| HTTP | `axum` + `tower-http` | 0.7 / 0.5 | 主路由 42 个注册 / 35 个唯一路径（另 /admin 2、/internal 2） |
 | 异步运行时 | `tokio` | 1.x（full） | 工作线程栈 32 MB（llama.cpp 分词器需要） |
 | 推理 | `llama-cpp-2`（llama.cpp 绑定） | `=0.1.146` | 纯 CPU，默认不编译 CUDA |
 | 嵌入 | `fastembed` + ONNX Runtime | 4.9.1 | `intfloat/multilingual-e5-base`，缺模型降级哈希 |

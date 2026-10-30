@@ -1350,6 +1350,9 @@ impl LlmMemoryExtractor {
     }
 
     fn fallback_extract_events(conversation: &str) -> Vec<ExtractedEvent> {
+        // 与 fallback_extract 共用同一套窗口规则：先去掉角色前缀，
+        // 否则标题会变成 "er: 我让龙飞整理" 这种半截前缀
+        let conversation = Self::strip_role_prefixes(conversation);
         let event_keywords = [
             "会", "会议", "讨论", "评审", "审批", "培训", "开发", "测试", "交接", "发布", "上线", "启动",
             "验收", "总结", "汇报", "调研", "评估", "检查", "巡检", "方案", "纪要", "清单", "报告", "计划",
@@ -1362,23 +1365,19 @@ impl LlmMemoryExtractor {
         let mut seen_titles: HashSet<String> = HashSet::new();
 
         if let Ok(event_kw_re) = Regex::new(&event_keywords.join("|")) {
-            for m in event_kw_re.find_iter(conversation) {
+            for m in event_kw_re.find_iter(conversation.as_str()) {
                 let kw = m.as_str();
                 let kw_start = m.start();
                 let chars: Vec<char> = conversation.chars().collect();
                 let kw_char_len = kw.chars().count();
                 let kw_start_char = conversation[..kw_start].chars().count();
-                let prefix_len = 8_usize.min(kw_start_char);
-                let prefix_start = kw_start_char - prefix_len;
-                let event_title_raw: String = chars[prefix_start..kw_start_char + kw_char_len].iter().collect();
-                let trimmed = event_title_raw.trim_start_matches(|c: char| {
-                    c.is_whitespace() || c == '，' || c == '。' || c == '、' || c == '；'
-                        || c == '：' || c == '！' || c == '？' || c == '…' || c == '—'
-                        || c == '–' || c == '．' || c == ' '
-                });
+                let (prefix_start, end_char) =
+                    Self::event_title_window(&chars, kw_start_char, kw_char_len);
+                let event_title_raw: String = chars[prefix_start..end_char].iter().collect();
+                let trimmed = event_title_raw.trim_matches(|c: char| c.is_whitespace());
                 if trimmed.chars().count() >= 2 && !seen_titles.contains(trimmed) {
                     seen_titles.insert(trimmed.to_string());
-                    let snippet_end = (prefix_start + 60).min(chars.len());
+                    let snippet_end = (prefix_start + 80).min(chars.len());
                     let snippet: String = chars[prefix_start..snippet_end].iter().collect();
                     events.push(ExtractedEvent {
                         event_id: Uuid::new_v4().to_string(),
@@ -1481,26 +1480,12 @@ impl LlmMemoryExtractor {
 
     warn!("[LLM Extract] Fallback nickname regex: found {} total names", names.len());
 
-        if names.is_empty() {
-            let simple_re = Regex::new(r"\p{Han}{2,4}").unwrap();
-            for cap in simple_re.captures_iter(conversation) {
-                let name = cap[0].to_string();
-                let common_words = ["我们", "他们", "你们", "什么", "怎么", "为什么", "这个", "那个", "哪个",
-                    "可以", "需要", "已经", "没有", "现在", "明天", "今天", "昨天", "下个", "上个",
-                    "应该", "可能", "必须", "一定", "如果", "但是", "因为", "所以",
-                    "然后", "而且", "或者", "还是", "虽然", "不过", "关于", "对于", "根据", "通过",
-                    "进行", "使用", "提供", "包括", "支持", "处理", "管理", "开发", "测试", "讨论",
-                    "汇报", "检查", "确认", "完成", "开始", "结束", "继续", "准备", "安排", "通知",
-                    "帮助", "参加", "参考", "参与", "出发", "发布", "发送", "告诉", "共享",
-                    "交流", "决定", "开会", "了解", "联系", "培训", "提交", "知道"];
-                if common_words.contains(&name.as_str()) {
-                    continue;
-                }
-                if seen.insert(name.clone()) {
-                    names.push(name);
-                }
-            }
-        }
+    // 注意：这里**不再**做"任意 2-4 个汉字即人名"的兜底。
+    // 那样做会把"复盘""大家一致""主要是需""五前交""评估表周"这类句子碎片
+    // 当成联系人写进库里，既污染联系人列表，又白占画像生成的名额。
+    // 正则一条都没匹配到，说明这段对话里没有可识别的称谓结构，
+    // 宁可返回空，也不要造人 —— 人名召回可以在后续对话里补，
+    // 凭空造出来的"人"却会一直留在档案里。
 
         let people: Vec<ExtractedPerson> = names.into_iter().map(|name| ExtractedPerson {
             contact_id: Uuid::new_v4().to_string(),
@@ -1515,6 +1500,9 @@ impl LlmMemoryExtractor {
         info!("[LLM Extract] Fallback: extracted {} names via regex, conv_text_preview={}", people.len(), &conversation.chars().take(100).collect::<String>());
 
         let mut events: Vec<ExtractedEvent> = Vec::new();
+        // 去掉 `user:` / `assistant:` 之类的角色前缀：否则兜底截出来的标题会变成
+        // "er: 我让龙飞整理" 这种半截前缀 + 半截词，看着像数据损坏。
+        let conversation = Self::strip_role_prefixes(conversation);
         let event_keywords = [
             "会", "会议", "讨论", "评审", "审批", "培训", "开发", "测试", "交接", "发布", "上线", "启动",
             "验收", "总结", "汇报", "调研", "评估", "检查", "巡检", "方案", "纪要", "清单", "报告", "计划",
@@ -1524,18 +1512,18 @@ impl LlmMemoryExtractor {
         ];
 
         if let Ok(event_kw_re) = Regex::new(&event_keywords.join("|")) {
-            for m in event_kw_re.find_iter(conversation) {
+            for m in event_kw_re.find_iter(&conversation) {
                 let kw = m.as_str();
                 let kw_start = m.start();
                 let chars: Vec<char> = conversation.chars().collect();
                 let kw_char_len = kw.chars().count();
                 let kw_start_char = conversation[..kw_start].chars().count();
-                let prefix_len = (8 as usize).min(kw_start_char);
-                let prefix_start = kw_start_char - prefix_len;
-                let event_title: String = chars[prefix_start..kw_start_char + kw_char_len].iter().collect();
-                let trimmed = event_title.trim_start_matches(|c: char| c.is_whitespace() || c == '，' || c == '。' || c == '、' || c == '；' || c == '：' || c == '！' || c == '？' || c == '…' || c == '—' || c == '–');
+                let (prefix_start, end_char) =
+                    Self::event_title_window(&chars, kw_start_char, kw_char_len);
+                let event_title: String = chars[prefix_start..end_char].iter().collect();
+                let trimmed = event_title.trim().trim_matches(|c: char| c.is_whitespace());
                 if trimmed.chars().count() >= 2 && !events.iter().any(|e| e.title.as_deref() == Some(trimmed)) {
-                    let snippet_end = (prefix_start + 60).min(chars.len());
+                    let snippet_end = (prefix_start + 80).min(chars.len());
                     let snippet: String = chars[prefix_start..snippet_end].iter().collect();
                     events.push(ExtractedEvent {
                         event_id: Uuid::new_v4().to_string(),
@@ -1597,6 +1585,53 @@ impl LlmMemoryExtractor {
             learnings,
             todo_update_intent: None,
         })
+    }
+
+    /// 计算事件标题的字符窗口：向左不越过句子边界，向右取到句子结束（上限 24 字）
+    ///
+    /// 旧实现固定取"关键词前 8 字"，于是"user: 我让龙飞整理"会截成
+    /// "er: 我让龙飞整理"——既带半截前缀，又从半个词开始。
+    fn event_title_window(chars: &[char], kw_start: usize, kw_len: usize) -> (usize, usize) {
+        const STOP: [char; 9] = ['，', '。', '；', '！', '？', '：', '\n', '…', '、'];
+        const MAX_LEFT: usize = 16;
+        // 向左优先回到最近的句子边界：固定取 8 字会从半个词开始
+        // （"…把龙飞转正，让我准备评估材料" 曾截成 "飞转正，让我准备评估材料"）。
+        let mut start = kw_start.saturating_sub(MAX_LEFT);
+        if let Some(pos) = (start..kw_start).rev().find(|&i| STOP.contains(&chars[i])) {
+            start = pos + 1;
+        } else {
+            start = kw_start.saturating_sub(8);
+        }
+        while start < kw_start && STOP.contains(&chars[start]) {
+            start += 1;
+        }
+        let mut end = (kw_start + kw_len).min(chars.len());
+        while end < chars.len() && end - kw_start < 24 && !STOP.contains(&chars[end]) {
+            end += 1;
+        }
+        (start, end)
+    }
+
+    /// 去掉对话文本里的角色前缀（`user:` / `assistant:` / `用户:` / `助手:`）
+    ///
+    /// 抽取兜底是"按关键词附近截窗口"，前缀不清掉就会截出 `er: 我让龙飞整理`
+    /// 这种既不像句子也不像标题的碎片。
+    fn strip_role_prefixes(text: &str) -> String {
+        const PREFIXES: [&str; 8] = [
+            "user:", "assistant:", "system:", "用户:", "助手:", "系统:", "User:", "Assistant:",
+        ];
+        text.lines()
+            .map(|line| {
+                let trimmed = line.trim_start();
+                for p in PREFIXES {
+                    if let Some(rest) = trimmed.strip_prefix(p) {
+                        return rest.trim_start().to_string();
+                    }
+                }
+                trimmed.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn extract_compound_relations_in_sentence(&self, sentence: &str, seen: &mut std::collections::HashSet<String>, existing: &mut Vec<ExtractedPerson>) {
@@ -1907,6 +1942,74 @@ mod name_sanity_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 兜底抽取不能把句子碎片当人名
+    ///
+    /// 回归用例：这两句曾经产出"复盘""大家一致""主要是需""五前交""评估表周"等
+    /// 8 个假联系人（旧实现在"正则没匹配到"时用 `\p{Han}{2,4}` 兜底）。
+    /// 兜底事件的标题不能带角色前缀，也不能从半个词开始
+    #[test]
+    fn test_fallback_event_title_is_sentence_like() {
+        let extractor = LlmMemoryExtractor::new(Arc::new(crate::llm::OllamaLlmClient::with_config(
+            crate::traits::llm::LlmConfig::default(),
+        )));
+        let elements = extractor
+            .fallback_extract("user: 我让龙飞整理一份竞品分析，周五前给我初稿。")
+            .unwrap();
+
+        assert!(!elements.events.is_empty(), "应至少识别出一个事件");
+        let title = elements.events[0].title.clone().unwrap_or_default();
+        assert!(!title.contains("user:"), "标题不应带角色前缀: {}", title);
+        assert!(!title.contains("er:"), "标题不应带半截前缀: {}", title);
+        // 关键词在句尾时，标题应覆盖到句子边界，而不是截断成 8 个字
+        assert!(title.chars().count() >= 6, "标题过短: {}", title);
+
+        // 另一条兜底路径（静态函数）必须遵守同一规则
+        let events = LlmMemoryExtractor::fallback_extract_events(
+            "user: 我让龙飞整理一份竞品分析，周五前给我初稿。",
+        );
+        assert!(!events.is_empty());
+        let t = events[0].title.clone().unwrap_or_default();
+        assert!(!t.contains("er:") && !t.contains("user:"), "标题带前缀: {}", t);
+
+        // 向左要回到句子边界，不能从半个词开始
+        let events = LlmMemoryExtractor::fallback_extract_events(
+            "user: 罗军说下个月要把龙飞转正，让我准备评估材料，评估表周五前交。",
+        );
+        let titles: Vec<String> = events.iter().filter_map(|e| e.title.clone()).collect();
+        assert!(
+            titles.iter().any(|t| t.starts_with("让我准备")),
+            "应从逗号后的完整分句开始，实际: {:?}",
+            titles
+        );
+    }
+
+    #[test]
+    fn test_fallback_extract_does_not_invent_people() {
+        let extractor = LlmMemoryExtractor::new(Arc::new(crate::llm::OllamaLlmClient::with_config(
+            crate::traits::llm::LlmConfig::default(),
+        )));
+
+        for text in [
+            "user: 复盘会上大家一致认为：这次延期主要是需求变更太晚，其次是测试介入太迟。",
+            "user: 罗军说下个月要把龙飞转正，让我准备评估材料，评估表周五前交。",
+        ] {
+            let elements = extractor.fallback_extract(text).unwrap();
+            assert!(
+                elements.persons.is_empty(),
+                "不应凭空造人，实际得到: {:?}",
+                elements.persons.iter().map(|p| p.name.clone()).collect::<Vec<_>>()
+            );
+        }
+
+        // 有明确称谓结构时必须照常抽到（这是兜底路径唯一可信的信号）
+        let elements = extractor
+            .fallback_extract("user: 张总监说文档他来写，李工配合联调环境，老王拍板。")
+            .unwrap();
+        let names: Vec<String> = elements.persons.iter().map(|p| p.name.clone()).collect();
+        assert!(names.iter().any(|n| n.starts_with("张")), "实际: {:?}", names);
+        assert!(names.iter().any(|n| n.contains("王")), "实际: {:?}", names);
+    }
 
     #[test]
     fn test_parse_valid_json() {

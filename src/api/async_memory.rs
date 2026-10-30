@@ -195,6 +195,19 @@ impl AsyncMemory {
         self.manager.add_async(conversation, user_id, scope).await
     }
 
+    /// 添加对话（可指定对话发生时间，用于导入历史）
+    pub async fn add_async_at(
+        &self,
+        conversation: &str,
+        user_id: Option<&str>,
+        scope: Scope,
+        occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<AddResult, ShouxinError> {
+        self.manager
+            .add_async_at(conversation, user_id, scope, occurred_at)
+            .await
+    }
+
     /// 搜索联系人
     ///
     /// 搜索流程：

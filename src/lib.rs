@@ -38,9 +38,8 @@ pub use traits::{
 
 pub use stores::relational::{TodoItem, TodoListStore};
 pub use stores::{
-    ContactIndexStore, ContactsTotalStore, ConversationStore,
-    DictionaryStore as StoresDictionaryStore, EventIndexStore, MaintenanceService,
-    RelationalStore as StoresRelationalStore,
+    ContactIndexStore, ContactsTotalStore, DictionaryStore as StoresDictionaryStore,
+    EventIndexStore, MaintenanceService, RelationalStore as StoresRelationalStore,
 };
 
 pub use memory_extractor::{

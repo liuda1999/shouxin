@@ -3,11 +3,133 @@
 //! 提供永久全量存档功能，只写入不删除
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sled::Db;
+use std::collections::BTreeMap;
 
 use crate::core::{ContactPatch, ContactTotal}; use crate::core::contact::OwnerType;
+
+/// 日索引版本（用于一次性重建旧库的日统计）
+const DAY_INDEX_VERSION: u32 = 2;
+/// 元数据树名称
+const META_TREE: &str = "dictionary_meta";
+/// 日索引树名称
+const DAY_STATS_TREE: &str = "conversation_day_stats";
+
+/// 字典库分页（按天）配置
+///
+/// 设计要点：字典库的物理键是 `{session_day}:{id}`，`session_day` 不是简单的
+/// UTC 日期，而是"会话日"——以本地时间的 `cutoff_hour` 为一天的分界。
+/// 默认 04:00 分界意味着 **00:00–03:59 的对话仍归到前一天**，
+/// 这样"聊到凌晨"的一次连续会话不会被零点切成两页（原设计里的跨零点兜底）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DayPagingConfig {
+    /// 一天的分界小时（0–12）。默认 4，即凌晨 4 点换页；设为 0 表示按自然日 0 点切分。
+    pub cutoff_hour: u32,
+    /// 固定 UTC 偏移（分钟）。`None` 表示跟随系统本地时区。
+    ///
+    /// 显式配置可避免夏令时/系统时区变化导致历史分页漂移；
+    /// 中国用户通常填 480（UTC+8）。
+    pub utc_offset_minutes: Option<i32>,
+}
+
+impl Default for DayPagingConfig {
+    fn default() -> Self {
+        Self {
+            cutoff_hour: 4,
+            utc_offset_minutes: None,
+        }
+    }
+}
+
+impl DayPagingConfig {
+    /// 规范化：cutoff 落在 0–12，避免出现"下午换页"这种反直觉配置
+    pub fn normalized(mut self) -> Self {
+        if self.cutoff_hour > 12 {
+            tracing::warn!(
+                "dictionary.day_cutoff_hour={} 超出合理范围(0-12)，按 12 处理",
+                self.cutoff_hour
+            );
+            self.cutoff_hour = 12;
+        }
+        self
+    }
+}
+
+/// 一天的会话日摘要
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaySummary {
+    /// 会话日（YYYY-MM-DD，按 cutoff 切分后的"页"）
+    pub day: String,
+    /// 该页对话条数（按 owner 过滤时是当前 owner 的条数）
+    pub count: u64,
+    /// 该页最早/最晚一条对话的时间（UTC）
+    pub first_at: Option<DateTime<Utc>>,
+    pub last_at: Option<DateTime<Utc>>,
+}
+
+/// 日索引内部结构（落 sled）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct DayStatsValue {
+    total: u64,
+    #[serde(default)]
+    by_owner: BTreeMap<String, u64>,
+    #[serde(default)]
+    first_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    last_at: Option<DateTime<Utc>>,
+}
+
+/// 字典库整体统计（可靠性自检用）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DictionaryStats {
+    /// 对话总条数
+    pub conversations: u64,
+    /// 有数据的会话日数量
+    pub days: u64,
+    /// 最早/最新一条对话
+    pub oldest_at: Option<DateTime<Utc>>,
+    pub newest_at: Option<DateTime<Utc>>,
+    /// 抽取状态分布（pending / processing / completed / failed）
+    pub status_counts: BTreeMap<String, u64>,
+    /// 生效的分页配置
+    pub cutoff_hour: u32,
+    pub utc_offset_minutes: i32,
+}
+
+/// 计算某条对话所属的"会话日"
+///
+/// `local = ts + offset`；若 `local.hour < cutoff_hour`，归到前一天。
+pub fn compute_session_day(
+    timestamp: DateTime<Utc>,
+    cutoff_hour: u32,
+    offset_minutes: i32,
+) -> String {
+    let local = timestamp + ChronoDuration::minutes(offset_minutes as i64);
+    let day = if local.hour() < cutoff_hour {
+        (local - ChronoDuration::days(1)).date_naive()
+    } else {
+        local.date_naive()
+    };
+    day.format("%Y-%m-%d").to_string()
+}
+
+/// 计算某个会话日对应的 UTC 时间区间 `[start, end)`
+pub fn compute_day_bounds_utc(
+    day: &str,
+    cutoff_hour: u32,
+    offset_minutes: i32,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let date = NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    let start_local = date.and_time(NaiveTime::from_hms_opt(cutoff_hour, 0, 0)?);
+    let start_utc = start_local.and_utc() - ChronoDuration::minutes(offset_minutes as i64);
+    Some((start_utc, start_utc + ChronoDuration::days(1)))
+}
+
+fn owner_stats_key(owner_type: OwnerType, owner_id: &str) -> String {
+    format!("{}:{}", owner_type.as_str(), owner_id)
+}
 use crate::error::ShouxinError;
 use crate::traits::store_traits::{DictionaryStoreTrait, ContactRecord, Conversation};
 
@@ -31,6 +153,14 @@ pub struct DictionaryStore {
     id_index: sled::Tree,
     /// 跨库写入意图树（两阶段提交的状态机）
     commit_intents: sled::Tree,
+    /// 按天分页的日索引树（session_day → DayStatsValue）
+    day_stats: sled::Tree,
+    /// 元数据树（schema 版本等）
+    meta: sled::Tree,
+    /// 分页配置
+    day_paging: DayPagingConfig,
+    /// 已解析的 UTC 偏移（分钟），避免每次计算都读系统时区
+    resolved_offset_minutes: i32,
 }
 
 /// 跨库写入意图状态
@@ -115,6 +245,11 @@ impl DictionaryStore {
     /// let store = DictionaryStore::open("./data/dictionary")?;
     /// ```
     pub fn open(path: &str) -> Result<Self, ShouxinError> {
+        Self::open_with_paging(path, DayPagingConfig::default())
+    }
+
+    /// 打开字典库并指定按天分页配置
+    pub fn open_with_paging(path: &str, cfg: DayPagingConfig) -> Result<Self, ShouxinError> {
         // 打开或创建 sled 数据库
         let db = sled::open(path)?;
 
@@ -138,6 +273,15 @@ impl DictionaryStore {
         // 跨库写入意图树（两阶段提交）
         let commit_intents = db.open_tree("commit_intents")?;
 
+        // 按天分页的日索引 + 元数据
+        let day_stats = db.open_tree(DAY_STATS_TREE)?;
+        let meta = db.open_tree(META_TREE)?;
+
+        let cfg = cfg.normalized();
+        let resolved_offset_minutes = cfg
+            .utc_offset_minutes
+            .unwrap_or_else(|| (chrono::Local::now().offset().local_minus_utc() / 60));
+
         let store = Self {
             db,
             conversations,
@@ -147,10 +291,17 @@ impl DictionaryStore {
             conversation_ts_index,
             id_index,
             commit_intents,
+            day_stats,
+            meta,
+            day_paging: cfg,
+            resolved_offset_minutes,
         };
 
         // 确保用户记录存在
         store.ensure_user_exists()?;
+
+        // 旧库升级：补齐按天分页索引（只做一次）
+        store.ensure_day_index()?;
 
         Ok(store)
     }
@@ -209,6 +360,13 @@ impl DictionaryStore {
         let conversation_ts_index = db.open_tree("conversation_ts_index")?;
         let id_index = db.open_tree("conversation_id_index")?;
         let commit_intents = db.open_tree("commit_intents")?;
+        let day_stats = db.open_tree(DAY_STATS_TREE)?;
+        let meta = db.open_tree(META_TREE)?;
+
+        let cfg = DayPagingConfig::default();
+        let resolved_offset_minutes = cfg
+            .utc_offset_minutes
+            .unwrap_or_else(|| (chrono::Local::now().offset().local_minus_utc() / 60));
 
         let store = Self {
             db,
@@ -219,11 +377,53 @@ impl DictionaryStore {
             conversation_ts_index,
             id_index,
             commit_intents,
+            day_stats,
+            meta,
+            day_paging: cfg,
+            resolved_offset_minutes,
         };
 
         // 确保用户记录存在
         store.ensure_user_exists()?;
+        store.ensure_day_index()?;
 
+        Ok(store)
+    }
+
+    /// 测试/工具用：以指定分页配置创建内存字典库
+    pub fn in_memory_with_paging(cfg: DayPagingConfig) -> Result<Self, ShouxinError> {
+        let db = sled::Config::new().temporary(true).open()?;
+        let conversations = db.open_tree("conversations")?;
+        let contacts_total = db.open_tree("contacts_total")?;
+        let contact_event_history = db.open_tree("contact_event_history")?;
+        let files = db.open_tree("files")?;
+        let conversation_ts_index = db.open_tree("conversation_ts_index")?;
+        let id_index = db.open_tree("conversation_id_index")?;
+        let commit_intents = db.open_tree("commit_intents")?;
+        let day_stats = db.open_tree(DAY_STATS_TREE)?;
+        let meta = db.open_tree(META_TREE)?;
+
+        let cfg = cfg.normalized();
+        let resolved_offset_minutes = cfg
+            .utc_offset_minutes
+            .unwrap_or_else(|| (chrono::Local::now().offset().local_minus_utc() / 60));
+
+        let store = Self {
+            db,
+            conversations,
+            contacts_total,
+            contact_event_history,
+            files,
+            conversation_ts_index,
+            id_index,
+            commit_intents,
+            day_stats,
+            meta,
+            day_paging: cfg,
+            resolved_offset_minutes,
+        };
+        store.ensure_user_exists()?;
+        store.ensure_day_index()?;
         Ok(store)
     }
 
@@ -233,11 +433,267 @@ impl DictionaryStore {
 
     /// 生成对话存储键
     ///
-    /// 格式：{date}:{id}
+    /// 格式：{session_day}:{id}
     /// 例如：2024-01-15:uuid-1234
-    fn conversation_key(timestamp: DateTime<Utc>, id: &str) -> String {
-        let date = timestamp.format("%Y-%m-%d").to_string();
-        format!("{}:{}", date, id)
+    ///
+    /// `session_day` 是"会话日"（按 cutoff 切分），不是裸 UTC 日期：
+    /// 这样字典库的 key 前缀天然就是"一天一页"，`scan_prefix("2024-01-15:")`
+    /// 就是当天的全部分页数据。
+    fn conversation_key(session_day: &str, id: &str) -> String {
+        format!("{}:{}", session_day, id)
+    }
+
+    /// 当前生效的分页配置（含解析后的时区偏移）
+    pub fn day_paging(&self) -> (u32, i32) {
+        (self.day_paging.cutoff_hour, self.resolved_offset_minutes)
+    }
+
+    /// 计算某条对话所属会话日
+    pub fn session_day_of(&self, timestamp: DateTime<Utc>) -> String {
+        compute_session_day(
+            timestamp,
+            self.day_paging.cutoff_hour,
+            self.resolved_offset_minutes,
+        )
+    }
+
+    /// 计算某个会话日的 UTC 区间
+    pub fn day_bounds_utc(&self, day: &str) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+        compute_day_bounds_utc(
+            day,
+            self.day_paging.cutoff_hour,
+            self.resolved_offset_minutes,
+        )
+    }
+
+    /// 旧库升级：把已有对话补进日索引
+    ///
+    /// 只补索引，不改写原有对话键（改写键会让 `id_index` 失效）。
+    /// 查询侧不依赖键前缀，而是用时间戳区间 + 会话日重算，
+    /// 因此旧数据的 UTC 日期键不会影响分页正确性。
+    fn ensure_day_index(&self) -> Result<(), ShouxinError> {
+        let current = self
+            .meta
+            .get("day_index_version")?
+            .map(|v| {
+                String::from_utf8_lossy(&v)
+                    .parse::<u32>()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        if current >= DAY_INDEX_VERSION {
+            return Ok(());
+        }
+
+        let rebuilt = self.rebuild_day_index()?;
+        self.meta
+            .insert("day_index_version", DAY_INDEX_VERSION.to_string().as_bytes())?;
+        tracing::info!(
+            "字典库日索引已重建：{} 条对话，{} 个会话日",
+            rebuilt.0,
+            rebuilt.1
+        );
+        Ok(())
+    }
+
+    /// 全量重建日索引，返回 (对话数, 天数)
+    pub fn rebuild_day_index(&self) -> Result<(u64, u64), ShouxinError> {
+        self.day_stats.clear()?;
+        let mut days: BTreeMap<String, DayStatsValue> = BTreeMap::new();
+        let mut count = 0u64;
+
+        for item in self.conversations.iter() {
+            let (_, bytes) = item?;
+            let record: ConversationRecord = match serde_json::from_slice(&bytes) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("跳过无法解析的字典库记录: {}", e);
+                    continue;
+                }
+            };
+            count += 1;
+            let day = if record.session_day.is_empty() {
+                self.session_day_of(record.timestamp)
+            } else {
+                record.session_day.clone()
+            };
+            let entry = days.entry(day).or_default();
+            entry.total += 1;
+            *entry
+                .by_owner
+                .entry(owner_stats_key(record.owner_type, &record.owner_id))
+                .or_insert(0) += 1;
+            entry.first_at = Some(match entry.first_at {
+                Some(t) => t.min(record.timestamp),
+                None => record.timestamp,
+            });
+            entry.last_at = Some(match entry.last_at {
+                Some(t) => t.max(record.timestamp),
+                None => record.timestamp,
+            });
+        }
+
+        for (day, value) in &days {
+            self.day_stats
+                .insert(day.as_bytes(), serde_json::to_vec(value)?)?;
+        }
+        self.day_stats.flush()?;
+        Ok((count, days.len() as u64))
+    }
+
+    /// 按天分页读取某一天的对话（按时间升序）
+    ///
+    /// 用时间索引区间定位而非键前缀：这样即使旧数据的键是按 UTC 日期写的，
+    /// 也能按"会话日"正确归页；同时天然按时间有序，便于分页。
+    pub fn get_day_page(
+        &self,
+        day: &str,
+        owner_type: Option<OwnerType>,
+        owner_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ConversationRecord>, ShouxinError> {
+        let mut out = Vec::new();
+        let Some((start, end)) = self.day_bounds_utc(day) else {
+            return Ok(out);
+        };
+        if limit == 0 {
+            return Ok(out);
+        }
+
+        let start_key = start.to_rfc3339();
+        let end_key = end.to_rfc3339();
+        let mut skipped = 0usize;
+
+        for item in self
+            .conversation_ts_index
+            .range(start_key.as_bytes()..end_key.as_bytes())
+        {
+            let (_, conv_key_bytes) = item?;
+            let conv_key = String::from_utf8_lossy(&conv_key_bytes);
+            let Some(data) = self.conversations.get(conv_key.as_bytes())? else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_slice::<ConversationRecord>(&data) else {
+                continue;
+            };
+
+            // 用会话日重算再比对：cutoff 边界上的记录不会串页
+            let record_day = if record.session_day.is_empty() {
+                self.session_day_of(record.timestamp)
+            } else {
+                record.session_day.clone()
+            };
+            if record_day != day {
+                continue;
+            }
+            if let Some(ot) = owner_type {
+                if record.owner_type != ot {
+                    continue;
+                }
+            }
+            if let Some(oid) = owner_id {
+                if record.owner_id != oid {
+                    continue;
+                }
+            }
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
+            out.push(record);
+            if out.len() >= limit {
+                break;
+            }
+        }
+
+        out.sort_by_key(|r| r.timestamp);
+        Ok(out)
+    }
+
+    /// 列出有数据的会话日（倒序），可按 owner 过滤
+    pub fn list_day_pages(
+        &self,
+        before: Option<&str>,
+        owner_type: Option<OwnerType>,
+        owner_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DaySummary>, ShouxinError> {
+        let mut out = Vec::new();
+        if limit == 0 {
+            return Ok(out);
+        }
+        let owner_key = match (owner_type, owner_id) {
+            (Some(ot), Some(oid)) => Some(owner_stats_key(ot, oid)),
+            _ => None,
+        };
+
+        // 日索引按 key 字典序 = 日期序，倒序即最新在前
+        for item in self.day_stats.iter().rev() {
+            let (key, value) = item?;
+            let day = String::from_utf8_lossy(&key).to_string();
+            if let Some(b) = before {
+                if day.as_str() >= b {
+                    continue;
+                }
+            }
+            let stats: DayStatsValue = match serde_json::from_slice(&value) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let count = match &owner_key {
+                Some(k) => *stats.by_owner.get(k).unwrap_or(&0),
+                None => stats.total,
+            };
+            if count == 0 {
+                continue;
+            }
+            out.push(DaySummary {
+                day,
+                count,
+                first_at: stats.first_at,
+                last_at: stats.last_at,
+            });
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// 字典库整体统计（用于自检：确认没有"写进去但查不到"的裂缝）
+    pub fn dictionary_stats(&self) -> Result<DictionaryStats, ShouxinError> {
+        let mut status_counts: BTreeMap<String, u64> = BTreeMap::new();
+        let mut oldest_at: Option<DateTime<Utc>> = None;
+        let mut newest_at: Option<DateTime<Utc>> = None;
+
+        for item in self.conversations.iter() {
+            let (_, bytes) = item?;
+            let Ok(record) = serde_json::from_slice::<ConversationRecord>(&bytes) else {
+                continue;
+            };
+            *status_counts
+                .entry(record.extracted_status.clone())
+                .or_insert(0) += 1;
+            oldest_at = Some(match oldest_at {
+                Some(t) => t.min(record.timestamp),
+                None => record.timestamp,
+            });
+            newest_at = Some(match newest_at {
+                Some(t) => t.max(record.timestamp),
+                None => record.timestamp,
+            });
+        }
+
+        Ok(DictionaryStats {
+            conversations: self.conversations.len() as u64,
+            days: self.day_stats.len() as u64,
+            oldest_at,
+            newest_at,
+            status_counts,
+            cutoff_hour: self.day_paging.cutoff_hour,
+            utc_offset_minutes: self.resolved_offset_minutes,
+        })
     }
 
     /// 生成联系人存储键
@@ -288,37 +744,219 @@ impl DictionaryStore {
         owner_type: crate::core::contact::OwnerType,
         owner_id: &str,
     ) -> Result<(), ShouxinError> {
-        // 创建对话记录
-        let record = ConversationRecord::new_with_owner(
+        let record = self.build_record(id, content, timestamp, owner_type, owner_id);
+        self.write_record(&record, None)
+    }
+
+    /// 构造一条对话记录：写入时立即固定会话日与入库时间
+    ///
+    /// 时间戳与分页日是两个概念：`timestamp` 是对话发生时间（可由调用方指定，
+    /// 用于导入历史），`session_day` 是按 cutoff 兜底后的分页键。
+    fn build_record(
+        &self,
+        id: &str,
+        content: &str,
+        timestamp: DateTime<Utc>,
+        owner_type: OwnerType,
+        owner_id: &str,
+    ) -> ConversationRecord {
+        let mut record = ConversationRecord::new_with_owner(
             id.to_string(),
             content.to_string(),
             timestamp,
             owner_type,
             owner_id.to_string(),
         );
+        record.session_day = self.session_day_of(timestamp);
+        record.ingested_at = Some(Utc::now());
+        record
+    }
 
-        // 序列化为 JSON
-        let json = serde_json::to_vec(&record)?;
+    /// 写入一条对话（原文 + 时间索引 + ID 索引 + 日索引，可选待提取任务）
+    ///
+    /// 五个树在同一个 sled 事务内提交：任何一步失败都不会留下"原文在、索引不在"
+    /// 的半截数据；日索引与原文同寿命，不会出现分页漏条。
+    fn write_record(
+        &self,
+        record: &ConversationRecord,
+        task: Option<(&str, &[u8])>,
+    ) -> Result<(), ShouxinError> {
+        use sled::transaction::TransactionError;
+        use sled::Transactional;
 
-        // 生成存储键
-        let conv_key = Self::conversation_key(timestamp, id);
+        let json = serde_json::to_vec(record)?;
+        let conv_key = Self::conversation_key(&record.session_day, &record.id);
+        let ts_key = Self::ts_index_key(record.timestamp, &conv_key);
+        let owner_key = owner_stats_key(record.owner_type, &record.owner_id);
 
-        // 写入对话树
-        self.conversations.insert(conv_key.as_bytes(), json)?;
+        let pending_tasks = self
+            .db
+            .open_tree(crate::stores::dictionary::PENDING_EXTRACTION_TASKS_TREE)?;
+        let (cutoff_hour, offset_minutes) = self.day_paging();
+        let json_ref = json.as_slice();
+        let task_owned = task.map(|(k, v)| (k.to_string(), v.to_vec()));
 
-        // 写入时间戳索引树（v0.5.0 新增）
-        let ts_key = Self::ts_index_key(timestamp, &conv_key);
-        self.conversation_ts_index.insert(ts_key.as_bytes(), conv_key.as_bytes())?;
+        let res = match &task_owned {
+            Some((k, v)) => (
+                &self.conversations,
+                &self.conversation_ts_index,
+                &self.id_index,
+                &self.day_stats,
+                &pending_tasks,
+            )
+                .transaction(|(convs, ts_idx, id_idx, days, tasks)| {
+                    Self::apply_conversation_write(
+                        convs,
+                        ts_idx,
+                        id_idx,
+                        days,
+                        record,
+                        json_ref,
+                        &conv_key,
+                        &ts_key,
+                        &owner_key,
+                        cutoff_hour,
+                        offset_minutes,
+                    )?;
+                    tasks.insert(k.as_bytes(), v.clone())?;
+                    Ok(())
+                })
+                .map_err(|e: TransactionError<()>| e),
+            None => (
+                &self.conversations,
+                &self.conversation_ts_index,
+                &self.id_index,
+                &self.day_stats,
+            )
+                .transaction(|(convs, ts_idx, id_idx, days)| {
+                    Self::apply_conversation_write(
+                        convs,
+                        ts_idx,
+                        id_idx,
+                        days,
+                        record,
+                        json_ref,
+                        &conv_key,
+                        &ts_key,
+                        &owner_key,
+                        cutoff_hour,
+                        offset_minutes,
+                    )
+                })
+                .map_err(|e: TransactionError<()>| e),
+        };
 
-        // 写入 ID 索引树（v0.5.1 新增）
-        self.id_index.insert(id.as_bytes(), conv_key.as_bytes())?;
+        res.map_err(|e| {
+            ShouxinError::StorageError(format!("dictionary write_conversation failed: {:?}", e))
+        })
+    }
 
+    /// 事务内的写入动作：摘旧记录 → 写原文/索引 → 维护日计数
+    ///
+    /// 独立成函数（而不是闭包）是为了满足 sled `transaction` 对 `Fn` 的要求：
+    /// 闭包内只捕获引用，可被多次调用。
+    #[allow(clippy::too_many_arguments)]
+    fn apply_conversation_write(
+        convs: &sled::transaction::TransactionalTree,
+        ts_idx: &sled::transaction::TransactionalTree,
+        id_idx: &sled::transaction::TransactionalTree,
+        days: &sled::transaction::TransactionalTree,
+        record: &ConversationRecord,
+        json: &[u8],
+        conv_key: &str,
+        ts_key: &str,
+        owner_key: &str,
+        cutoff_hour: u32,
+        offset_minutes: i32,
+    ) -> Result<(), sled::transaction::ConflictableTransactionError<()>> {
+        // 同一条对话被重写（同一 id、不同时间）时，先把它从旧的会话日里摘掉，
+        // 否则日计数会重复累加、旧记录变成幽灵数据。
+        if let Some(prev) = id_idx.get(record.id.as_bytes())? {
+            let prev_key = String::from_utf8_lossy(&prev).to_string();
+            if prev_key != conv_key {
+                if let Some(old_bytes) = convs.get(prev_key.as_bytes())? {
+                    if let Ok(old) = serde_json::from_slice::<ConversationRecord>(&old_bytes) {
+                        convs.remove(prev_key.as_bytes())?;
+                        ts_idx.remove(Self::ts_index_key(old.timestamp, &prev_key).as_bytes())?;
+                        let old_day = if old.session_day.is_empty() {
+                            // 旧数据没存会话日：按当前分页配置从时间戳反推
+                            compute_session_day(old.timestamp, cutoff_hour, offset_minutes)
+                        } else {
+                            old.session_day.clone()
+                        };
+                        Self::adjust_day_stats(
+                            days,
+                            &old_day,
+                            owner_stats_key(old.owner_type, &old.owner_id),
+                            -1,
+                            old.timestamp,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        convs.insert(conv_key.as_bytes(), json.to_vec())?;
+        ts_idx.insert(ts_key.as_bytes(), conv_key.as_bytes())?;
+        id_idx.insert(record.id.as_bytes(), conv_key.as_bytes())?;
+        Self::adjust_day_stats(
+            days,
+            &record.session_day,
+            owner_key.to_string(),
+            1,
+            record.timestamp,
+        )?;
+        Ok(())
+    }
+
+    /// 调整某天的计数（`delta` 为 +1 / -1），同时维护首末时间
+    fn adjust_day_stats(
+        days: &sled::transaction::TransactionalTree,
+        day: &str,
+        owner_key: String,
+        delta: i64,
+        timestamp: DateTime<Utc>,
+    ) -> Result<(), sled::transaction::ConflictableTransactionError<()>> {
+        let mut stats: DayStatsValue = match days.get(day.as_bytes())? {
+            Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            None => DayStatsValue::default(),
+        };
+
+        if delta >= 0 {
+            stats.total = stats.total.saturating_add(delta as u64);
+            *stats.by_owner.entry(owner_key).or_insert(0) += delta as u64;
+            stats.first_at = Some(match stats.first_at {
+                Some(t) => t.min(timestamp),
+                None => timestamp,
+            });
+            stats.last_at = Some(match stats.last_at {
+                Some(t) => t.max(timestamp),
+                None => timestamp,
+            });
+        } else {
+            stats.total = stats.total.saturating_sub((-delta) as u64);
+            if let Some(v) = stats.by_owner.get_mut(&owner_key) {
+                *v = v.saturating_sub((-delta) as u64);
+                if *v == 0 {
+                    stats.by_owner.remove(&owner_key);
+                }
+            }
+        }
+
+        if stats.total == 0 {
+            days.remove(day.as_bytes())?;
+        } else {
+            let bytes = serde_json::to_vec(&stats)
+                .map_err(|_| sled::transaction::ConflictableTransactionError::Abort(()))?;
+            days.insert(day.as_bytes(), bytes)?;
+        }
         Ok(())
     }
 
     /// 原子保存对话并写入待提取任务（同一 sled 事务）
     ///
-    /// 强事务边界：对话原文、时间戳索引、ID 索引、待提取任务要么全部写入，要么全部不写入。
+    /// 强事务边界：对话原文、时间戳索引、ID 索引、日索引、待提取任务
+    /// 要么全部写入，要么全部不写入。
     pub fn save_conversation_with_task_atomic(
         &self,
         id: &str,
@@ -329,43 +967,8 @@ impl DictionaryStore {
         task_key: &str,
         task_value: &[u8],
     ) -> Result<(), ShouxinError> {
-        use sled::Transactional;
-
-        let record = ConversationRecord::new_with_owner(
-            id.to_string(),
-            content.to_string(),
-            timestamp,
-            owner_type,
-            owner_id.to_string(),
-        );
-        let json = serde_json::to_vec(&record)?;
-        let conv_key = Self::conversation_key(timestamp, id);
-        let ts_key = Self::ts_index_key(timestamp, &conv_key);
-        let pending_tasks = self
-            .db
-            .open_tree(crate::stores::dictionary::PENDING_EXTRACTION_TASKS_TREE)?;
-
-        let json_value = json.clone();
-        let conv_key_value = conv_key.as_bytes().to_vec();
-        let task_key_owned = task_key.to_string();
-        let task_value_owned = task_value.to_vec();
-
-        (&self.conversations, &self.conversation_ts_index, &self.id_index, &pending_tasks)
-            .transaction(|(convs, ts_idx, id_idx, tasks)| {
-                convs.insert(conv_key.as_bytes(), json_value.clone())?;
-                ts_idx.insert(ts_key.as_bytes(), conv_key_value.clone())?;
-                id_idx.insert(id.as_bytes(), conv_key_value.clone())?;
-                tasks.insert(task_key_owned.as_bytes(), task_value_owned.clone())?;
-                Ok(())
-            })
-            .map_err(|e: sled::transaction::TransactionError<()>| {
-                ShouxinError::StorageError(format!(
-                    "atomic save_conversation_with_task failed: {:?}",
-                    e
-                ))
-            })?;
-
-        Ok(())
+        let record = self.build_record(id, content, timestamp, owner_type, owner_id);
+        self.write_record(&record, Some((task_key, task_value)))
     }
 
     /// 获取指定时间戳之后的所有对话（增量扫描）
@@ -605,43 +1208,18 @@ impl DictionaryStore {
         Ok(contacts)
     }
 
-    /// 按日期查询对话
+    /// 按日期查询对话（某一天的"页"）
     ///
-    /// # 参数
-    /// - `date`: 日期字符串（YYYY-MM-DD）
-    /// - `owner_type`: 所有者类型（可选）
-    /// - `owner_id`: 所有者 ID（可选）
-    ///
-    /// # 返回
-    /// 该日期的所有对话记录
+    /// 走会话日索引：`date` 是分页日（按 cutoff 切分），凌晨的对话归属前一天。
+    /// 该方法与 `get_day_page` 同源，避免"存的时候按 cutoff 分页、查的时候按自然日"
+    /// 这种两套口径导致的漏读。
     pub async fn get_conversations_by_date(
         &self,
         date: &str,
         owner_type: Option<crate::core::contact::OwnerType>,
         owner_id: Option<&str>,
     ) -> Result<Vec<ConversationRecord>, ShouxinError> {
-        let mut conversations = Vec::new();
-        let prefix = format!("{}:", date);
-
-        // 按前缀扫描
-        for item in self.conversations.scan_prefix(prefix.as_bytes()) {
-            let (_, bytes) = item?;
-            let record: ConversationRecord = serde_json::from_slice(&bytes)?;
-            
-            // 应用 owner 过滤
-            let matches_owner = match (&owner_type, owner_id) {
-                (Some(ot), Some(oid)) => record.owner_type == *ot && record.owner_id == oid,
-                (Some(ot), None) => record.owner_type == *ot,
-                (None, Some(oid)) => record.owner_id == oid,
-                (None, None) => true,
-            };
-            
-            if matches_owner {
-                conversations.push(record);
-            }
-        }
-
-        Ok(conversations)
+        self.get_day_page(date, owner_type, owner_id, usize::MAX, 0)
     }
 
     /// 保存联系人历史事件记录
@@ -859,6 +1437,18 @@ pub struct ConversationRecord {
     /// 提取错误信息 (v0.5.1)
     #[serde(default)]
     pub extraction_error: Option<String>,
+    /// 会话日（按天分页键，YYYY-MM-DD）
+    ///
+    /// 与 `timestamp` 的日期不一定相同：凌晨 cutoff 之前的对话归到前一天。
+    /// 旧数据该字段为空，读取时按当前分页配置重算。
+    #[serde(default)]
+    pub session_day: String,
+    /// 入库时间（UTC）
+    ///
+    /// 与 `timestamp`（对话发生时间）区分：导入历史对话时两者相差可能很大，
+    /// 这个字段用于审计"什么时候写进来的"。
+    #[serde(default)]
+    pub ingested_at: Option<DateTime<Utc>>,
 }
 
 fn default_extracted_status() -> String {
@@ -883,6 +1473,8 @@ impl ConversationRecord {
             owner_id: "default_user".to_string(),
             extracted_status: "pending".to_string(),
             extraction_error: None,
+            session_day: String::new(),
+            ingested_at: None,
         }
     }
 
@@ -902,6 +1494,8 @@ impl ConversationRecord {
             owner_id,
             extracted_status: "pending".to_string(),
             extraction_error: None,
+            session_day: String::new(),
+            ingested_at: None,
         }
     }
 }
@@ -982,28 +1576,8 @@ impl Default for DictionaryStore {
 #[async_trait]
 impl DictionaryStoreTrait for DictionaryStore {
     async fn save_conversation(&self, id: &str, content: &str, timestamp: DateTime<Utc>, owner_type: crate::core::contact::OwnerType, owner_id: &str) -> Result<(), ShouxinError> {
-        let record = ConversationRecord {
-            id: id.to_string(),
-            content: content.to_string(),
-            timestamp,
-            owner_type,
-            owner_id: owner_id.to_string(),
-            extracted_status: "pending".to_string(),
-            extraction_error: None,
-        };
-
-        let json = serde_json::to_vec(&record)?;
-
-        let conv_key = Self::conversation_key(timestamp, id);
-
-        self.conversations.insert(conv_key.as_bytes(), json)?;
-
-        let ts_index_key = Self::ts_index_key(timestamp, &conv_key);
-        self.conversation_ts_index.insert(ts_index_key.as_bytes(), conv_key.as_bytes())?;
-
-        self.id_index.insert(id.as_bytes(), conv_key.as_bytes())?;
-
-        Ok(())
+        let record = self.build_record(id, content, timestamp, owner_type, owner_id);
+        self.write_record(&record, None)
     }
 
     async fn save_conversation_with_task(
@@ -1023,48 +1597,48 @@ impl DictionaryStoreTrait for DictionaryStore {
 
     async fn get_conversation_by_time_range(&self, start_time: DateTime<Utc>, end_time: DateTime<Utc>, limit: usize) -> Result<Vec<Conversation>, ShouxinError> {
         let mut conversations = Vec::new();
-        let start_date = start_time.format("%Y-%m-%d").to_string();
-        let end_date = end_time.format("%Y-%m-%d").to_string();
+        if limit == 0 {
+            return Ok(conversations);
+        }
 
-        // 简化实现：按日期范围获取对话
-        // 实际项目中可能需要更精确的时间范围查询
-        let start_date_num: i64 = start_date.replace("-", "").parse().map_err(|e: std::num::ParseIntError| crate::error::ShouxinError::GeneralError(e.to_string()))?;
-        let end_date_num: i64 = end_date.replace("-", "").parse().map_err(|e: std::num::ParseIntError| crate::error::ShouxinError::GeneralError(e.to_string()))?;
-
-        for date_num in start_date_num..=end_date_num {
-            let date_str = format!("{:04}-{:02}-{:02}", date_num / 10000, (date_num / 100) % 100, date_num % 100);
-            let prefix = format!("{}:", date_str);
-
-            // 按前缀扫描
-            for item in self.conversations.scan_prefix(prefix.as_bytes()) {
-                let (_, bytes) = item?;
-                let record: ConversationRecord = serde_json::from_slice(&bytes)?;
-                if record.timestamp >= start_time && record.timestamp <= end_time {
-                    let (uid, aid) = match record.owner_type {
-                        crate::core::contact::OwnerType::User => (Some(record.owner_id.clone()), None),
-                        crate::core::contact::OwnerType::Agent => (None, Some(record.owner_id.clone())),
-                        _ => (Some(record.owner_id.clone()), None),
-                    };
-                    let conversation = Conversation {
-                        id: record.id,
-                        content: record.content,
-                        user_id: uid,
-                        agent_id: aid,
-                        created_at: record.timestamp,
-                        extracted_status: record.extracted_status,
-                        extraction_error: record.extraction_error,
-                    };
-                    conversations.push(conversation);
-                    if conversations.len() >= limit {
-                        break;
-                    }
-                }
+        // 直接走时间索引区间：字典序即时间序，避免按自然日一个月一个月地拼前缀
+        // （旧实现按 `%Y-%m-%d` 前缀遍历，跨 cutoff 的凌晨对话会漏）。
+        for item in self
+            .conversation_ts_index
+            .range(start_time.to_rfc3339().as_bytes()..end_time.to_rfc3339().as_bytes())
+        {
+            let (_, conv_key_bytes) = item?;
+            let conv_key = String::from_utf8_lossy(&conv_key_bytes);
+            let Some(bytes) = self.conversations.get(conv_key.as_bytes())? else {
+                continue;
+            };
+            let record: ConversationRecord = match serde_json::from_slice(&bytes) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if record.timestamp < start_time || record.timestamp > end_time {
+                continue;
             }
+            let (uid, aid) = match record.owner_type {
+                crate::core::contact::OwnerType::User => (Some(record.owner_id.clone()), None),
+                crate::core::contact::OwnerType::Agent => (None, Some(record.owner_id.clone())),
+                _ => (Some(record.owner_id.clone()), None),
+            };
+            conversations.push(Conversation {
+                id: record.id,
+                content: record.content,
+                user_id: uid,
+                agent_id: aid,
+                created_at: record.timestamp,
+                extracted_status: record.extracted_status,
+                extraction_error: record.extraction_error,
+            });
             if conversations.len() >= limit {
                 break;
             }
         }
 
+        conversations.sort_by_key(|c| c.created_at);
         Ok(conversations)
     }
 
@@ -1254,6 +1828,41 @@ impl DictionaryStoreTrait for DictionaryStore {
         }
         Ok(ids)
     }
+
+    async fn get_day_page(
+        &self,
+        day: &str,
+        owner_type: Option<crate::core::contact::OwnerType>,
+        owner_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ConversationRecord>, ShouxinError> {
+        DictionaryStore::get_day_page(self, day, owner_type, owner_id, limit, offset)
+    }
+
+    async fn list_day_pages(
+        &self,
+        before: Option<&str>,
+        owner_type: Option<crate::core::contact::OwnerType>,
+        owner_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::stores::dictionary::DaySummary>, ShouxinError> {
+        DictionaryStore::list_day_pages(self, before, owner_type, owner_id, limit)
+    }
+
+    async fn dictionary_stats(
+        &self,
+    ) -> Result<crate::stores::dictionary::DictionaryStats, ShouxinError> {
+        DictionaryStore::dictionary_stats(self)
+    }
+
+    async fn get_contact_events(
+        &self,
+        contact_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::stores::dictionary::store::ContactEventRecord>, ShouxinError> {
+        DictionaryStore::get_contact_events(self, contact_id, limit).await
+    }
 }
 
 #[cfg(test)]
@@ -1393,5 +2002,182 @@ mod failed_listing_tests {
             .unwrap();
         assert_eq!(store.list_failed_conversation_ids(1).await.unwrap().len(), 1);
         assert_eq!(store.list_failed_conversation_ids(0).await.unwrap().len(), 0);
+    }
+}
+
+/// 按天分页 + 凌晨兜底（会话日）测试
+#[cfg(test)]
+mod day_paging_tests {
+    use super::*;
+    use crate::core::contact::OwnerType;
+
+    fn ts(rfc3339_with_offset: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339_with_offset)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn store() -> DictionaryStore {
+        // 固定 UTC+8、04:00 换页，避免测试结果随运行机器时区漂移
+        DictionaryStore::in_memory_with_paging(DayPagingConfig {
+            cutoff_hour: 4,
+            utc_offset_minutes: Some(480),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn session_day_falls_back_before_cutoff() {
+        let s = store();
+        // 本地 02:30 仍算"前一天"
+        assert_eq!(s.session_day_of(ts("2026-10-30T02:30:00+08:00")), "2026-10-29");
+        // 正好 04:00 换页
+        assert_eq!(s.session_day_of(ts("2026-10-30T04:00:00+08:00")), "2026-10-30");
+        // 23:50 属于当天
+        assert_eq!(s.session_day_of(ts("2026-10-30T23:50:00+08:00")), "2026-10-30");
+        // 00:05 仍算前一天（跨零点兜底的核心）
+        assert_eq!(s.session_day_of(ts("2026-10-30T00:05:00+08:00")), "2026-10-29");
+    }
+
+    #[test]
+    fn day_bounds_are_cutoff_shifted() {
+        let (start, end) = compute_day_bounds_utc("2026-10-30", 4, 480).unwrap();
+        assert_eq!(start.to_rfc3339(), "2026-10-29T20:00:00+00:00");
+        assert_eq!(end.to_rfc3339(), "2026-10-30T20:00:00+00:00");
+        assert!(compute_day_bounds_utc("2026-13-40", 4, 480).is_none());
+    }
+
+    #[tokio::test]
+    async fn midnight_conversation_stays_on_previous_page() {
+        let s = store();
+        // 一次聊到凌晨的会话：23:50 → 00:40，应落在同一页
+        s.save_conversation("c1", "晚上聊项目", ts("2026-10-30T23:50:00+08:00"), OwnerType::User, "u1")
+            .await
+            .unwrap();
+        s.save_conversation("c2", "继续聊到凌晨", ts("2026-10-31T00:40:00+08:00"), OwnerType::User, "u1")
+            .await
+            .unwrap();
+        // 第二天下午
+        s.save_conversation("c3", "下午的对话", ts("2026-10-31T15:00:00+08:00"), OwnerType::User, "u1")
+            .await
+            .unwrap();
+
+        let d30 = s.get_day_page("2026-10-30", None, None, 100, 0).unwrap();
+        let d31 = s.get_day_page("2026-10-31", None, None, 100, 0).unwrap();
+        assert_eq!(d30.len(), 2, "零点后的对话必须留在前一天这一页");
+        assert_eq!(d30[0].id, "c1");
+        assert_eq!(d30[1].id, "c2");
+        assert_eq!(d31.len(), 1);
+        assert_eq!(d31[0].id, "c3");
+        // 记录里固化了会话日，便于直接展示分页归属
+        assert_eq!(d30[1].session_day, "2026-10-30");
+    }
+
+    #[tokio::test]
+    async fn day_index_counts_and_ordering() {
+        let s = store();
+        for (id, time) in [
+            ("a", "2026-10-28T10:00:00+08:00"),
+            ("b", "2026-10-30T09:00:00+08:00"),
+            ("c", "2026-10-30T21:00:00+08:00"),
+        ] {
+            s.save_conversation(id, "内容", ts(time), OwnerType::User, "u1")
+                .await
+                .unwrap();
+        }
+
+        let days = s.list_day_pages(None, None, None, 10).unwrap();
+        assert_eq!(days.len(), 2, "只有两天有数据");
+        assert_eq!(days[0].day, "2026-10-30", "倒序：最新在前");
+        assert_eq!(days[0].count, 2);
+        assert_eq!(days[1].day, "2026-10-28");
+        assert_eq!(days[1].count, 1);
+
+        // before 翻页：只取更早的一天
+        let older = s.list_day_pages(Some("2026-10-30"), None, None, 10).unwrap();
+        assert_eq!(older.len(), 1);
+        assert_eq!(older[0].day, "2026-10-28");
+    }
+
+    #[tokio::test]
+    async fn day_stats_follow_owner_filter() {
+        let s = store();
+        s.save_conversation("u1-a", "x", ts("2026-10-30T10:00:00+08:00"), OwnerType::User, "u1")
+            .await
+            .unwrap();
+        s.save_conversation("u2-a", "y", ts("2026-10-30T11:00:00+08:00"), OwnerType::User, "u2")
+            .await
+            .unwrap();
+
+        let all = s.list_day_pages(None, None, None, 10).unwrap();
+        assert_eq!(all[0].count, 2);
+        let only_u1 = s
+            .list_day_pages(None, Some(OwnerType::User), Some("u1"), 10)
+            .unwrap();
+        assert_eq!(only_u1[0].count, 1);
+
+        let page = s
+            .get_day_page("2026-10-30", Some(OwnerType::User), Some("u2"), 10, 0)
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id, "u2-a");
+    }
+
+    #[tokio::test]
+    async fn rewrite_same_id_does_not_double_count() {
+        let s = store();
+        s.save_conversation("dup", "第一次", ts("2026-10-30T10:00:00+08:00"), OwnerType::User, "u1")
+            .await
+            .unwrap();
+        // 同一 id 用新时间重写：应搬到新的一天，旧的一天不能残留
+        s.save_conversation("dup", "第二次", ts("2026-11-02T10:00:00+08:00"), OwnerType::User, "u1")
+            .await
+            .unwrap();
+
+        let old_page = s.get_day_page("2026-10-30", None, None, 10, 0).unwrap();
+        assert!(old_page.is_empty(), "旧页不应再有记录");
+        let new_page = s.get_day_page("2026-11-02", None, None, 10, 0).unwrap();
+        assert_eq!(new_page.len(), 1);
+        assert_eq!(new_page[0].content, "第二次");
+        assert_eq!(s.dictionary_stats().unwrap().conversations, 1);
+    }
+
+    #[tokio::test]
+    async fn stats_expose_status_breakdown() {
+        let s = store();
+        s.save_conversation("s1", "x", ts("2026-10-30T10:00:00+08:00"), OwnerType::User, "u1")
+            .await
+            .unwrap();
+        s.update_conversation_status("s1", "failed", Some("boom"))
+            .await
+            .unwrap();
+
+        let stats = s.dictionary_stats().unwrap();
+        assert_eq!(stats.conversations, 1);
+        assert_eq!(stats.days, 1);
+        assert_eq!(stats.status_counts.get("failed"), Some(&1));
+        assert_eq!(stats.cutoff_hour, 4);
+        assert_eq!(stats.utc_offset_minutes, 480);
+        assert!(stats.oldest_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn day_page_pagination_is_stable() {
+        let s = store();
+        for i in 0..5 {
+            let id = format!("p{}", i);
+            let time = format!("2026-10-30T1{}:00:00+08:00", i);
+            s.save_conversation(&id, "内容", ts(&time), OwnerType::User, "u1")
+                .await
+                .unwrap();
+        }
+        let first = s.get_day_page("2026-10-30", None, None, 2, 0).unwrap();
+        let second = s.get_day_page("2026-10-30", None, None, 2, 2).unwrap();
+        let third = s.get_day_page("2026-10-30", None, None, 2, 4).unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        assert_eq!(third.len(), 1);
+        let ids: Vec<String> = first.iter().chain(second.iter()).chain(third.iter()).map(|r| r.id.clone()).collect();
+        assert_eq!(ids, vec!["p0", "p1", "p2", "p3", "p4"], "分页不能重不能漏");
     }
 }

@@ -2,7 +2,6 @@
 //!
 //! 使用 SQLite + sqlx 作为存储引擎，轻量快速索引
 
-pub mod contact_background;
 pub mod contact_index;
 pub mod event_index;
 pub mod file_store;
@@ -11,7 +10,6 @@ pub mod store;
 pub mod todo_list;
 pub mod virtual_entity;
 
-pub use contact_background::{ContactBackground, ContactBackgroundSummarizer};
 pub use contact_index::ContactIndexStore;
 pub use event_index::EventIndexStore;
 pub use file_store::{FileIndex, FileRelation, FileStore};

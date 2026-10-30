@@ -60,6 +60,65 @@ POST /api/memory/add
 **一致性**：写入走三库强事务 + 补偿机制。任一库写失败会回滚已成功的部分，
 并把任务标记为可重放，避免"关系库有、向量库没有"的半截状态。
 
+### 3.1 字典库：原文、时间戳与按天分页
+
+字典库是**源文件**，设计上只有追加，没有删除。它的键结构直接决定了"时间"能不能被信任：
+
+```
+conversations           {session_day}:{conversation_id}  → ConversationRecord(JSON)
+conversation_ts_index   {rfc3339_utc}:{conv_key}          → conv_key        （时间序扫描）
+conversation_id_index   {conversation_id}                 → conv_key        （按 ID 回溯）
+conversation_day_stats  {session_day}                     → {total, by_owner, first_at, last_at}
+contact_event_history   contact_event:{contact_id}:{event_id}
+contacts_total          contact:{contact_id}
+commit_intents          intent:{conversation_id}          （三库写入的两阶段提交状态）
+pending_extraction_tasks                                   （与原文同一事务写入）
+meta                    day_index_version                 （日索引版本，旧库自动重建）
+```
+
+**每条原文都带时间戳。** `ConversationRecord.timestamp` 是对话**发生**时间，可由调用方指定
+（`POST /api/memory/add` 的 `timestamp` 字段，支持 RFC3339 / `YYYY-MM-DD HH:MM[:SS]` / `YYYY-MM-DD`），
+不传才用当前时间。导入历史聊天记录时必须传，否则所有历史都会落进"今天"这一页。
+另有 `ingested_at` 记录**入库**时间，两者分开，便于审计"什么时候写进来的"。
+
+**按天分页：`session_day` 而不是自然日。** 一天的分界不是 00:00，而是本地时间的
+`[storage].day_cutoff_hour`（默认 **4:00**）：
+
+- 本地 04:00–23:59 → 当天；
+- 本地 00:00–03:59 → **前一天**。
+
+这就是"跨零点兜底"：一次聊到凌晨的会话不会被零点切成两页，也不会出现"前一页只剩半段、
+后一页从半句开始"的割裂。`session_day` 在写入时固化到记录里，查询时还会用
+时间戳重算一次再比对，cutoff 边界上的记录不会串页。
+
+**为什么不用 UTC 日期分页。** UTC+8 的凌晨 0–8 点在 UTC 里还是前一天，直接用 UTC 日期
+会让"今天早上的对话"跑到昨天的页里。分页口径固定使用本地时区，并允许用
+`[storage].utc_offset_minutes` 钉死偏移（避免夏令时/系统时区变更导致历史分页漂移）。
+
+**旧库升级。** 早期版本用 UTC 日期做键前缀。升级后不重写旧键（重写会让 `id_index` 失效），
+而是首次启动时扫描全库重建 `conversation_day_stats`（`meta.day_index_version` 标记，只做一次）；
+查询侧走时间索引区间 + 会话日重算，因此旧数据的键长什么样都不影响分页正确性。
+
+**字段可用性。** 每个字段都有实际读写方，不存在"写了没人读"的字段：
+
+| 字段 | 写入方 | 读取方 |
+|------|--------|--------|
+| `id` / `content` / `timestamp` | `add_async`（原子事务） | `extract_status`、重放、联系人详情原文证据 |
+| `owner_type` / `owner_id` | `add_async` | 全部查询的隔离条件（跨 owner 不泄露存在性） |
+| `extracted_status` / `extraction_error` | 后台队列 | `GET /api/memory/extract_status/:id`、批量重放 |
+| `session_day` | 写入时按 cutoff 固化 | `GET /api/dictionary/day/:date`、日索引 |
+| `ingested_at` | 写入时打点 | 字典库分页/统计接口 |
+| `contact_event_history` | 后台队列（事件落库后） | `GET /api/contacts/:id/event_archive` |
+
+对应的读接口（此前只写不读，属于真实缺口，已补齐）：
+
+- `GET /api/dictionary/days` —— 有哪些"天"，每天多少条（倒序 + `before` 翻页）；
+- `GET /api/dictionary/day/:date` —— 某天的对话（时间升序，`limit`/`offset` 页内分页）；
+- `GET /api/dictionary/conversation/:id` —— 单条原文完整回溯（带 owner 校验）；
+- `GET /api/dictionary/stats` —— 总条数 / 天数 / 首末时间 / 抽取状态分布（自检用）；
+- `GET /api/dictionary/paging` —— 生效的分页口径（cutoff 与 UTC 偏移）；
+- `GET /api/contacts/:id/event_archive` —— 联系人事件档案（永久副本）。
+
 ---
 
 ## 4. 事件生命周期
@@ -282,3 +341,38 @@ src/
 ├── stores/relational|vector|dictionary
 └── utils/time_parser.rs      中文相对时间解析
 ```
+
+### 10.1 模块清单与实现状态
+
+"实现"指：有真实读写方、在服务端被调用，不是只有类型定义。
+
+| 模块 | 职责 | 状态 | 证据 |
+|------|------|------|------|
+| `api/routes.rs` | 主路由 42 个注册 / 35 个唯一路径 | ✅ | `/health`、`/api/*` |
+| `api/async_memory.rs` | 异步写入与查询封装 | ✅ | `add_async_at`、`get_contact_detail` 等 |
+| `api/sync.rs` | 同步 API（库级） | ✅ 库级 | 服务端未使用；`update_memory` 已废弃 |
+| `memory/three_library_manager.rs` | 三库编排、检索融合、联系人详情 | ✅ | 所有搜索/详情接口 |
+| `memory/writer.rs` | 抽取结果落三库（去重/消歧/关系） | ✅ | 后台队列唯一写入口 |
+| `memory_extractor/*` | 提示词、JSON 解析、正则降级 | ✅ | 225 条语料 224 成功 |
+| `service/background_queue.rs` | 持久化队列、重试、两阶段提交、补偿 | ✅ | 重启续跑、`replay_failed` |
+| `service/file_processor.rs` | 文件文本抽取与切片 | ✅ | `/api/files/*` |
+| `service/internal_api.rs` | 智能体注册 / 内部事件写入 | ✅ | `/internal/*`（令牌鉴权） |
+| `heartbeat/*` | 巡检、待办提醒、画像生成、问题池 | ✅ | `/api/heartbeat/*` |
+| `stores/dictionary` | 原文、日索引、联系人档案、写入意图 | ✅ | 见 3.1 |
+| `stores/relational` | 事件/联系人/待办/虚拟角色/维护 | ✅ | SQLite WAL |
+| `stores/vector` | HNSW + 暴力降级 | ✅ | `/api/vector/*` |
+| `llm/gguf|ollama|api` + `manager` | 三种后端 + 主备切换 | ✅ | 启动日志 `LLM primary=gguf` |
+| `embedder/fastembed|hash` | 本地 ONNX 嵌入 + 无模型降级 | ✅ | 768 维 |
+| `learning/entity_normalizer|summarizer` | 实体归一化、摘要 | ✅ | `dispatcher` 调用 |
+| `learning/knowledge_graph|learning_logger` | 知识图谱、学习日志 | ⚠️ 库级未接线 | 有实现、无调用方，仅供上层直接使用 |
+| `utils/time_parser.rs` | 中文相对/绝对时间解析 | ✅ | 待办截止、事件时间 |
+| `testing/*` | 测试辅助 | ✅ dev | 不参与运行时 |
+
+> 已删除两个"重复实现且从未实例化"的模块：`ConversationStore`（与 `DictionaryStore` 重复）、
+> `ContactBackgroundSummarizer`（已被心跳画像取代）。留着只会让"到底哪套在跑"变得不可判断。
+
+### 10.2 已知缺口（不影响日常使用，按优先级排列）
+
+1. 歧义检测会把不同人的别名并成一人，并重复创建已存在的待办，挤占心跳预算（画像覆盖率因此偏低）；
+2. 画像空响应按"每日 30 次"重试，坏联系人反复占名额；
+3. 事件合并只更新 `contact_ids`，不更新时间，重放无法修正历史事件时间。

@@ -3,13 +3,12 @@
 //! 使用 sled 作为存储引擎，永久全量存档
 
 pub mod contacts_total;
-pub mod conversation;
 pub mod store;
 
 pub use contacts_total::ContactsTotalStore;
-pub use conversation::ConversationStore;
 pub use store::{
-    ConversationRecord, DictionaryStore as SledDictionaryStore, WriteIntent, WriteIntentState,
+    compute_day_bounds_utc, compute_session_day, ConversationRecord, DayPagingConfig, DaySummary,
+    DictionaryStats, DictionaryStore as SledDictionaryStore, WriteIntent, WriteIntentState,
 };
 
 /// 待提取任务树名称（与 BackgroundTaskQueue 共用；同一 sled DB 内，保证 add 可单事务原子写入）

@@ -573,6 +573,40 @@ pub trait DictionaryStoreTrait: Send + Sync {
         event_ids: &[String],
         memory_ids: &[String],
     ) -> Result<(), ShouxinError>;
+
+    /// 按会话日（分页日）读取一页对话，按时间升序
+    ///
+    /// `day` 是 `YYYY-MM-DD`，含义是"按 cutoff 切分后的一天"，
+    /// 不是裸自然日：凌晨 cutoff 之前的对话归到前一天。
+    async fn get_day_page(
+        &self,
+        day: &str,
+        owner_type: Option<crate::core::contact::OwnerType>,
+        owner_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<crate::stores::dictionary::ConversationRecord>, ShouxinError>;
+
+    /// 列出有数据的会话日（倒序），`before` 用于翻页
+    async fn list_day_pages(
+        &self,
+        before: Option<&str>,
+        owner_type: Option<crate::core::contact::OwnerType>,
+        owner_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::stores::dictionary::DaySummary>, ShouxinError>;
+
+    /// 字典库自检统计：总条数 / 天数 / 首末时间 / 抽取状态分布
+    async fn dictionary_stats(
+        &self,
+    ) -> Result<crate::stores::dictionary::DictionaryStats, ShouxinError>;
+
+    /// 读取联系人历史事件档案（字典库权威副本）
+    async fn get_contact_events(
+        &self,
+        contact_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::stores::dictionary::store::ContactEventRecord>, ShouxinError>;
 }
 
 /// 关系库 trait（轻量快速索引）

@@ -59,6 +59,13 @@ pub struct AddConversationRequest {
     /// 操作范围（可选，默认为 User）
     #[serde(default)]
     pub scope: Scope,
+    /// 对话发生时间（可选，缺省为当前时间）
+    ///
+    /// 支持 `RFC3339`（`2026-10-30T09:30:00+08:00`）、`YYYY-MM-DD HH:MM:SS`、
+    /// `YYYY-MM-DD` 三种写法。导入历史聊天记录时必须带上真实时间，
+    /// 否则全部落进"今天"这一页，按天分页就失效了。
+    #[serde(default, alias = "occurred_at")]
+    pub timestamp: Option<String>,
 }
 
 /// 搜索联系人请求
@@ -90,6 +97,11 @@ pub struct SearchContactsRequest {
 #[derive(Debug, Deserialize)]
 pub struct SearchEventsRequest {
     /// 用户 ID
+    ///
+    /// `owner_id` 作为别名接受：事件检索按 (owner_type=User, owner_id) 落库，
+    /// 调用方很容易顺手写成 `owner_id`。静默忽略会直接返回空列表，
+    /// 这种"看起来成功但什么也没有"的接口最难排查，因此在入口处对齐。
+    #[serde(default, alias = "owner_id")]
     pub user_id: Option<String>,
     /// 事件类型
     pub event_type: Option<String>,
@@ -859,6 +871,31 @@ pub fn create_router(async_memory: Arc<AsyncMemory>, file_state: Arc<FileApiStat
             axum::routing::get(get_contact_detail),
         )
         .route(
+            "/api/contacts/:id/event_archive",
+            axum::routing::get(get_contact_event_archive),
+        )
+        // 字典库（原文）按天分页
+        .route(
+            "/api/dictionary/days",
+            axum::routing::get(list_dictionary_days),
+        )
+        .route(
+            "/api/dictionary/day/:date",
+            axum::routing::get(get_dictionary_day),
+        )
+        .route(
+            "/api/dictionary/conversation/:id",
+            axum::routing::get(get_dictionary_conversation),
+        )
+        .route(
+            "/api/dictionary/stats",
+            axum::routing::get(dictionary_stats),
+        )
+        .route(
+            "/api/dictionary/paging",
+            axum::routing::get(dictionary_paging_info),
+        )
+        .route(
             "/api/memory/search/events",
             axum::routing::post(search_events),
         )
@@ -914,6 +951,294 @@ async fn health_check() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok", "time": Utc::now().to_rfc3339()}))
 }
 
+// ==================== 字典库分页查询 ====================
+
+/// 字典库查询参数（按天分页）
+#[derive(Debug, Deserialize)]
+pub struct DictionaryQueryParams {
+    #[serde(default)]
+    pub scope: Option<Scope>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// 单页条数（默认 50，上限 200）
+    #[serde(default = "default_dictionary_limit")]
+    pub limit: usize,
+    /// 页内偏移（默认 0）
+    #[serde(default)]
+    pub offset: usize,
+    /// 只列出该日期之前（不含）的会话日，用于翻页
+    #[serde(default)]
+    pub before: Option<String>,
+}
+
+fn default_dictionary_limit() -> usize {
+    50
+}
+
+/// 把查询参数解析成 (owner_type, owner_id)
+///
+/// 字典库是"原文"，跨 owner 泄漏比结构化数据更严重，因此默认按 User + 默认用户过滤。
+fn dictionary_owner(params: &DictionaryQueryParams) -> (crate::core::contact::OwnerType, String) {
+    params
+        .scope
+        .unwrap_or(Scope::User)
+        .to_owner_params(params.user_id.as_deref())
+}
+
+/// 字典库分页口径（截止小时 + 时区偏移），供上层与本地展示对齐
+async fn dictionary_paging_info(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+) -> ApiResponse<serde_json::Value> {
+    let dict = async_memory.get_dictionary_store();
+    match dict.dictionary_stats().await {
+        Ok(stats) => ApiResponse::success(serde_json::json!({
+            "cutoff_hour": stats.cutoff_hour,
+            "utc_offset_minutes": stats.utc_offset_minutes,
+            "rule": "会话日：本地时间 cutoff_hour 之前算前一天（凌晨兜底，避免零点把一次会话切成两页）",
+        })),
+        Err(e) => {
+            error!("读取字典库分页配置失败: {}", e);
+            ApiResponse::error("内部错误".to_string())
+        }
+    }
+}
+
+/// 列出有对话的会话日（倒序），用于"按天翻页"
+async fn list_dictionary_days(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    Query(params): Query<DictionaryQueryParams>,
+) -> ApiResponse<serde_json::Value> {
+    if let Err(e) = validate_user_id(&params.user_id) {
+        return ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST);
+    }
+    let dict = async_memory.get_dictionary_store();
+    let (owner_type, owner_id) = dictionary_owner(&params);
+    let limit = params.limit.clamp(1, 366);
+    let before = params
+        .before
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    match dict
+        .list_day_pages(before, Some(owner_type), Some(&owner_id), limit)
+        .await
+    {
+        Ok(days) => {
+            let next_before = days.last().map(|d| d.day.clone());
+            let full = days.len() == limit;
+            ApiResponse::success(serde_json::json!({
+                "owner_type": owner_type.as_str(),
+                "owner_id": owner_id,
+                "count": days.len(),
+                "next_before": if full { next_before } else { None },
+                "days": days,
+            }))
+        }
+        Err(e) => {
+            error!("列出字典库会话日失败: {}", e);
+            ApiResponse::error("内部错误".to_string())
+        }
+    }
+}
+
+/// 读取某个会话日的对话（按时间升序，分页）
+async fn get_dictionary_day(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    Path(day): Path<String>,
+    Query(params): Query<DictionaryQueryParams>,
+) -> ApiResponse<serde_json::Value> {
+    if let Err(e) = validate_user_id(&params.user_id) {
+        return ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST);
+    }
+    if chrono::NaiveDate::parse_from_str(day.trim(), "%Y-%m-%d").is_err() {
+        return ApiResponse::error_with_status(
+            format!("日期格式应为 YYYY-MM-DD：{}", day),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    let dict = async_memory.get_dictionary_store();
+    let (owner_type, owner_id) = dictionary_owner(&params);
+    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset.min(100_000);
+
+    match dict
+        .get_day_page(&day, Some(owner_type), Some(&owner_id), limit, offset)
+        .await
+    {
+        Ok(records) => {
+            let items: Vec<serde_json::Value> = records
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "conversation_id": r.id,
+                        "timestamp": r.timestamp.to_rfc3339(),
+                        "session_day": if r.session_day.is_empty() { day.clone() } else { r.session_day.clone() },
+                        "ingested_at": r.ingested_at.map(|t| t.to_rfc3339()),
+                        "owner_type": r.owner_type.as_str(),
+                        "owner_id": r.owner_id,
+                        "extracted_status": r.extracted_status,
+                        "extraction_error": r.extraction_error,
+                        "chars": r.content.chars().count(),
+                        "preview": r.content.chars().take(120).collect::<String>(),
+                    })
+                })
+                .collect();
+            let has_more = items.len() == limit;
+            ApiResponse::success(serde_json::json!({
+                "day": day,
+                "owner_type": owner_type.as_str(),
+                "owner_id": owner_id,
+                "offset": offset,
+                "limit": limit,
+                "count": items.len(),
+                "has_more": has_more,
+                "conversations": items,
+            }))
+        }
+        Err(e) => {
+            error!("读取字典库某天对话失败 {}: {}", day, e);
+            ApiResponse::error("内部错误".to_string())
+        }
+    }
+}
+
+/// 字典库自检统计
+async fn dictionary_stats(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+) -> ApiResponse<serde_json::Value> {
+    let dict = async_memory.get_dictionary_store();
+    match dict.dictionary_stats().await {
+        Ok(stats) => ApiResponse::success(serde_json::json!(stats)),
+        Err(e) => {
+            error!("字典库统计失败: {}", e);
+            ApiResponse::error("内部错误".to_string())
+        }
+    }
+}
+
+/// 按 ID 读取一条对话原文（用于回溯）
+async fn get_dictionary_conversation(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    Path(id): Path<String>,
+    Query(params): Query<DictionaryQueryParams>,
+) -> ApiResponse<serde_json::Value> {
+    let dict = async_memory.get_dictionary_store();
+    let (owner_type, owner_id) = dictionary_owner(&params);
+    match dict.get_conversation_by_id(&id).await {
+        Ok(Some(conv)) => {
+            // 越权防护：只返回当前 owner 的原文
+            let belongs = match owner_type {
+                crate::core::contact::OwnerType::User => conv
+                    .user_id
+                    .as_deref()
+                    .map(|u| u == owner_id)
+                    .unwrap_or(false),
+                crate::core::contact::OwnerType::Agent => conv
+                    .agent_id
+                    .as_deref()
+                    .map(|a| a == owner_id)
+                    .unwrap_or(false),
+                _ => true,
+            };
+            if !belongs {
+                return ApiResponse::error_with_status(
+                    "conversation not found".to_string(),
+                    StatusCode::NOT_FOUND,
+                );
+            }
+            ApiResponse::success(serde_json::json!({
+                "conversation_id": conv.id,
+                "content": conv.content,
+                "timestamp": conv.created_at.to_rfc3339(),
+                "extracted_status": conv.extracted_status,
+                "extraction_error": conv.extraction_error,
+                "chars": conv.content.chars().count(),
+            }))
+        }
+        Ok(None) => ApiResponse::error_with_status(
+            format!("conversation not found: {}", id),
+            StatusCode::NOT_FOUND,
+        ),
+        Err(e) => {
+            error!("读取字典库对话失败 {}: {}", id, e);
+            ApiResponse::error("内部错误".to_string())
+        }
+    }
+}
+
+/// 联系人在字典库中的历史事件档案（永久副本，不随关系库归档/合并消失）
+async fn get_contact_event_archive(
+    Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    Path(contact_id): Path<String>,
+    Query(params): Query<DictionaryQueryParams>,
+) -> ApiResponse<serde_json::Value> {
+    let dict = async_memory.get_dictionary_store();
+    let limit = params.limit.clamp(1, 500);
+    match dict.get_contact_events(&contact_id, Some(limit)).await {
+        Ok(events) => {
+            let items: Vec<serde_json::Value> = events
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "event_id": e.event_id,
+                        "event_time": e.event_time.to_rfc3339(),
+                        "summary": e.event_summary,
+                        "importance": e.importance,
+                        "user_sentiment": e.user_sentiment,
+                        "conversation_id": e.raw_conversation_id,
+                    })
+                })
+                .collect();
+            ApiResponse::success(serde_json::json!({
+                "contact_id": contact_id,
+                "count": items.len(),
+                "events": items,
+            }))
+        }
+        Err(e) => {
+            error!("读取联系人事件档案失败 {}: {}", contact_id, e);
+            ApiResponse::error("内部错误".to_string())
+        }
+    }
+}
+
+/// 解析对话发生时间
+///
+/// 支持 RFC3339、`YYYY-MM-DD HH:MM[:SS]`、`YYYY-MM-DD`。
+/// 不带时区的写法按**本地时间**解释（用户说"9 点半"指的是自己所在时区）。
+fn parse_conversation_timestamp(raw: &str) -> Result<chrono::DateTime<Utc>, String> {
+    use chrono::TimeZone;
+
+    let s = raw.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            if let Some(local) = chrono::Local.from_local_datetime(&naive).single() {
+                return Ok(local.with_timezone(&Utc));
+            }
+            // 夏令时回拨导致本地时间歧义时按 UTC 解释，避免整体失败
+            return Ok(naive.and_utc());
+        }
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        // 只给日期时取当天 12:00（本地）：远离零点与 cutoff，不会被分到相邻的页
+        let naive = date
+            .and_hms_opt(12, 0, 0)
+            .ok_or_else(|| format!("非法日期：{}", raw))?;
+        if let Some(local) = chrono::Local.from_local_datetime(&naive).single() {
+            return Ok(local.with_timezone(&Utc));
+        }
+        return Ok(naive.and_utc());
+    }
+    Err(format!(
+        "无法解析（支持 2026-10-30T09:30:00+08:00 / 2026-10-30 09:30:00 / 2026-10-30）：{}",
+        raw
+    ))
+}
+
 // ==================== 记忆管理处理器 ====================
 
 /// 添加对话
@@ -940,8 +1265,47 @@ async fn add_conversation(
     if let Err(e) = validate_user_id(&req.user_id) {
         return ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST);
     }
+
+    // 对话发生时间：可缺省（= 现在）。给了就必须能解析且在合理区间内，
+    // 否则历史数据会被错误地分到今天的页里，事后无法纠正。
+    let occurred_at = match req
+        .timestamp
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some(raw) => match parse_conversation_timestamp(raw) {
+            Ok(ts) => {
+                let now = Utc::now();
+                if ts > now + chrono::Duration::days(1) {
+                    return ApiResponse::error_with_status(
+                        format!("timestamp 超出合理范围（不能晚于当前时间）：{}", raw),
+                        StatusCode::BAD_REQUEST,
+                    );
+                }
+                if ts < chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or(now)
+                {
+                    return ApiResponse::error_with_status(
+                        format!("timestamp 超出合理范围（早于 2000-01-01）：{}", raw),
+                        StatusCode::BAD_REQUEST,
+                    );
+                }
+                Some(ts)
+            }
+            Err(e) => {
+                return ApiResponse::error_with_status(
+                    format!("timestamp 解析失败：{}", e),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
+        },
+    };
+
     match async_memory
-        .add_async(&req.conversation, req.user_id.as_deref(), req.scope)
+        .add_async_at(&req.conversation, req.user_id.as_deref(), req.scope, occurred_at)
         .await
     {
         Ok(result) => {

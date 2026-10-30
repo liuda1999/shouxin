@@ -388,6 +388,19 @@ pub struct StorageSettings {
     pub relational_db_file: String,
     pub vector_index_file: String,
     pub question_pool_dir: String,
+    /// 字典库"会话日"切分小时（0–12）
+    ///
+    /// 默认 4：本地时间 00:00–03:59 的对话仍归到前一天，
+    /// 避免一次聊到凌晨的会话被零点切成两页。
+    #[serde(default = "default_day_cutoff_hour")]
+    pub day_cutoff_hour: u32,
+    /// 固定 UTC 偏移（分钟）；缺省跟随系统时区，中国用户可填 480
+    #[serde(default)]
+    pub utc_offset_minutes: Option<i32>,
+}
+
+fn default_day_cutoff_hour() -> u32 {
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,6 +508,8 @@ impl Default for StorageSettings {
             relational_db_file: "relational.db".to_string(),
             vector_index_file: "vectors.hnsw".to_string(),
             question_pool_dir: "heartbeat/questions".to_string(),
+            day_cutoff_hour: default_day_cutoff_hour(),
+            utc_offset_minutes: None,
         }
     }
 }

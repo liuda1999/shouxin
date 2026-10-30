@@ -7,10 +7,10 @@ pub mod relational;
 pub mod vector;
 
 pub use dictionary::{
-    ContactsTotalStore, ConversationRecord, ConversationStore, DictionaryStore, SledDictionaryStore,
+    ContactsTotalStore, ConversationRecord, DictionaryStore, SledDictionaryStore,
 };
 pub use relational::{
-    CleanupResult, ContactBackground, ContactBackgroundSummarizer, ContactIndexStore,
-    EventIndexStore, MaintenanceService, MaintenanceState, RelationalStore,
+    CleanupResult, ContactIndexStore, EventIndexStore, MaintenanceService, MaintenanceState,
+    RelationalStore,
 };
 pub use vector::VectorStoreWrapper;

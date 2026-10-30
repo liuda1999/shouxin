@@ -401,9 +401,21 @@ async fn run_api_server(
     let relational = Arc::new(relational);
     println!("Relational store initialized (file: {})", db_path.display());
 
-    let dictionary = SledDictionaryStore::open(&sled_path)?;
+    let dictionary = SledDictionaryStore::open_with_paging(
+        &sled_path,
+        shouxin::stores::dictionary::DayPagingConfig {
+            cutoff_hour: settings.storage.day_cutoff_hour,
+            utc_offset_minutes: settings.storage.utc_offset_minutes,
+        },
+    )?;
     let dictionary = Arc::new(dictionary);
-    println!("Dictionary store initialized");
+    {
+        let (cutoff, offset) = dictionary.day_paging();
+        println!(
+            "Dictionary store initialized (按天分页: 每天 {}:00 换页, UTC{:+} 分钟)",
+            cutoff, offset
+        );
+    }
 
     // 监听地址：命令行 --host 优先，其次 config.toml 的 [server] host+port
     let bind_addr = args

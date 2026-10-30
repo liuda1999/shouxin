@@ -40,6 +40,27 @@ Content-Type: application/json
 **这是异步接口**：立即返回 `conversation_id`，抽取在后台队列进行。
 刚返回时 `contacts/events/learnings` 通常为空数组，属于正常。
 
+**指定对话发生时间（导入历史必填）**：
+
+```json
+{
+  "conversation": "昨天说的那版排期，我同意。",
+  "user_id": "default_user",
+  "timestamp": "2026-10-29 23:40:00"
+}
+```
+
+`timestamp`（别名 `occurred_at`）支持三种写法：
+
+| 写法 | 示例 | 说明 |
+|------|------|------|
+| RFC3339 | `2026-10-30T09:30:00+08:00` | 最精确，推荐 |
+| 本地日期时间 | `2026-10-30 09:30[:00]` | 按**本地时区**解释 |
+| 仅日期 | `2026-10-30` | 按当天 **12:00**（本地）归档 |
+
+不传则用当前时间。解析失败、晚于当前时间 1 天以上、或早于 2000-01-01 均返回 **400**。
+时间决定它落在哪一"天"的页里，详见下面的「字典库（原文）」。
+
 ### 查询抽取状态
 
 ```http
@@ -345,6 +366,131 @@ POST /api/virtual_entities
 
 > `user_id` 不填时归属 `default_user`。**必须填对**，否则跨 owner 隔离会让你在
 > 自己的联系人列表里查不到这个角色（这是 v0.5.0 修复的一个问题）。
+
+---
+
+## 字典库（原文，按天分页）
+
+字典库保存所有写入的对话原文，**永不删除**。每天一页，页的切分不是自然日 00:00，
+而是本地时间 `[storage].day_cutoff_hour`（默认 **04:00**）：00:00–03:59 的对话归**前一天**。
+这样"聊到凌晨"的一次会话不会被零点切成两页。
+
+所有接口默认按 `scope=User` + `default_user` 过滤；跨 owner 一律查不到。
+
+### 有哪些"天"
+
+```http
+GET /api/dictionary/days?user_id=default_user&limit=30&before=2026-10-30
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "owner_type": "User",
+    "owner_id": "default_user",
+    "count": 2,
+    "next_before": "2026-10-28",
+    "days": [
+      { "day": "2026-10-30", "count": 3, "first_at": "2026-10-29T20:00:00+00:00", "last_at": "2026-10-30T04:00:00+00:00" },
+      { "day": "2026-10-28", "count": 1, "first_at": "2026-10-28T02:00:00+00:00", "last_at": "2026-10-28T02:00:00+00:00" }
+    ]
+  }
+}
+```
+
+倒序（最新在前）。`before` 传上一页最后一天即可继续往前翻；`next_before` 为 `null` 表示到底了。
+
+### 取某一天
+
+```http
+GET /api/dictionary/day/2026-10-30?user_id=default_user&limit=50&offset=0
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "day": "2026-10-30",
+    "offset": 0, "limit": 50, "count": 2, "has_more": false,
+    "conversations": [
+      {
+        "conversation_id": "…",
+        "timestamp": "2026-10-29T20:00:00+00:00",
+        "session_day": "2026-10-30",
+        "ingested_at": "2026-10-30T00:12:00+00:00",
+        "owner_type": "User", "owner_id": "default_user",
+        "extracted_status": "completed", "extraction_error": null,
+        "chars": 24, "preview": "早上四点整，换页了。"
+      }
+    ]
+  }
+}
+```
+
+按时间升序；`offset` 是页内偏移，`has_more` 只表示"这一页取满了"，不代表一定还有下一条。
+
+### 取单条原文
+
+```http
+GET /api/dictionary/conversation/:conversation_id?user_id=default_user
+```
+
+返回完整 `content`（不是预览），带 `timestamp` / `extracted_status` / `chars`。
+跨 owner 或不存在都返回 404。
+
+### 自检统计
+
+```http
+GET /api/dictionary/stats
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "conversations": 42, "days": 5,
+    "oldest_at": "2026-10-24T01:00:00+00:00", "newest_at": "2026-10-30T04:00:00+00:00",
+    "status_counts": { "completed": 40, "pending": 1, "failed": 1 },
+    "cutoff_hour": 4, "utc_offset_minutes": 480
+  }
+}
+```
+
+用于确认"写进去的条数"和"能查到的条数"没有裂缝（`conversations` 与各天 `count` 之和应一致）。
+
+### 当前分页口径
+
+```http
+GET /api/dictionary/paging
+```
+
+```json
+{ "success": true, "data": { "cutoff_hour": 4, "utc_offset_minutes": 480, "rule": "会话日：本地时间 cutoff_hour 之前算前一天…" } }
+```
+
+### 联系人事件档案
+
+关系库的事件会归档、合并、失效，字典库里的联系人事件档案是**永久副本**：
+
+```http
+GET /api/contacts/:contact_id/event_archive?limit=100
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "contact_id": "…", "count": 1,
+    "events": [
+      { "event_id": "…", "event_time": "2026-10-29T12:00:00+00:00", "summary": "和张总开会讨论预算",
+        "importance": "long_term", "user_sentiment": "neutral", "conversation_id": "…" }
+    ]
+  }
+}
+```
+
+按事件时间倒序。
 
 ---
 

@@ -372,12 +372,27 @@ impl ThreeLibraryMemoryManager {
         user_id: Option<&str>,
         scope: Scope,
     ) -> Result<AddResult, ShouxinError> {
+        self.add_async_at(conversation, user_id, scope, None).await
+    }
+
+    /// 添加对话（可指定对话发生时间）
+    ///
+    /// `occurred_at` 为 `None` 时用当前时间。导入历史聊天记录时必须传入真实时间，
+    /// 否则所有历史都会落进"今天"这一页，按天分页失去意义。
+    pub async fn add_async_at(
+        &self,
+        conversation: &str,
+        user_id: Option<&str>,
+        scope: Scope,
+        occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<AddResult, ShouxinError> {
         let conversation_id = uuid::Uuid::new_v4().to_string();
         let owner_type = self.get_owner_type(&scope);
         let owner_id = match &scope {
             Scope::User => user_id.map(|s| s.to_string()).unwrap_or_else(|| self.config.user_id.clone()),
             Scope::Agent => self.config.agent_id.clone(),
         };
+        let timestamp = occurred_at.unwrap_or_else(chrono::Utc::now);
 
         if let Some(ref queue) = self.background_queue {
             let task = ExtractionTask {
@@ -396,7 +411,7 @@ impl ThreeLibraryMemoryManager {
                 .save_conversation_with_task(
                     &conversation_id,
                     conversation,
-                    chrono::Utc::now(),
+                    timestamp,
                     owner_type,
                     &owner_id,
                     &task_key,
@@ -422,7 +437,7 @@ impl ThreeLibraryMemoryManager {
             self.dictionary_store.save_conversation(
                 &conversation_id,
                 conversation,
-                chrono::Utc::now(),
+                timestamp,
                 owner_type,
                 &owner_id,
             ).await?;
@@ -1233,7 +1248,6 @@ impl ThreeLibraryMemoryManager {
         user_id: Option<&str>,
     ) -> Result<Vec<Conversation>, ShouxinError> {
         // 获取所有者信息用于过滤
-        let owner_type = self.get_owner_type(&scope);
         let owner_id = match &scope {
             Scope::User => user_id.map(|s| s.to_string()).unwrap_or_else(|| self.config.user_id.clone()),
             Scope::Agent => self.config.agent_id.clone(),
@@ -1246,12 +1260,21 @@ impl ThreeLibraryMemoryManager {
             100,
         ).await?;
 
-        // 在内存中按 owner 过滤（字典库 trait 暂不支持 owner 过滤参数）
+        // 在内存中按 owner 过滤（字典库 trait 暂不支持 owner 过滤参数）。
+        // 缺省值必须与写入侧一致：User → DEFAULT_USER_ID，Agent → 主智能体 ID。
         let filtered: Vec<Conversation> = conversations.into_iter()
             .filter(|c| {
                 match &scope {
-                    Scope::User => c.user_id.as_deref().unwrap_or("default_user") == owner_id,
-                    Scope::Agent => c.agent_id.as_deref().unwrap_or("primary_agent_default") == owner_id,
+                    Scope::User => c
+                        .user_id
+                        .as_deref()
+                        .unwrap_or(crate::core::owner::DEFAULT_USER_ID)
+                        == owner_id,
+                    Scope::Agent => c
+                        .agent_id
+                        .as_deref()
+                        .unwrap_or_else(|| crate::core::owner::primary_agent_id())
+                        == owner_id,
                 }
             })
             .collect();

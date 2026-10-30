@@ -83,7 +83,7 @@ def main():
     contacts = req("POST", f"{args.base}/api/memory/search/contacts",
                    {"query": "", "limit": 100, "user_id": args.user, "include_archived": True}).get("data") or []
     events = req("POST", f"{args.base}/api/memory/search/events",
-                 {"query": "", "limit": 100, "owner_type": "User", "owner_id": args.user}).get("data") or []
+                 {"user_id": args.user, "limit": 100}).get("data") or []
     todos = req("GET", f"{args.base}/api/todos?user_id={args.user}&limit=50").get("data") or []
 
     print("\n=== 跑通结果 ===")
