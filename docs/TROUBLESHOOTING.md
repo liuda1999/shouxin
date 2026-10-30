@@ -90,7 +90,7 @@ curl -s http://127.0.0.1:3000/api/heartbeat/status
 |----------|------|------|
 | 文件被截断 | `xxd -l 4 model.gguf` 不是 `GGUF` | 重新下载，用 `scripts/download_gguf.py`（结束会校验长度） |
 | 大小不符 | `ls -l` 与上游 `Content-Length` 不一致 | 同上 |
-| 架构不支持 | 日志含 `unknown model architecture` | 换模型或升级 `llama-cpp-2`；本项目自带版本支持 `GEMMA/GEMMA2/GEMMA3/GEMMA4` |
+| 架构不支持 | 日志含 `unknown model architecture` | 换模型或升级 `llama-cpp-2`。内置 `llama-cpp-sys-2 = 0.1.146` 支持 126 个架构（Gemma / Qwen / Phi / GLM / DeepSeek / Granite 等），报这个错说明该模型比当前 llama.cpp 新 |
 
 ### 2.2 推理很慢（< 5 tok/s）
 

@@ -98,16 +98,31 @@ xxd -l 4 models/Ministral-3-3B-Reasoning-2512-Q8_0.gguf   # 应为 GGUF
 bash scripts/check_env.sh                             # 会自动校验当前配置指向的模型
 ```
 
-### 1.5 兼容性
+### 1.5 兼容性：模型不写死
 
-- **架构支持**：Gemma 需要 `LLM_ARCH_GEMMA4`，Ministral 需要 `LLM_ARCH_MISTRAL3`；
-  项目依赖的 `llama-cpp-sys-2 = 0.1.146` 两者都支持
-  （`grep -E "GEMMA4|MISTRAL3" src/llama-arch.h` 可自证）。
-- **对话模板**：代码优先读 GGUF 自带的 `tokenizer.chat_template`，
-  失败时按 `general.architecture` 内置 gemma / qwen / llama 模板。
-  Mistral 系列的 `[INST]` 模板可正常从 GGUF 读取（日志里 `Constructed prompt` 会以 `[SYSTEM_PROMPT]` 开头）。
-- **换其它模型**：只要 `llama.cpp` 支持其架构，改 `model_path` 即可。3B 级适合纯 CPU；
-  7B 以上纯 CPU 会明显变慢。
+**本项目不绑定任何具体模型。** 代码不认模型名、不校验文件哈希、不假设词表大小，只做三件事：
+按配置读 GGUF 路径、交给 `llama.cpp` 加载、用模型自带的停止符判停。因此判断标准只有一条：
+
+> **你的 GGUF 架构在 `llama.cpp` 的架构表里，就能用。**
+
+项目依赖 `llama-cpp-sys-2 = 0.1.146`，其内置 `LLM_ARCH_NAMES` 共 **126 个架构**，涵盖
+llama / llama4 / qwen / qwen2 / qwen3 / qwen35 / phi2 / phi3 / gemma–gemma4 / mistral3 / mistral4 /
+glm4 / deepseek2 / granite / olmo2 / smollm3 / ernie4_5 / minimax-m2 等。
+自证方法：`grep -c "{ LLM_ARCH_" ~/.cargo/registry/src/*/llama-cpp-sys-2-0.1.146/llama.cpp/src/llama-arch.cpp`。
+
+**换模型的完整清单（三步）**：
+
+| 步骤 | 位置 | 说明 |
+|---|---|---|
+| ① 改对话抽取模型 | `[llm.gguf].model_path` | 主链路，抽取人物/事件/待办/知识 |
+| ② 改心跳模型 | `[llm.heartbeat].model` | 画像与维护**独立配置**；漏改会继续加载旧模型，旧文件删了就报"模型文件不存在"，画像全线停摆 |
+| ③ 按需调上下文 | `[llm.gguf].context_size` | 默认 4096；长上下文模型不改这项等于白搭 |
+
+**需要预期的一次调试**：对话模板。Gemma（`<start_of_turn>`）与 Qwen（`<|im_start|>`）由代码内置；
+其余家族优先用 GGUF 自带的 Jinja 模板；Jinja 渲染失败才退回 `[INST] … [/INST]`（Mistral 系正确，
+Llama-3 / Phi / GLM 这类若走到该兜底，模型可能复述输入而非输出 JSON，此时用
+`SHOUXIN_SKIP_CHAT_TEMPLATE=1` 反向排查）。量化格式任意（Q4/Q5/Q8 都行），只影响内存与速度：
+3B–7B Q4 适合纯 CPU，7B 以上纯 CPU 会明显变慢（瓶颈是内存带宽，见 PERFORMANCE.md §1.6）。
 
 ---
 

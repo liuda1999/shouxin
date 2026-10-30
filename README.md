@@ -49,7 +49,7 @@
 | **异步抽取** | 写入只做落盘 + 入队，毫秒级返回；抽取在后台队列中进行，失败可重放 |
 | **三库存储** | 关系库（结构化）+ 向量库（语义）+ 字典库（原文，永不删除），写入走强事务 + 补偿 |
 | **原文按天分页** | 每条对话都带发生时间（可指定，用于导入历史）；字典库按"会话日"分页，凌晨 4 点前归前一天，聊到零点也不会被切成两页 |
-| **本地推理** | 内置 `llama.cpp` 推理 GGUF，纯 CPU，无需 GPU / 无需 Ollama |
+| **本地推理** | 内置 `llama.cpp` 推理 GGUF，纯 CPU，无需 GPU / 无需 Ollama；**模型不写死**，任意 llama.cpp 支持的 GGUF 改配置即可换 |
 | **本地嵌入** | FastEmbed + ONNX（`multilingual-e5-base`），中文语义检索；模型缺失时自动降级为离线哈希嵌入 |
 | **语义检索** | 事件 / 联系人 / 学习素材 / 历史对话多路检索 + 智能融合 |
 | **联系人档案** | 姓名 + 别名 + 关系标签 + 人设画像 + 关联事件 + 原文证据；`GET /api/contacts/:id/detail` 一次取全 |
@@ -126,6 +126,11 @@ bash scripts/check_env.sh
 |------|------|------|------|
 | **默认（标准）** | `gemma-4-E4B-it-Q4_K_M` | 4.6 GB | 抽取质量更好，推荐 |
 | **低配 3B** | `Ministral-3-3B-Reasoning-2512-Q8_0` | 3.4 GB | 更省内存、更快起步，用 `config.3b.toml` 启用 |
+
+> **这两档只是预设，模型没有被写死。** 代码不认模型名、不校验哈希，任何 llama.cpp 支持的 GGUF 都能直接换
+> （内置 llama.cpp 支持 126 个架构，含 Qwen / Phi / GLM / DeepSeek / Granite 等），量化格式任意（Q4/Q5/Q8）。
+> 换的时候**两处要同步改**：`[llm.gguf].model_path`（对话抽取）和 `[llm.heartbeat].model`（画像与维护），
+> 只改前者会让心跳继续加载旧模型。细节见 [docs/MODEL_SETUP.md §1.5](docs/MODEL_SETUP.md)。
 
 ```bash
 # 下载脚本依赖 requests（一次性）
