@@ -178,7 +178,7 @@ Embedder initialized (backend: hash, dimension: 768, reason: ...)
 
 ## 3. 视觉塔（mmproj，可选）
 
-mmproj 是 Gemma / Ministral 多模态的视觉投影层。**当前版本（v0.5.0）的抽取链路是纯文本的，
+mmproj 是 Gemma / Ministral 多模态的视觉投影层。**当前版本（v0.6.x）的抽取链路是纯文本的，
 不会加载 mmproj**，下载它只为后续多模态能力预留。不下载不影响任何现有功能。
 
 ```bash

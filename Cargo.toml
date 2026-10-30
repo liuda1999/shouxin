@@ -1,6 +1,6 @@
 [package]
 name = "shouxin"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2021"
 description = "守心：本地优先的智能体记忆子系统（纯 CPU 推理，三库存储，非商业许可）"
 license = "PolyForm-Noncommercial-1.0.0"

@@ -311,6 +311,12 @@ impl TodoListStore {
 
     /// 完成待办事项
     ///
+    /// 幂等语义：`completed_at` 只在首次完成时写入，重复调用不会覆盖
+    /// （否则心跳/对话抽取反复判定"已完成"会让完成时间不断向后漂移）。
+    /// 这里用 `COALESCE` 而不是 `WHERE status != 'completed'`，是为了保持
+    /// `rows_affected()` 的语义不变——匹配但值未变仍计 1 行，避免把
+    /// "重复完成"误判成 "Todo not found"。
+    ///
     /// # 参数
     /// - `todo_id`: 待办唯一 ID
     ///
@@ -323,7 +329,7 @@ impl TodoListStore {
             r#"
             UPDATE todo_list 
             SET status = 'completed',
-                completed_at = ?,
+                completed_at = COALESCE(completed_at, ?),
                 last_updated_at = ?
             WHERE todo_id = ? AND owner_type = ? AND owner_id = ?
             "#,

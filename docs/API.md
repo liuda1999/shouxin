@@ -225,9 +225,10 @@ POST /api/search/smart
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/todos` | 列表 |
+| GET | `/api/todos` | 列表（支持 `status` / `contact_id` / `include_archived` 过滤） |
 | POST | `/api/todos` | 新建 |
-| PUT | `/api/todos/:id/complete` | 完成 |
+| GET | `/api/todos/:id` | 详情 |
+| PUT | `/api/todos/:id/complete` | 完成（**幂等**，见下） |
 | DELETE | `/api/todos/:id` | 删除 |
 
 新建：
@@ -237,6 +238,14 @@ POST /api/search/smart
 ```
 
 `importance`：`high` / `medium` / `low`。
+
+**完成的幂等语义（v0.6.4 起）**：`completed_at` 只在首次完成时写入，重复调用不会覆盖，
+只有 `last_updated_at` 会刷新。这样外部重试、心跳或对话抽取反复判定"已完成"都不会让完成时间向后漂移。
+待办不存在时仍返回失败（错误语义不变）。
+
+**没有字段级更新接口**：本 API 不提供 `PUT/PATCH /api/todos/:id` 改标题、截止时间或重要性
+（这类请求返回 `405`）。调整截止时间走对话链路——抽取出的 `todo_updates` 会调用
+`update_todo_deadline`，且**仅对 `pending` 状态生效**；已完成待办需先删除再新建。
 
 待办默认按活跃度做热冷分层，冷待办仍可查询但降一级优先级。
 

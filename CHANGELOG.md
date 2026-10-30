@@ -1,5 +1,64 @@
 # 变更记录
 
+## [0.6.4] 2026-10-30 — 待办完成幂等：重复标记不再改写完成时间
+
+真实使用模拟（创建 → 完成 → 再完成 → 删除）时发现：`PUT /api/todos/:id/complete`
+重复调用会把 `completed_at` 覆盖成最新时间（实测 `06:30:09` → `06:30:13`）。
+而心跳与对话抽取会**反复**判定同一待办"已完成"，等于完成时间会随每次巡检向后漂移，
+"这件活到底什么时候干完的"这一条审计信息就失真了。
+
+### 修复：`completed_at` 只认首次
+
+`src/stores/relational/todo_list.rs` 的 `complete_todo` 改为：
+
+```sql
+SET status = 'completed',
+    completed_at = COALESCE(completed_at, ?),
+    last_updated_at = ?
+```
+
+- 采用**只冻结 `completed_at`、`last_updated_at` 照常刷新**的方案：重复调用仍视为"又碰了一次"，
+  但不改变完成时刻；
+- 不改 bind 顺序、不加控制流，单文件单语句，**无 schema 变更、无迁移、无 API 契约变化**。
+
+**为什么不用 `WHERE status != 'completed'`**：现有代码用 `rows_affected() == 0` 判断"Todo not found"，
+加上该条件后重复完成会命中 0 行 → 被误判成 404/500。`COALESCE` 让匹配行数仍为 1，错误语义完全不变。
+
+### 影响面（改动前已逐项核查）
+
+| 依赖方 | 结论 |
+|---|---|
+| 待办冷热归档 | 只处理 `status='pending'` 且用 `last_updated_at`，**不读** `completed_at` |
+| 事件过期清理（`maintenance.rs`） | 读的是 **event_index 自己的** `completed_at`，与待办无关 |
+| 统计 / 画像 | 全仓库无按待办 `completed_at` 的聚合；画像不读待办清单 |
+| 列表 / 详情 | 仅展示，`ORDER BY deadline`，不做时间排序 |
+| 现有测试 | 不检查时间值，不会因本次改动失败 |
+
+### 测试
+
+- 新增 `tests/test_todo_complete_idempotent.rs`（4 项）：重复完成时间不变、`last_updated_at` 仍刷新、
+  不存在的 id 仍报错、其它字段不被篡改；
+- `cargo test --features gguf --lib`：**101 passed / 0 failed**；
+- release 二进制端到端（真实 HTTP）：**15/15 通过**，三次调用 `completed_at` 恒为 `06:42:36.233346500Z`，
+  `last_updated_at` 正常前移；`api_smoke_test.sh`：**PASS=37 / FAIL=0 / SKIP=0**。
+
+### 文档与版本
+
+- `docs/API.md` 待办章节：补充幂等语义，并说明**没有字段级更新接口**（`PUT/PATCH /api/todos/:id` → 405，
+  改截止时间走对话抽取的 `update_todo_deadline`，且只对 pending 生效）；
+- `docs/ARCHITECTURE.md` §5：补"完成是幂等的"设计理由；
+- 过时数字修正：README「当前版本 0.6.0 → 0.6.4」、单元测试 89 → **101** 项、
+  集成测试 10 → **11** 个文件、冒烟 36 → **37** 项；
+- `docs/MODEL_SETUP.md`：mmproj 说明里的"当前版本（v0.5.0）"→（v0.6.x）；
+- `Cargo.toml` / `Cargo.lock`：0.6.3 → 0.6.4。
+
+### 未做（按用户意见保留）
+
+- 字段级更新接口（`PATCH /api/todos/:id`）**不实现**，已在 API 文档中说明替代路径；
+- 存量数据里已被污染的 `completed_at` 不自动回填（无法区分"真实完成时间"与"最后一次重复标记"）。
+
+---
+
 ## [0.6.3] 2026-10-30 — 配置标注：云端 API 示例修正与两条已知限制
 
 专项检查"关键配置页能不能找到、能不能把内置模型换成云端 API"时，确认配置文档体系本身是完整的
