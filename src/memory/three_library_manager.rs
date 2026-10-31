@@ -608,8 +608,17 @@ impl ThreeLibraryMemoryManager {
 
         // 保存事件索引到关系库（在map之后单独处理）
         for e in &events {
-            // V1: 使用对话文本前200字符作为去重键，避免 LLM 非确定性导致同一对话产生不同摘要
-            let dedup_key: String = conversation.chars().take(200).collect();
+            // 去重键必须用**事件自身描述**，不能用整段对话。
+            // 用对话做键时，同一段对话的第 2..N 个事件都会命中"已存在"被静默丢弃
+            // （异步路径 background_queue 用的是 event_desc，两条路径必须一致）。
+            let dedup_key: String = format!(
+                "{} {}",
+                e.title.as_deref().unwrap_or(""),
+                e.description.as_str()
+            )
+            .chars()
+            .take(200)
+            .collect();
 
             // D2: 按摘要 + 所有者查重，避免相同事件重复插入
             let owner_type_str = format!("{:?}", owner_type);
@@ -1246,6 +1255,7 @@ impl ThreeLibraryMemoryManager {
         time_range: (DateTime<Utc>, DateTime<Utc>),
         scope: Scope,
         user_id: Option<&str>,
+        limit: usize,
     ) -> Result<Vec<Conversation>, ShouxinError> {
         // 获取所有者信息用于过滤
         let owner_id = match &scope {
@@ -1254,10 +1264,12 @@ impl ThreeLibraryMemoryManager {
         };
 
         // 从字典库按时间范围获取对话
+        // 先多取一些（owner 过滤在内存里做，会筛掉一部分），再按 limit 截断
+        let fetch = limit.saturating_mul(4).max(limit).min(2000);
         let conversations = self.dictionary_store.get_conversation_by_time_range(
             time_range.0,
             time_range.1,
-            100,
+            fetch,
         ).await?;
 
         // 在内存中按 owner 过滤（字典库 trait 暂不支持 owner 过滤参数）。
@@ -1277,6 +1289,7 @@ impl ThreeLibraryMemoryManager {
                         == owner_id,
                 }
             })
+            .take(limit)
             .collect();
 
         Ok(filtered)

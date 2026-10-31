@@ -45,7 +45,29 @@ impl FileProcessor {
         }
     }
 
+    /// 统一的失败收口：任何 `?` 提前返回都不会漏掉"终态 + 清理"
+    ///
+    /// 原实现失败时既不改状态（永远 processing）也不删临时文件（磁盘泄漏），
+    /// 调用方无法区分"处理中"和"已失败"，也没法重试。
     pub async fn process_file(&self, file_id: &str) -> Result<(), ShouxinError> {
+        let result = self.process_file_inner(file_id).await;
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            eprintln!("[FileProcessor] File {} FAILED: {}", file_id, msg);
+            let _ = self
+                .file_store
+                .update_file_status(file_id, "failed", Some(&msg), None)
+                .await;
+            if let Ok(Some(rec)) = self.file_store.get_file(file_id).await {
+                if let Some(path) = rec.original_path.as_ref() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+        result
+    }
+
+    async fn process_file_inner(&self, file_id: &str) -> Result<(), ShouxinError> {
         println!("[FileProcessor] Starting processing for file: {}", file_id);
 
         self.file_store
@@ -73,20 +95,14 @@ impl FileProcessor {
         let full_text = match Self::extract_text(original_path, &file_record.file_type).await {
             Ok(text) => text,
             Err(e) => {
-                let msg = format!("文本提取失败: {}", e);
-                eprintln!("[FileProcessor] {} {}", file_id, msg);
-                self.file_store
-                    .update_file_status(file_id, "failed", Some(&msg), None)
-                    .await?;
-                return Ok(());
+                // 返回 Err 让外层统一收口（写 failed + 删临时文件），
+                // 否则这里 return Ok 会绕过清理，失败一次泄漏一份原文件。
+                return Err(ShouxinError::GeneralError(format!("文本提取失败: {}", e)));
             }
         };
 
         if full_text.is_empty() {
-            self.file_store
-                .update_file_status(file_id, "failed", Some("提取文本为空"), None)
-                .await?;
-            return Ok(());
+            return Err(ShouxinError::GeneralError("提取文本为空".to_string()));
         }
 
         println!("[FileProcessor] Extracted {} chars, chunking...", full_text.len());
@@ -381,30 +397,69 @@ impl FileProcessor {
     }
 
     fn chunk_text(text: &str) -> Vec<FileChunk> {
-        let paragraphs: Vec<&str> = text.split("\n\n").collect();
+        // 单块硬上限：嵌入器上限 100000 字符，这里留足余量。
+        // 原实现只按空行分段，一段没有空行的 5MB 文本只会切出 1 块，必然超限失败。
+        const MAX_CHUNK_CHARS: usize = 1200;
+        const TARGET_CHUNK_CHARS: usize = 2000;
+
+        fn split_oversized(para: &str, max_chars: usize) -> Vec<String> {
+            let mut out = Vec::new();
+            let mut buf = String::new();
+            let mut count = 0usize;
+            for ch in para.chars() {
+                buf.push(ch);
+                count += 1;
+                if count >= max_chars {
+                    // 优先在句读处断开，避免把句子劈成两半
+                    if let Some(pos) = buf.rfind(|c| "。！？；\n".contains(c)) {
+                        // rfind 返回字节下标，必须加上该字符的 UTF-8 长度，
+                        // 否则会在多字节中文/全角标点中间切断（char boundary panic）。
+                        let cut = pos
+                            + buf[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                        let head: String = buf[..cut].to_string();
+                        let tail: String = buf[cut..].to_string();
+                        if !head.trim().is_empty() {
+                            out.push(head);
+                        }
+                        buf = tail;
+                    } else {
+                        out.push(std::mem::take(&mut buf));
+                    }
+                    count = buf.chars().count();
+                }
+            }
+            if !buf.trim().is_empty() {
+                out.push(buf);
+            }
+            out
+        }
+
         let mut chunks = Vec::new();
         let mut current = String::new();
         let mut chunk_idx = 0;
 
-        for para in paragraphs {
+        for para in text.split("\n\n") {
             let trimmed = para.trim();
             if trimmed.is_empty() {
                 continue;
             }
-
-            if current.len() + trimmed.len() > 2000 && !current.is_empty() {
-                chunks.push(FileChunk {
-                    index: chunk_idx,
-                    content: std::mem::take(&mut current),
-                    embedding_id: None,
-                });
-                chunk_idx += 1;
+            for piece in split_oversized(trimmed, MAX_CHUNK_CHARS) {
+                // +1 是分隔用的换行符，否则拼出来的块会刚好超 1 个字符
+                if current.chars().count() + piece.chars().count() + 1 > TARGET_CHUNK_CHARS
+                    && !current.is_empty()
+                {
+                    chunks.push(FileChunk {
+                        index: chunk_idx,
+                        content: std::mem::take(&mut current),
+                        embedding_id: None,
+                    });
+                    chunk_idx += 1;
+                }
+                if !current.is_empty() {
+                    current.push('\n');
+                }
+                current.push_str(&piece);
             }
-
-            if !current.is_empty() {
-                current.push('\n');
-            }
-            current.push_str(trimmed);
         }
 
         if !current.is_empty() {
@@ -416,5 +471,29 @@ impl FileProcessor {
         }
 
         chunks
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::FileProcessor;
+
+    /// X-06 回归：无空行的大文本必须被切成多块，且每块都远小于嵌入器上限
+    #[test]
+    fn test_chunk_long_text_without_blank_lines() {
+        // 100 万字符、没有任何空行
+        let text = "这是一段用于测试分块的连续中文内容，没有任何空行。".repeat(20000);
+        let chunks = FileProcessor::chunk_text(&text);
+        assert!(chunks.len() > 100, "应切成多块，实际 {} 块", chunks.len());
+        let max_len = chunks.iter().map(|c| c.content.chars().count()).max().unwrap_or(0);
+        assert!(max_len <= 2000, "单块过大: {}", max_len);
+    }
+
+    /// 正常短文本仍保持单块，不能因为加硬上限把短文切碎
+    #[test]
+    fn test_chunk_short_text_single() {
+        let chunks = FileProcessor::chunk_text("第一段。\n\n第二段。");
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].content.contains("第一段"));
     }
 }

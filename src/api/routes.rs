@@ -284,6 +284,12 @@ pub struct ConfirmMergeResponse {
 /// 搜索历史对话请求
 #[derive(Debug, Deserialize)]
 pub struct SearchHistoryRequest {
+    /// 检索关键词（可选；为空时等价于"按时间列出"）
+    #[serde(default)]
+    pub query: Option<String>,
+    /// 返回条数（默认 50，上限 200）
+    #[serde(default)]
+    pub limit: Option<usize>,
     /// 开始时间（RFC3339 格式，可选）
     #[serde(default)]
     pub start_time: Option<String>,
@@ -2031,6 +2037,48 @@ async fn confirm_event_merge(
     }
 }
 
+/// 把一句自然语言 query 切成可匹配的词
+///
+/// 之前整串 `LIKE '%query%'`，于是"李明最近有什么变化"这种自然语言问法必然 0 命中。
+/// 这里做两件事：① 按标点/空白切分；② 之后再把 query 里出现的**已有联系人姓名**
+/// 也补进候选词（中文没有空格，用已知实体反切是当前成本最低的可行解）。
+fn split_query_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for raw in query.split(|c: char| {
+        c.is_whitespace() || "，。、！？；：,.?!;:\"'“”‘’（）()【】[]{}".contains(c)
+    }) {
+        let t = raw.trim();
+        if t.chars().count() >= 2 && !terms.iter().any(|x| x == t) {
+            terms.push(t.to_string());
+        }
+    }
+    // query 全是单字/标点时兜底用整串，避免 terms 为空
+    if terms.is_empty() && !query.trim().is_empty() {
+        terms.push(query.trim().to_string());
+    }
+    terms
+}
+
+/// 把 query 中出现的联系人姓名补进候选词
+async fn expand_terms_with_contacts(
+    memory: &AsyncMemory,
+    terms: &mut Vec<String>,
+    raw_query: &str,
+    scope: Scope,
+    user_id: Option<&str>,
+) {
+    if let Ok(contacts) = memory.search_contacts("", 200, scope, user_id, true, true).await {
+        for c in contacts {
+            if c.name.chars().count() >= 2
+                && raw_query.contains(&c.name)
+                && !terms.iter().any(|t| t == &c.name)
+            {
+                terms.push(c.name);
+            }
+        }
+    }
+}
+
 /// 搜索历史对话
 async fn search_history(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
@@ -2067,8 +2115,47 @@ async fn search_history(
         None => Utc::now(),
     };
 
-    match async_memory.search_history((start_time, end_time), req.scope, req.user_id.as_deref()).await {
-        Ok(history) => ApiResponse::success(history),
+    // 检索：先按 query 分词（+ 联系人名反切），再在时间范围内过滤
+    let limit = req.limit.unwrap_or(50).clamp(1, 200);
+    let mut terms: Vec<String> = req
+        .query
+        .as_deref()
+        .map(split_query_terms)
+        .unwrap_or_default();
+    if let Some(raw) = req.query.as_deref().filter(|q| !q.trim().is_empty()) {
+        expand_terms_with_contacts(
+            &async_memory,
+            &mut terms,
+            raw,
+            req.scope,
+            req.user_id.as_deref(),
+        )
+        .await;
+    }
+
+    match async_memory
+        .search_history(
+            (start_time, end_time),
+            req.scope,
+            req.user_id.as_deref(),
+            limit,
+        )
+        .await
+    {
+        Ok(history) => {
+            let filtered: Vec<Conversation> = if terms.is_empty() {
+                history
+            } else {
+                history
+                    .into_iter()
+                    .filter(|h| {
+                        let content = h.content.to_lowercase();
+                        terms.iter().any(|t| content.contains(&t.to_lowercase()))
+                    })
+                    .collect()
+            };
+            ApiResponse::success(filtered.into_iter().take(limit).collect())
+        }
         Err(e) => {
             error!("搜索历史对话失败: {}", e);
             ApiResponse::error("内部错误".to_string())
@@ -2162,8 +2249,21 @@ async fn get_learning_material(
 /// 添加待办事项
 async fn add_todo(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
+    Query(params): Query<ScopeQueryParams>,
     Json(mut req): Json<AddTodoRequest>,
 ) -> ApiResponse<TodoItem> {
+    // X-02: GET 认 query、POST 只认 body，导致 `POST /api/todos?user_id=alice`
+    // 静默写进 default_user。这里统一参数来源：body 优先，query 兜底。
+    if req.user_id.is_none() {
+        if let Some(uid) = params.user_id.clone() {
+            req.user_id = Some(uid);
+        }
+    }
+    if params.scope.is_some() && req.scope == Scope::User {
+        if let Some(scope) = params.scope {
+            req.scope = scope;
+        }
+    }
     // S-09: 验证 user_id 格式
     if let Err(e) = validate_user_id(&req.user_id) {
         return ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST);
@@ -2506,6 +2606,10 @@ pub struct SmartSearchResponse {
     pub events: Vec<serde_json::Value>,
     pub history: Vec<serde_json::Value>,
     pub todos: Vec<serde_json::Value>,
+    /// 实际参与匹配的词（分词结果 + 从 query 里识别出的联系人名）
+    ///
+    /// 全空结果时调用方可以据此区分"确实没有记忆"与"问法没被识别"。
+    pub matched_terms: Vec<String>,
 }
 
 /// 智能搜索
@@ -2521,61 +2625,121 @@ async fn smart_search(
     if let Err(e) = validate_user_id(&req.user_id) {
         return ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST);
     }
+    // 合理限制每个类型的结果数量，避免超时（S-10: 上限 20，低于 MAX_SEARCH_LIMIT）
+    let limit = req.limit.unwrap_or(10);
+    let safe_limit = std::cmp::min(limit as usize, 20);
+
+    let mut terms = split_query_terms(&req.query);
+    expand_terms_with_contacts(
+        &async_memory,
+        &mut terms,
+        &req.query,
+        req.scope,
+        req.user_id.as_deref(),
+    )
+    .await;
+
     let mut response = SmartSearchResponse {
         contacts: Vec::new(),
         events: Vec::new(),
         history: Vec::new(),
         todos: Vec::new(),
+        matched_terms: terms.clone(),
     };
-
-    // 合理限制每个类型的结果数量，避免超时（S-10: 上限 20，低于 MAX_SEARCH_LIMIT）
-    let limit = req.limit.unwrap_or(10);
-    let safe_limit = std::cmp::min(limit as usize, 20);
-    let query_lower = req.query.to_lowercase();
 
     for search_type in &req.types {
         match search_type.as_str() {
             "contacts" => {
-                if let Ok(contacts) = async_memory.search_contacts(&req.query, safe_limit, req.scope, req.user_id.as_deref(), false, false).await {
-                    response.contacts = contacts.into_iter().map(|c| serde_json::to_value(c).unwrap_or_default()).collect();
+                let mut seen = std::collections::HashSet::new();
+                for term in &terms {
+                    if response.contacts.len() >= safe_limit {
+                        break;
+                    }
+                    if let Ok(list) = async_memory
+                        .search_contacts(term, safe_limit, req.scope, req.user_id.as_deref(), false, false)
+                        .await
+                    {
+                        for c in list {
+                            if response.contacts.len() >= safe_limit {
+                                break;
+                            }
+                            if seen.insert(c.contact_id.clone()) {
+                                response.contacts.push(serde_json::to_value(c).unwrap_or_default());
+                            }
+                        }
+                    }
                 }
             }
             "events" => {
-                // 与 /api/memory/search/events 保持一致：默认包含归档，否则智能检索同样看不到历史
-                let filter = crate::traits::store_traits::EventFilter::default()
-                    .with_search_query(req.query.clone())
-                    .with_include_archived(true)
-                    .with_limit(safe_limit);
-                if let Ok(events) = async_memory.search_events(filter, req.scope, req.user_id.as_deref()).await {
-                    response.events = events.into_iter().map(|e| serde_json::to_value(e).unwrap_or_default()).collect();
+                let mut seen = std::collections::HashSet::new();
+                for term in &terms {
+                    if response.events.len() >= safe_limit {
+                        break;
+                    }
+                    let filter = crate::traits::store_traits::EventFilter::default()
+                        .with_search_query(term.clone())
+                        .with_include_archived(true)
+                        .with_limit(safe_limit);
+                    if let Ok(events) = async_memory
+                        .search_events(filter, req.scope, req.user_id.as_deref())
+                        .await
+                    {
+                        for e in events {
+                            if response.events.len() >= safe_limit {
+                                break;
+                            }
+                            if seen.insert(e.event_id.clone()) {
+                                response.events.push(serde_json::to_value(e).unwrap_or_default());
+                            }
+                        }
+                    }
                 }
             }
             "todos" => {
-                let filter = crate::api::TodoFilter::new().with_limit(safe_limit as i64);
-                if let Ok(todos) = async_memory.list_todos(filter, req.scope, req.user_id.as_deref()).await {
-                    // 在内存中过滤待办事项（因为API不支持关键词搜索）
-                    let filtered_todos: Vec<_> = todos.into_iter()
-                        .filter(|t| {
-                            t.title.to_lowercase().contains(&query_lower) ||
-                            t.description.as_ref().is_some_and(|d| d.to_lowercase().contains(&query_lower))
-                        })
-                        .take(safe_limit)
-                        .collect();
-                    response.todos = filtered_todos.into_iter().map(|t| serde_json::to_value(t).unwrap_or_default()).collect();
+                // 先取足量候选再过滤：原实现"先截断 safe_limit 条再过滤"，
+                // 目标排在第 N+1 位就永远查不到。
+                let filter = crate::api::TodoFilter::new().with_limit(500);
+                if let Ok(todos) = async_memory
+                    .list_todos(filter, req.scope, req.user_id.as_deref())
+                    .await
+                {
+                    for t in todos {
+                        if response.todos.len() >= safe_limit {
+                            break;
+                        }
+                        let hay = format!(
+                            "{} {}",
+                            t.title,
+                            t.description.clone().unwrap_or_default()
+                        )
+                        .to_lowercase();
+                        if terms.iter().any(|term| hay.contains(&term.to_lowercase())) {
+                            response.todos.push(serde_json::to_value(t).unwrap_or_default());
+                        }
+                    }
                 }
             }
             "history" => {
+                // 不再硬编码 30 天：对话原文没有冷热分区、永久保留，按需回溯。
                 let time_range = (
-                    Utc::now().checked_sub_signed(chrono::Duration::days(30)).unwrap(),
+                    Utc::now()
+                        .checked_sub_signed(chrono::Duration::days(365 * 5))
+                        .unwrap(),
                     Utc::now(),
                 );
-                if let Ok(history) = async_memory.search_history(time_range, req.scope, req.user_id.as_deref()).await {
-                    // 在内存中过滤历史记录（因为API不支持关键词搜索）
-                    let filtered_history: Vec<_> = history.into_iter()
-                        .filter(|h| h.content.to_lowercase().contains(&query_lower))
-                        .take(safe_limit)
-                        .collect();
-                    response.history = filtered_history.into_iter().map(|h| serde_json::to_value(h).unwrap_or_default()).collect();
+                if let Ok(history) = async_memory
+                    .search_history(time_range, req.scope, req.user_id.as_deref(), 200)
+                    .await
+                {
+                    for h in history {
+                        if response.history.len() >= safe_limit {
+                            break;
+                        }
+                        let content = h.content.to_lowercase();
+                        if terms.iter().any(|term| content.contains(&term.to_lowercase())) {
+                            response.history.push(serde_json::to_value(h).unwrap_or_default());
+                        }
+                    }
                 }
             }
             _ => {}

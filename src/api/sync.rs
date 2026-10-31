@@ -111,7 +111,7 @@ impl SyncMemory {
         time_range: (DateTime<Utc>, DateTime<Utc>),
     ) -> Result<Vec<Conversation>, ShouxinError> {
         self.runtime
-            .block_on(self.async_memory.search_history(time_range, Scope::User, None))
+            .block_on(self.async_memory.search_history(time_range, Scope::User, None, 100))
     }
 
     /// 语义搜索

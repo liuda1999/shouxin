@@ -976,12 +976,32 @@ impl BackgroundTaskQueue {
                     "medium".to_string()
                 };
 
-                // Try to match assigned_to to an extracted person's contact_id
+                // 把 assigned_to 映射成**落库后**的联系人 id
+                //
+                // 原实现直接沿用抽取阶段的 `p.contact_id`（合并/去重前的临时 id），
+                // 实测 50% 的待办挂着悬空 id：/api/contacts/:id/detail 查不到关联待办。
+                // 这里先过 person_id -> final_contact_id 映射，再按姓名回查权威 id。
                 let contact_ids: Vec<String> = if let Some(ref assigned_to) = extracted_todo.assigned_to {
-                    elements.persons.iter()
+                    let mut ids: Vec<String> = elements
+                        .persons
+                        .iter()
                         .filter(|p| p.name == *assigned_to)
-                        .map(|p| p.contact_id.clone())
-                        .collect()
+                        .filter_map(|p| person_id_to_contact_id.get(&p.contact_id).cloned())
+                        .collect();
+                    if ids.is_empty() {
+                        if let Ok(list) = state
+                            .relational
+                            .get_active_contacts(task.owner_type, &task.owner_id, 200)
+                            .await
+                        {
+                            ids = list
+                                .iter()
+                                .filter(|c| c.name == *assigned_to)
+                                .map(|c| c.id.clone())
+                                .collect();
+                        }
+                    }
+                    ids
                 } else {
                     Vec::new()
                 };

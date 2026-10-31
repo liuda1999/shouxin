@@ -323,8 +323,9 @@ impl AsyncMemory {
         time_range: (DateTime<Utc>, DateTime<Utc>),
         scope: Scope,
         user_id: Option<&str>,
+        limit: usize,
     ) -> Result<Vec<Conversation>, ShouxinError> {
-        self.manager.search_history(time_range, scope, user_id).await
+        self.manager.search_history(time_range, scope, user_id, limit).await
     }
 
     /// 语义搜索

@@ -123,11 +123,29 @@ fn parse_absolute_time(text: &str, reference_time: DateTime<Utc>) -> Option<Date
         return build_datetime(year, month, day, hour, minute);
     }
 
-    // 4) 月日：6月15日 / 6-15
+    // 4) 月日：6月15日 / 6-15 / 12月20号
     if let Some(caps) = re_md().captures(text) {
         let month = caps.get(1)?.as_str().parse::<u32>().ok()?;
         let day = caps.get(2)?.as_str().parse::<u32>().ok()?;
         let year = infer_year(today, month, day);
+        return build_datetime(year, month, day, 0, 0);
+    }
+
+    // 4.5) 只有"X号"：本月的 X 号；若已过则归下月
+    //
+    // 之前扫描器会把 "12月20号" 截成 "20号" 丢月份，而解析器又没有"号"分支，
+    // 于是直接返回 None，最后落到默认 +7 天（甚至借用了下一句的"月底"）。
+    if let Some(caps) = re_day_only().captures(text) {
+        let day = caps.get(1)?.as_str().parse::<u32>().ok()?;
+        let (mut year, mut month) = (today.year(), today.month());
+        if day < today.day() {
+            if month == 12 {
+                year += 1;
+                month = 1;
+            } else {
+                month += 1;
+            }
+        }
         return build_datetime(year, month, day, 0, 0);
     }
 
@@ -199,7 +217,9 @@ static_regex!(
     re_md_hm,
     r"(\d{1,2})\s*[月\-/]\s*(\d{1,2})\s*日?\s+(\d{1,2})[:：](\d{2})"
 );
-static_regex!(re_md, r"(\d{1,2})\s*[月\-/]\s*(\d{1,2})\s*日?");
+static_regex!(re_md, r"(\d{1,2})\s*[月\-/]\s*(\d{1,2})\s*[日号]?");
+// 只有日期没有月份：20号 / 20日
+static_regex!(re_day_only, r"(\d{1,2})\s*[号日]");
 static_regex!(
     re_today_hm,
     r"(?:今天|明天)\s*(\d{1,2})\s*[:：]\s*(\d{2})"
@@ -778,7 +798,14 @@ pub fn resolve_deadline_in_text(
         Some((_, idx, sentence)) => {
             let mut v = vec![sentence];
             if let Some(next) = sentences.get(idx + 1) {
-                v.push(next);
+                // 只有"下一句本身也在说这件事"时才允许借用它的时间。
+                // 否则会出现：句1 说"12月20号前交总结"（解析失败），句2 说"月底给王芳过生日"，
+                // 结果把句2 的"月底"当成句1 的截止时间（实测记成当天，6 小时后过期消失）。
+                let hit = title_chars.iter().filter(|c| next.contains(**c)).count();
+                let ratio = hit as f32 / title_len as f32;
+                if hit >= 2 && ratio >= 0.5 {
+                    v.push(next);
+                }
             }
             v
         }
@@ -821,7 +848,7 @@ pub fn resolve_deadline_in_text(
 /// 找出句中所有"精确时间表达"及其结束位置（字节偏移）
 fn find_time_exprs_with_pos(sentence: &str) -> Vec<(String, usize)> {
     let re = match regex::Regex::new(
-        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|(?:[一二两三四五六七八九十\d]+\s*(?:天|日|周|星期|个月|月|年)\s*(?:以后|之后|后))|半年后|\d{1,2}月\d{1,2}日|\d{1,2}号)",
+        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|(?:[一二两三四五六七八九十\d]+\s*(?:天|日|周|星期|个月|月|年)\s*(?:以后|之后|后))|半年后|\d{1,2}月\d{1,2}[日号]|\d{1,2}号)",
     ) {
         Ok(re) => re,
         Err(_) => return Vec::new(),
@@ -847,7 +874,7 @@ fn find_time_exprs(sentence: &str) -> Vec<String> {
 /// 截止日是"下周一"而不是"下季度"（后者会让日期偏到季度初）。
 fn find_precise_time_expr(sentence: &str) -> Option<String> {
     let re = regex::Regex::new(
-        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|上个月|下个月|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|(?:[一二两三四五六七八九十\d]+\s*(?:天|日|周|星期|个月|月|年)\s*(?:以后|之后|后))|半年后|\d{1,2}月\d{1,2}日|\d{1,2}号)",
+        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|上个月|下个月|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|(?:[一二两三四五六七八九十\d]+\s*(?:天|日|周|星期|个月|月|年)\s*(?:以后|之后|后))|半年后|\d{1,2}月\d{1,2}[日号]|\d{1,2}号)",
     )
     .ok()?;
     re.find(sentence).map(|m| m.as_str().to_string())
@@ -922,5 +949,23 @@ mod deadline_tests {
         let c3 = "两周后要交体检报告。";
         let d3 = resolve_deadline_in_text(c3, "交体检报告", ref_time()).unwrap();
         assert_eq!(d3.date_naive().to_string(), "2026-11-11");
+    }
+
+    /// 回归：X-05「12月20号」不能被截成「20号」，也不能借用下一句的「月底」
+    #[test]
+    fn test_deadline_x_hao_and_no_cross_sentence_borrow() {
+        use chrono::TimeZone;
+        let r = Utc.with_ymd_and_hms(2026, 10, 30, 12, 0, 0).unwrap();
+        let d = |s: &str| parse_event_time(s, r).map(|x| x.date_naive().to_string());
+
+        assert_eq!(d("12月20号"), Some("2026-12-20".to_string()));
+        assert_eq!(d("12月20日"), Some("2026-12-20".to_string()));
+        // 只有"20号"：本月已过 → 下月 20 号
+        assert_eq!(d("20号"), Some("2026-11-20".to_string()));
+
+        // 句1 有明确截止日期，句2 的"月底"不得被借用
+        let c = "提醒我12月20号前把年度总结交上去。另外月底要给王芳过生日，她喜欢蓝色的东西。";
+        let dt = resolve_deadline_in_text(c, "提交年度总结", r).expect("应解析出 12月20号");
+        assert_eq!(dt.date_naive().to_string(), "2026-12-20");
     }
 }

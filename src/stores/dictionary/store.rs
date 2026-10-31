@@ -1644,9 +1644,13 @@ impl DictionaryStoreTrait for DictionaryStore {
 
         // 直接走时间索引区间：字典序即时间序，避免按自然日一个月一个月地拼前缀
         // （旧实现按 `%Y-%m-%d` 前缀遍历，跨 cutoff 的凌晨对话会漏）。
+        // 倒序遍历：最近写入的对话优先进入结果集。
+        // 原实现正序 + 取满即停，拿到的是**最旧的** limit 条——对话超过 100 条后，
+        // 最新记忆永远进不了结果（实测 sort 之后又按时间正序排，问题被掩盖）。
         for item in self
             .conversation_ts_index
             .range(start_time.to_rfc3339().as_bytes()..end_time.to_rfc3339().as_bytes())
+            .rev()
         {
             let (_, conv_key_bytes) = item?;
             let conv_key = String::from_utf8_lossy(&conv_key_bytes);
@@ -1679,7 +1683,8 @@ impl DictionaryStoreTrait for DictionaryStore {
             }
         }
 
-        conversations.sort_by_key(|c| c.created_at);
+        // 统一为时间倒序（最新在前）
+        conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(conversations)
     }
 

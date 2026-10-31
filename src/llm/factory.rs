@@ -71,6 +71,11 @@ fn build_client(
                         "model_path".to_string(),
                         serde_json::Value::String(gguf.model_path.clone()),
                     );
+                    // X-11: 把 [llm].timeout_secs 透传给 GGUF 客户端，替换硬编码 180s
+                    params.insert(
+                        "timeout_secs".to_string(),
+                        serde_json::Value::Number(settings.timeout_secs.into()),
+                    );
                     params.insert(
                         "context_size".to_string(),
                         serde_json::Value::Number(gguf.context_size.into()),

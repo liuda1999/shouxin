@@ -80,6 +80,8 @@ pub struct GgufClient {
     model_handle: Arc<tokio::sync::RwLock<Option<GgufModelHandle>>>,
     inference_semaphore: Arc<Semaphore>,
     gpu_enabled: bool,
+    /// 单次推理超时（秒）。来自 [llm].timeout_secs，原先硬编码 180s 导致配置无效。
+    timeout_secs: u64,
 }
 
 struct GgufModelHandle {
@@ -200,6 +202,13 @@ impl GgufClient {
             gpu_max_cpu_percent
         );
 
+        let timeout_secs = config
+            .extra_params
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(180)
+            .clamp(30, 3600);
+
         Self {
             model_path,
             context_size,
@@ -212,6 +221,7 @@ impl GgufClient {
             model_handle: Arc::new(tokio::sync::RwLock::new(None)),
             inference_semaphore: Arc::new(Semaphore::new(1)),
             gpu_enabled,
+            timeout_secs,
         }
     }
 
@@ -621,7 +631,7 @@ impl GgufClient {
             Ok(generated)
         });
 
-        let timeout_duration = std::time::Duration::from_secs(180);
+        let timeout_duration = std::time::Duration::from_secs(self.timeout_secs);
         let join_result = tokio::time::timeout(timeout_duration, inference_join).await;
 
         let generated = match join_result {
