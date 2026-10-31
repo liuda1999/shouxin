@@ -1,5 +1,55 @@
 # 变更记录
 
+## [0.7.6] 2026-11-01 — 同一份模型只加载一次，推理串行化（内存 13.5GB → 7.1GB）
+
+用户问「既然是同一个模型，为什么要装两份？」——答案是：不该装两份，是装配方式没有共享。
+
+### 现象
+
+| 指标 | 修复前 |
+|---|---|
+| 进程 RSS | **13.5 GB**（模型 5GB × 2） |
+| `Loading GGUF model from` 日志 | **2 次**，同一个 `.gguf` 路径 |
+| 心跳 LLM | 每轮 **300s 超时**（`LLM heartbeat timed out after 300s`） |
+| 抽取队列 | 卡在 `2 pending + 1 processing` 数分钟不动 |
+| 推理期间 CPU | 54–63%，但是两路推理在互相抢 |
+
+### 根因
+
+`build_client`（抽取）与 `build_heartbeat_client`（心跳）各自 `GgufClient::new`，每个实例自带：
+
+```rust
+model_handle: Arc::new(RwLock::new(None)),   // 各加载一份 5GB 权重
+inference_semaphore: Arc::new(Semaphore::new(1)),  // 互不知情
+```
+
+两者用的是**同一个** `config.toml` 里的模型路径，只是 temperature / max_tokens /
+context / batch 不同——这些是调用参数，没有任何理由复制权重。
+
+后果是双重浪费：内存翻倍；且两个信号量互不可见，心跳与抽取同时推理，
+38 线程抢 16 物理核，双双慢到超时（这正是测试报告里的 **X-22「信号量每实例独立」**）。
+
+### 修复
+
+- 新增进程级 **ModelSlot**，按 `模型路径 + n_gpu_layers` 做键共享
+  `model_handle` 与 `inference_semaphore`；
+- `ensure_loaded` 增加加载互斥 + 二次检查，避免两个客户端同时看到 `None`
+  而各加载一份；
+- 不同模型文件仍然各自独立（不会误共用）。
+
+### 验证
+
+| 项 | 修复前 | 修复后 |
+|---|---|---|
+| RSS | 13.5 GB | **7.15 GB** |
+| 模型加载次数 | 2 | **1** |
+| 心跳 LLM | 300s 超时 | **10 ms 完成，0 次超时** |
+| 3 条对话抽取（含 2 条积压） | 卡住数分钟 | **60 秒跑完**（约 20s/条） |
+| `cargo test --lib` | 117 | **119**（新增共享槽位 2 项） |
+| 冒烟 | — | **PASS=39 FAIL=0 SKIP=1** |
+| 日志 | 0 ERROR / 0 PANIC | 0 ERROR / 0 PANIC |
+
+
 ## [0.7.5] 2026-11-01 — 修正 CPU 预算口径：允许真正用到整机 60%
 
 用户反馈「运行时 CPU 只用 30%，怀疑模型没在推理」。实测结论：**模型在推理，但线程被压到 9 个**。

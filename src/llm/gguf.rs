@@ -79,6 +79,8 @@ pub struct GgufClient {
     max_tokens: Option<u32>,
     model_handle: Arc<tokio::sync::RwLock<Option<GgufModelHandle>>>,
     inference_semaphore: Arc<Semaphore>,
+    /// 加载互斥：多个客户端共享同一槽位时，避免并发重复加载 5GB 模型
+    load_lock: Arc<tokio::sync::Mutex<()>>,
     gpu_enabled: bool,
     /// 单次推理超时（秒）。来自 [llm].timeout_secs，原先硬编码 180s 导致配置无效。
     timeout_secs: u64,
@@ -90,6 +92,42 @@ struct GgufModelHandle {
 
 unsafe impl Send for GgufModelHandle {}
 unsafe impl Sync for GgufModelHandle {}
+
+/// 进程内共享的模型槽位
+///
+/// **同一个 .gguf 只应加载一次、只应有一个推理信号量。**
+///
+/// 之前主客户端（抽取）与心跳客户端各自 `GgufClient::new`，各自：
+/// - `model_handle = None` → 各加载一份 5GB 模型（实测 RSS 13.5GB）；
+/// - `Semaphore::new(1)` → 互不知情，两路推理同时跑，38 线程抢 16 物理核，
+///   心跳每轮 300s 超时、抽取任务迟迟不结束。
+///
+/// 两者用同一份权重、只是调用参数（temperature / max_tokens / context）不同，
+/// 没有任何理由复制权重。这里按"模型路径 + GPU 层数"做键共享。
+struct ModelSlot {
+    handle: Arc<tokio::sync::RwLock<Option<GgufModelHandle>>>,
+    semaphore: Arc<Semaphore>,
+    load_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+fn shared_slot(key: &str) -> Arc<ModelSlot> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static SLOTS: OnceLock<Mutex<HashMap<String, Arc<ModelSlot>>>> = OnceLock::new();
+    let map = SLOTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(key.to_string())
+        .or_insert_with(|| {
+            Arc::new(ModelSlot {
+                handle: Arc::new(tokio::sync::RwLock::new(None)),
+                semaphore: Arc::new(Semaphore::new(1)),
+                load_lock: Arc::new(tokio::sync::Mutex::new(())),
+            })
+        })
+        .clone()
+}
 
 impl GgufClient {
     pub fn new(config: LlmConfig) -> Self {
@@ -213,6 +251,11 @@ impl GgufClient {
             .unwrap_or(180)
             .clamp(30, 3600);
 
+        // 按"模型路径 + GPU 层数"取进程级共享槽位：
+        // 同一份权重只加载一次，也只有一个推理信号量。
+        let slot_key = format!("{}|ngl={}", model_path.display(), n_gpu_layers);
+        let slot = shared_slot(&slot_key);
+
         Self {
             model_path,
             context_size,
@@ -222,8 +265,9 @@ impl GgufClient {
             offload_kv_cache,
             temperature: config.temperature.clamp(0.0, 2.0),
             max_tokens: config.max_tokens,
-            model_handle: Arc::new(tokio::sync::RwLock::new(None)),
-            inference_semaphore: Arc::new(Semaphore::new(1)),
+            model_handle: slot.handle.clone(),
+            inference_semaphore: slot.semaphore.clone(),
+            load_lock: slot.load_lock.clone(),
             gpu_enabled,
             timeout_secs,
         }
@@ -375,6 +419,16 @@ impl GgufClient {
     }
 
     async fn ensure_loaded(&self) -> Result<()> {
+        {
+            let handle = self.model_handle.read().await;
+            if handle.is_some() {
+                return Ok(());
+            }
+        }
+
+        // 共享槽位下两个客户端可能同时进入这里：串行化加载，
+        // 否则两边都会看到 None 并各加载一份 5GB。
+        let _loading = self.load_lock.lock().await;
         {
             let handle = self.model_handle.read().await;
             if handle.is_some() {
@@ -1004,6 +1058,59 @@ pub(crate) fn logical_cores() -> usize {
         .map(|n| n.get())
         .unwrap_or(1)
         .max(1)
+}
+
+#[cfg(test)]
+mod shared_slot_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn cfg(path: &str, ngl: u64) -> crate::traits::llm::LlmConfig {
+        let mut extra = HashMap::new();
+        extra.insert(
+            "model_path".to_string(),
+            serde_json::Value::String(path.to_string()),
+        );
+        extra.insert(
+            "n_gpu_layers".to_string(),
+            serde_json::Value::Number(ngl.into()),
+        );
+        crate::traits::llm::LlmConfig {
+            model: "gguf-local".to_string(),
+            endpoint: None,
+            temperature: 0.2,
+            max_tokens: Some(512),
+            system_prompt: None,
+            extra_params: extra,
+        }
+    }
+
+    /// 同一份权重只加载一次、只有一个推理信号量
+    ///
+    /// 回归：主客户端与心跳客户端各自 new，导致 5GB 模型装两份（RSS 13.5GB），
+    /// 且两个信号量互不知情 → 两路推理同时跑，心跳 300s 超时。
+    #[test]
+    fn same_model_path_shares_handle_and_semaphore() {
+        let a = GgufClient::new(cfg("/tmp/shared-slot-test.gguf", 0));
+        let b = GgufClient::new(cfg("/tmp/shared-slot-test.gguf", 0));
+        assert!(Arc::ptr_eq(&a.model_handle, &b.model_handle), "模型句柄应共享");
+        assert!(
+            Arc::ptr_eq(&a.inference_semaphore, &b.inference_semaphore),
+            "推理信号量应共享（否则并发抢 CPU）"
+        );
+    }
+
+    /// 不同模型文件必须各自独立（不能因为"都是 gguf"就共用）
+    ///
+    /// 注：槽位键含 `n_gpu_layers`，但纯 CPU 模式下它恒为 0
+    /// （未编译 CUDA 后端时 `use_gpu` 会被回退），所以这里只验证路径维度。
+    #[test]
+    fn different_model_path_gets_separate_slot() {
+        let a = GgufClient::new(cfg("/tmp/slot-a.gguf", 0));
+        let b = GgufClient::new(cfg("/tmp/slot-b.gguf", 0));
+        assert!(!Arc::ptr_eq(&a.model_handle, &b.model_handle), "不同模型不能共用");
+        assert!(!Arc::ptr_eq(&a.inference_semaphore, &b.inference_semaphore));
+    }
 }
 
 #[cfg(test)]
