@@ -1585,6 +1585,16 @@ async fn create_backup(
             )
         });
 
+    // VACUUM INTO 不会覆盖已存在的文件（SQLite 直接报 "output file already exists"）。
+    // 这不是服务端故障，提前拦成 400 并说清怎么处理，避免每次定时备份都刷一条 ERROR。
+    if std::path::Path::new(&path).exists() {
+        warn!("备份目标已存在，拒绝覆盖: {}", path);
+        return ApiResponse::error_with_status(
+            format!("备份目标已存在：{}。请换一个路径，或先删除旧文件", path),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
     match async_memory.get_relational_store().snapshot_to(&path).await {
         Ok(size) => ApiResponse::success(serde_json::json!({
             "path": path,
@@ -2066,8 +2076,14 @@ async fn confirm_event_merge(
             event_id: Some(event_id),
         }),
         Err(e) => {
-            error!("确认合并失败: {}", e);
-            ApiResponse::error("内部错误".to_string())
+            // 目标不存在/已处理属于调用方问题，不能占用 ERROR 通道
+            if matches!(e, crate::error::ShouxinError::EntityNotFound(_)) {
+                warn!("确认合并失败（目标不存在）: {}", e);
+                ApiResponse::error(format!("{}", e))
+            } else {
+                error!("确认合并失败: {}", e);
+                ApiResponse::error("内部错误".to_string())
+            }
         }
     }
 }
@@ -2628,6 +2644,10 @@ async fn answer_question(
 ) -> ApiResponse<()> {
     tracing::debug!("Received answer for question {}: {}", req.question_id, req.answer);
     if let Err(e) = scheduler.question_pool().resolve_question(&req.question_id, &req.answer).await {
+        if matches!(e, crate::error::ShouxinError::EntityNotFound(_)) {
+            warn!("回答问题失败（问题不存在）: {}", e);
+            return ApiResponse::error(format!("{}", e));
+        }
         error!("回答问题失败: {}", e);
         return ApiResponse::error("内部错误".to_string());
     }

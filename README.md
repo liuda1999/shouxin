@@ -6,7 +6,7 @@
 
 **给智能体挂载的本地记忆子系统：对话进得去，事实落得住，换种问法也能想起来。**
 
-[![version](https://img.shields.io/badge/version-0.7.2-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.7.3-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 [![tests](https://img.shields.io/badge/tests-109%20unit%20%2B%2013%20suites-brightgreen)](docs/ARCHITECTURE.md)
@@ -556,7 +556,7 @@ ShouXin/
 
 ## 版本
 
-当前版本 **0.7.2**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
+当前版本 **0.7.3**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 

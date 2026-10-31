@@ -91,7 +91,7 @@ impl QuestionPool {
         let question_data = self.db
             .get(&question_key)
             .map_err(|e| ShouxinError::StorageError(format!("读取问题失败: {}", e)))?
-            .ok_or_else(|| ShouxinError::StorageError(format!("问题 {} 不存在", question_id)))?;
+            .ok_or_else(|| ShouxinError::EntityNotFound(format!("问题 {} 不存在", question_id)))?;
 
         let mut question: Question = serde_json::from_slice(&question_data)
             .map_err(|e| ShouxinError::SerializationError(format!("反序列化问题失败: {}", e)))?;

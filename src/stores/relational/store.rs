@@ -3495,7 +3495,7 @@ impl RelationalStore {
 
         let row = match row {
             Some(r) => r,
-            None => return Err(ShouxinError::GeneralError("待确认合并记录不存在或已处理".to_string())),
+            None => return Err(ShouxinError::EntityNotFound("待确认合并记录不存在或已处理".to_string())),
         };
 
         let source_event_id: String = row.get("source_event_id");
