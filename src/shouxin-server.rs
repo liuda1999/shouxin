@@ -381,6 +381,11 @@ async fn run_api_server(
     std::env::set_var("ORT_INTRA_OP_NUM_THREADS", thread_budget.to_string());
     // LlmSettings 层拿不到 runtime 配置，用环境变量把预算透传给 LLM 工厂
     std::env::set_var("SHOUXIN_CPU_BUDGET_PERCENT", cpu_cap.to_string());
+    // 检索阈值同样用环境变量透传（routes 层拿不到 Settings）
+    std::env::set_var(
+        "SHOUXIN_SEMANTIC_MIN_SCORE",
+        settings.search.semantic_min_score.clamp(0.5, 0.99).to_string(),
+    );
 
     // ------------------------------------------------------------------
     // 数据目录解析：命令行 --data-dir > 配置 [storage].data_dir > 默认 "./data"

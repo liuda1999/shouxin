@@ -1787,8 +1787,15 @@ impl DictionaryStoreTrait for DictionaryStore {
             if let Some(data) = self.conversations.get(conv_key.as_bytes())? {
                 let mut record: ConversationRecord = serde_json::from_slice(&data)?;
                 record.extracted_status = status.to_string();
-                if let Some(e) = error {
-                    record.extraction_error = Some(e.to_string());
+                // error 为 None 时必须**清空**：续跑成功后还挂着"进程在处理中途退出"
+                // 会让所有按 extraction_error 判活的监控把成功记录当成失败（N-21）。
+                match error {
+                    Some(e) => record.extraction_error = Some(e.to_string()),
+                    None => {
+                        if record.extraction_error.take().is_some() {
+                            tracing::debug!("[extract_status] {} 已恢复，清空历史错误", id);
+                        }
+                    }
                 }
                 let json = serde_json::to_vec(&record)?;
                 self.conversations.insert(conv_key.as_bytes(), json)?;

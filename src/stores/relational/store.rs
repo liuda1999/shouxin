@@ -1115,9 +1115,17 @@ impl RelationalStore {
         }
 
         if let Some(ref query) = filter.search_query {
-            sql.push_str(" AND (summary LIKE ? OR event_id LIKE ?)");
+            // 标题也参与匹配：N-15 修正后 summary 存描述，只查 summary 会漏掉
+            // "标题里有关键词、描述里没有"的事件。
+            sql.push_str(" AND (summary LIKE ? OR title LIKE ? OR event_id LIKE ?)");
             params.push(format!("%{}%", query));
             params.push(format!("%{}%", query));
+            params.push(format!("%{}%", query));
+        }
+
+        if let Some(ref month) = filter.archived_month {
+            sql.push_str(" AND archived_at LIKE ?");
+            params.push(format!("{}%", month));
         }
 
         sql.push_str(" ORDER BY time_range_start DESC LIMIT ?");
@@ -1503,8 +1511,11 @@ impl RelationalStore {
         status: Option<&str>,
         limit: i64,
         include_archived: bool,
+        contact_id: Option<&str>,
     ) -> Result<Vec<TodoItem>, ShouxinError> {
-        self.todo_list_store.get_all_todos(owner_type, owner_id, status, limit, include_archived).await
+        self.todo_list_store
+            .get_all_todos(owner_type, owner_id, status, limit, include_archived, contact_id)
+            .await
     }
 
     /// 删除待办事项

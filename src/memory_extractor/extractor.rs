@@ -664,8 +664,17 @@ impl LlmMemoryExtractor {
             }
         }
         
-        if name.chars().any(|c| c.is_ascii_digit()) && name.len() > 3 {
-            let cleaned: String = name.chars().take_while(|c| !c.is_ascii_digit()).collect::<String>().trim().to_string();
+        // 只剥"中文名 + 数字后缀"（张伟2 / 李娜03 这类导出重名标记）。
+        // 纯英文/账号名（liuda1999、user_42）必须原样保留——数字是名字的一部分。
+        let has_cjk = name.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+        let ends_with_digit = name.chars().last().is_some_and(|c| c.is_ascii_digit());
+        if has_cjk && ends_with_digit && name.len() > 3 {
+            let cleaned: String = name
+                .chars()
+                .take_while(|c| !c.is_ascii_digit())
+                .collect::<String>()
+                .trim()
+                .to_string();
             if !cleaned.is_empty() && cleaned.chars().count() >= 2 {
                 info!("[Name Fix] Name with trailing digits: '{}' -> '{}'", name, cleaned);
                 return cleaned;

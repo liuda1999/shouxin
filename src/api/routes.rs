@@ -204,7 +204,14 @@ pub struct SearchEventsRequest {
     /// 这种"看起来成功但什么也没有"的接口最难排查，因此在入口处对齐。
     #[serde(default, alias = "owner_id")]
     pub user_id: Option<String>,
+    /// 关键词（在标题与描述里做子串匹配）
+    #[serde(default)]
+    pub query: Option<String>,
     /// 事件类型
+    ///
+    /// **已废弃**：抽取链路不产出类型，event_type 列恒为空，
+    /// 传它只会得到空列表（"看起来成功但没有结果"比报错更难查）。
+    /// 需要按档位筛选请用 `importance`。
     pub event_type: Option<String>,
     /// 开始时间（RFC3339 格式）
     pub start_time: Option<String>,
@@ -587,7 +594,7 @@ struct UploadFileQuery {
     target_id: Option<String>,
 }
 
-fn default_scope() -> String { "agent".to_string() }
+fn default_scope() -> String { "user".to_string() }
 /// 请求未带 owner 时的默认 owner_id
 ///
 /// 默认作用域是 `agent`，因此这里必须与 `settings.agent.primary_agent_id` 一致，
@@ -1603,7 +1610,14 @@ async fn export_data(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
     Query(q): Query<ExportQuery>,
 ) -> ApiResponse<serde_json::Value> {
-    let limit = q.limit.clamp(1, 50_000);
+    const MAX_EXPORT_LIMIT: usize = 10_000;
+    if q.limit > MAX_EXPORT_LIMIT {
+        return ApiResponse::error_with_status(
+            format!("limit 上限为 {}，当前 {}", MAX_EXPORT_LIMIT, q.limit),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    let limit = q.limit.clamp(1, MAX_EXPORT_LIMIT);
     let uid = q.user_id.as_deref();
 
     let contacts = async_memory
@@ -1938,7 +1952,13 @@ async fn search_events(
         .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
         .map(|dt| dt.with_timezone(&Utc));
 
-    // 构建过滤器（S-10: 限制 limit 上限）
+    // N-25：上限写在文档里就必须拦住，静默 clamp 会让调用方以为拿到了全量
+    if req.limit > MAX_SEARCH_LIMIT {
+        return ApiResponse::error_with_status(
+            format!("limit 上限为 {}，当前 {}", MAX_SEARCH_LIMIT, req.limit),
+            StatusCode::BAD_REQUEST,
+        );
+    }
     let mut filter = EventFilter::new().with_limit(cap_limit(req.limit));
 
     if let Some(ref user_id) = req.user_id {
@@ -1947,6 +1967,21 @@ async fn search_events(
     if let Some(start) = start_time {
         if let Some(end) = end_time {
             filter = filter.with_time_range(start, end);
+        }
+    }
+    if let Some(ref q) = req.query {
+        let q = q.trim();
+        if !q.is_empty() {
+            filter = filter.with_search_query(q.to_string());
+        }
+    }
+    if let Some(ref t) = req.event_type {
+        if !t.trim().is_empty() {
+            return ApiResponse::error_with_status(
+                "事件没有独立的类型维度（event_type 列为空），请改用 importance 过滤"
+                    .to_string(),
+                StatusCode::BAD_REQUEST,
+            );
         }
     }
     if let Some(importance) = req.importance {
@@ -2043,16 +2078,39 @@ async fn confirm_event_merge(
 /// 这里做两件事：① 按标点/空白切分；② 之后再把 query 里出现的**已有联系人姓名**
 /// 也补进候选词（中文没有空格，用已知实体反切是当前成本最低的可行解）。
 fn split_query_terms(query: &str) -> Vec<String> {
+    use std::sync::OnceLock;
+    static JIEBA: OnceLock<jieba_rs::Jieba> = OnceLock::new();
+
+    // 中文没有空格，按标点切只会得到整句（"李明最近有什么变化"是一个词）。
+    // 这里用 jieba 真正分词，再去掉高频虚词/疑问词——它们对召回只有噪声。
+    const STOP: &[&str] = &[
+        "的", "了", "是", "在", "有", "和", "就", "都", "而", "及", "与", "这", "那", "也",
+        "什么", "怎么", "怎样", "如何", "哪些", "哪个", "多少", "多久", "为什么", "是否",
+        "最近", "有没有", "有没", "一下", "一些", "一个", "我们", "你们", "他们", "我",
+        "你", "他", "她", "它", "吗", "呢", "吧", "啊", "把", "被", "给", "对", "关于",
+        "情况", "事情", "东西", "时候",
+    ];
+
+    let jieba = JIEBA.get_or_init(jieba_rs::Jieba::new);
     let mut terms: Vec<String> = Vec::new();
-    for raw in query.split(|c: char| {
-        c.is_whitespace() || "，。、！？；：,.?!;:\"'“”‘’（）()【】[]{}".contains(c)
-    }) {
+    for raw in jieba.cut(query, false) {
         let t = raw.trim();
-        if t.chars().count() >= 2 && !terms.iter().any(|x| x == t) {
+        if t.is_empty() || STOP.contains(&t) {
+            continue;
+        }
+        let chars = t.chars().count();
+        let has_cjk = t.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+        // 中文词至少 2 字；英文/数字词至少 2 位且全为字母数字
+        let ok = if has_cjk {
+            chars >= 2
+        } else {
+            chars >= 2 && t.chars().all(|c| c.is_alphanumeric())
+        };
+        if ok && !terms.iter().any(|x| x == t) {
             terms.push(t.to_string());
         }
     }
-    // query 全是单字/标点时兜底用整串，避免 terms 为空
+    // 全是单字/虚词时兜底用整串，避免 terms 为空
     if terms.is_empty() && !query.trim().is_empty() {
         terms.push(query.trim().to_string());
     }
@@ -2133,12 +2191,15 @@ async fn search_history(
         .await;
     }
 
+    // limit 只控制**返回条数**，不能兼作搜索深度：
+    // 之前把 limit 直接传给存储层，`query=报告&limit=2` 只取 2 条候选，
+    // 过滤后自然为 0（N-04）。
     match async_memory
         .search_history(
             (start_time, end_time),
             req.scope,
             req.user_id.as_deref(),
-            limit,
+            limit.max(200),
         )
         .await
     {
@@ -2440,10 +2501,9 @@ async fn get_todo(
     let (owner_type, owner_id) = resolve_owner(&async_memory, params.scope, params.user_id.as_deref(), &id).await;
     match async_memory.get_todo(&id, owner_type, &owner_id).await {
         Ok(Some(todo)) => ApiResponse::success(todo),
-        Ok(None) => ApiResponse::error_with_status(
-            "Todo not found".to_string(),
-            StatusCode::NOT_FOUND,
-        ),
+        // 业务错误统一走 200 + success:false（与其它接口一致），
+        // 只有鉴权/参数格式问题才用 4xx。
+        Ok(None) => ApiResponse::error("待办不存在".to_string()),
         Err(e) => {
             error!("获取待办详情失败: {}", e);
             ApiResponse::error("内部错误".to_string())
@@ -2748,6 +2808,14 @@ async fn smart_search(
 
     // 语义兜底：关键词只认字面命中，而真实回忆经常换词（"办喜事" vs "婚礼"、
     // "周转" vs "借钱"）。某类结果稀少时用向量召回补足，并回源到字典库给出原文。
+    // 语义兜底的最低相似度：e5-base 中文无关句基线约 0.84–0.89，
+    // 不设门槛时"火星殖民计划"也能返回两三条无关记忆，调用方无法判断可信度。
+    let min_score: f32 = std::env::var("SHOUXIN_SEMANTIC_MIN_SCORE")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.90)
+        .clamp(0.5, 0.99);
+
     if req.types.iter().any(|t| t == "events") && response.events.len() < 2 {
         if let Ok(hits) = async_memory
             .semantic_search(
@@ -2762,6 +2830,9 @@ async fn smart_search(
             for h in hits {
                 if response.events.len() >= safe_limit {
                     break;
+                }
+                if h.score < min_score {
+                    continue;
                 }
                 let title = h
                     .material
@@ -2800,6 +2871,9 @@ async fn smart_search(
                 if response.history.len() >= safe_limit {
                     break;
                 }
+                if h.score < min_score {
+                    continue;
+                }
                 let Some(cid) = h.material.source_conversation_id.clone() else {
                     continue;
                 };
@@ -2807,7 +2881,16 @@ async fn smart_search(
                     continue;
                 }
                 if let Ok(Some(conv)) = dict.get_conversation_by_id(&cid).await {
-                    response.history.push(serde_json::to_value(conv).unwrap_or_default());
+                    // 带上来源与相似度：调用方要能区分"确实没有"和"这条是我猜的"
+                    let mut v = serde_json::to_value(conv).unwrap_or_default();
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("source".into(), serde_json::json!("semantic"));
+                        obj.insert(
+                            "similarity".into(),
+                            serde_json::json!((h.score * 1000.0).round() / 1000.0),
+                        );
+                    }
+                    response.history.push(v);
                 }
             }
         }

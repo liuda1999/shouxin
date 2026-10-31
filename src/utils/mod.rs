@@ -9,6 +9,7 @@ pub mod validation;
 
 pub use event_meta::{analyze_sentiment, classify_importance};
 pub use time_parser::{
-    default_deadline_in_days, parse_event_time, resolve_event_time, try_resolve_event_time,
+    default_deadline_from, default_deadline_in_days, parse_event_time, resolve_event_time,
+    try_resolve_event_time,
 };
 pub use validation::{validate_finite, validate_non_empty, validate_range, validate_vector};

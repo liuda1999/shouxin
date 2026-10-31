@@ -31,7 +31,26 @@ pub struct Settings {
     /// 运行时资源约束
     #[serde(default)]
     pub runtime: RuntimeSettings,
+    /// 检索相关阈值
+    #[serde(default)]
+    pub search: SearchSettings,
 }
+
+/// 检索阈值
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchSettings {
+    /// 语义兜底的最低相似度（e5-base 中文无关句基线约 0.84–0.89）
+    #[serde(default = "default_semantic_min_score")]
+    pub semantic_min_score: f32,
+}
+
+impl Default for SearchSettings {
+    fn default() -> Self {
+        Self { semantic_min_score: default_semantic_min_score() }
+    }
+}
+
+fn default_semantic_min_score() -> f32 { 0.90 }
 
 /// 运行时资源约束
 ///
@@ -461,6 +480,7 @@ impl Default for Settings {
             extraction: ExtractionSettings::default(),
             todo: TodoSettings::default(),
             runtime: RuntimeSettings::default(),
+            search: SearchSettings::default(),
         }
     }
 }

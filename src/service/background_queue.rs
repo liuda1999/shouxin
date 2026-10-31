@@ -33,6 +33,12 @@ pub struct ExtractionTask {
     pub user_id: Option<String>,
     #[serde(default)]
     pub retry_count: u32,
+    /// 对话实际发生时间（历史导入时不一定等于入库时间）
+    ///
+    /// 抽取里的"下周三""三天后"都必须以它为基准；用 Utc::now() 会让
+    /// 10-20 说的"下周三"被算成 11-04（N-01）。
+    #[serde(default)]
+    pub conversation_time: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// 判断输入是否"病态"到不适合送进 LLM 分词器
@@ -622,8 +628,16 @@ impl BackgroundTaskQueue {
 
 
         for e in events {
-            let event_desc = e.title.as_deref().unwrap_or(&e.description);
-            let dedup_key: String = event_desc.chars().take(200).collect();
+            // 去重键用"标题 + 描述"：只用标题会把同标题不同内容的事件静默丢弃
+            // （同步路径已经这么做，这里对齐）。
+            let dedup_key: String = format!(
+                "{} {}",
+                e.title.as_deref().unwrap_or(""),
+                e.description
+            )
+            .chars()
+            .take(200)
+            .collect();
             let existing = state.relational
                 .search_events_by_summary(&dedup_key, &format!("{:?}", owner_type), owner_id)
                 .await?;
@@ -822,15 +836,16 @@ impl BackgroundTaskQueue {
             // （原文"上周三……季度复盘"，描述写成"负责数据部分"），
             // 事件时间就会退化成写入时间。对话里通常只有一个时间表达，
             // 用它兜底比"全部变成今天"更接近事实。
-            let now = Utc::now();
+            // 时间基准取"对话发生时间"，不是"抽取时刻"：历史导入时两者可能差几个月。
+            let ref_time = task.conversation_time.unwrap_or_else(Utc::now);
             let event_start = crate::utils::try_resolve_event_time(
                 e.time_info.as_deref(),
                 e.time.as_deref(),
                 &e.description,
-                now,
+                ref_time,
             )
-            .or_else(|| crate::utils::parse_event_time(&task.conversation_text, now))
-            .unwrap_or(now);
+            .or_else(|| crate::utils::parse_event_time(&task.conversation_text, ref_time))
+            .unwrap_or(ref_time);
             let mut event_index = crate::core::EventIndex {
                 event_id: e.event_id.clone(),
                 contact_ids: contact_ids_json,
@@ -842,9 +857,10 @@ impl BackgroundTaskQueue {
                 status: "pending".to_string(),
                 created_at: Utc::now(),
                 completed_at: None,
-                summary: dedup_key.clone(),
+                // summary 存"描述"，不是标题副本；event_type 留空（事件没有类型维度）
+                summary: e.description.chars().take(200).collect(),
                 title: e.title.clone(),
-                event_type: llm_description,
+                event_type: String::new(),
                 deadline: None,
                 auto_invalid_at: None,
                 is_auto_invalid: false,
@@ -993,21 +1009,49 @@ impl BackgroundTaskQueue {
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc));
 
-                let deadline = match model_deadline {
-                    Some(dt) if dt > Utc::now() => dt,
+                let ref_time = task.conversation_time.unwrap_or_else(Utc::now);
+                // 模型给的日期只在"相对对话时间合理"时采信：
+                // 历史导入时它常把年份写成今年，或干脆给个过期很久的日期。
+                // 截止时间必须**不早于对话发生日**（允许同日）：
+                // 模型经常给出 2026-07 这类过期日期，之前用 now±1y 的窗口会误采信，
+                // 结果"这周五"被记成 7 月（N-17 复现）。
+                let ref_day_start = ref_time.date_naive().and_hms_opt(0, 0, 0).unwrap();
+                let ref_day_start = chrono::DateTime::<Utc>::from_naive_utc_and_offset(ref_day_start, Utc);
+                let model_ok = model_deadline.filter(|dt| {
+                    *dt >= ref_day_start && *dt < ref_time + chrono::Duration::days(365 * 5)
+                });
+
+                let deadline = match model_ok {
+                    Some(dt) => dt,
                     _ => {
                         let local = crate::utils::time_parser::resolve_deadline_in_text(
                             &task.conversation_text,
                             &extracted_todo.title,
-                            Utc::now(),
+                            ref_time,
                         );
-                        if local.is_some() {
-                            warn!(
-                                "[P1-4] 模型给出的 deadline 不可用，已改用本地时间解析：{}",
-                                extracted_todo.title
-                            );
+                        match local {
+                            Some(dt) => {
+                                warn!(
+                                    "[P1-4] 模型给出的 deadline 不可用，已改用本地解析：{} → {}",
+                                    extracted_todo.title,
+                                    dt.date_naive()
+                                );
+                                dt
+                            }
+                            None => {
+                                // 没解析出任何时间就 +7 天：这条是猜的，必须留痕，
+                                // 否则用户会把"11-08"当成自己说过的话（N-14）。
+                                let guessed =
+                                    crate::utils::default_deadline_from(ref_time, 7);
+                                warn!(
+                                    "[P1-4] 对话中没有可识别的时间表达，deadline 按 +7 天估算：{} → {}（conversation={}）",
+                                    extracted_todo.title,
+                                    guessed.date_naive(),
+                                    task.conversation_id
+                                );
+                                guessed
+                            }
                         }
-                        local.unwrap_or_else(|| crate::utils::default_deadline_in_days(7))
                     }
                 };
 
@@ -1049,6 +1093,29 @@ impl BackgroundTaskQueue {
                 } else {
                     Vec::new()
                 };
+
+                // 同一句话重复抽取会产出措辞微差的待办（"把…改成" / "将…改成"），
+                // 插入前按"同 owner + pending + 标题相似"挡掉（N-16）。
+                if let Ok(existing) = state
+                    .relational
+                    .get_todo_store()
+                    .get_all_todos(task.owner_type, &task.owner_id, Some("pending"), 200, false, None)
+                    .await
+                {
+                    let new_norm = normalize_todo_title(&extracted_todo.title);
+                    if let Some(dup) = existing
+                        .iter()
+                        .find(|t| todo_titles_similar(&normalize_todo_title(&t.title), &new_norm))
+                    {
+                        tracing::info!(
+                            "[todo] 跳过重复待办：'{}' ≈ 已有 '{}'（conversation={}）",
+                            extracted_todo.title,
+                            dup.title,
+                            task.conversation_id
+                        );
+                        continue;
+                    }
+                }
 
                 let todo = crate::stores::relational::TodoItem::new(
                     todo_id,
@@ -1149,6 +1216,32 @@ impl BackgroundTaskQueue {
 ///
 /// 任一条写入失败即返回错误，由上层任务状态体现为 `failed`，
 /// 避免出现"关系库有事件、字典库无历史"的静默缺口。
+/// 待办标题归一化：去空白/标点、转小写，用于查重
+fn normalize_todo_title(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && !"，。、；：！？,.!?;:（）()【】\"'“”‘’".contains(*c))
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// 两条待办标题是否在说同一件事
+///
+/// 判定：包含关系，或字符集合 Jaccard ≥ 0.85。
+/// 只差"把/将""的"这类虚词的表述会被判为重复。
+fn todo_titles_similar(a: &str, b: &str) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a == b || a.contains(b) || b.contains(a) {
+        return true;
+    }
+    let sa: std::collections::HashSet<char> = a.chars().collect();
+    let sb: std::collections::HashSet<char> = b.chars().collect();
+    let inter = sa.intersection(&sb).count() as f32;
+    let union = sa.union(&sb).count() as f32;
+    union > 0.0 && inter / union >= 0.85
+}
+
 /// 从事件文本中挑出被提到的联系人（姓名或别名逐字出现）
 ///
 /// 用于 `related_person_ids` 没能映射出联系人时的兜底：
@@ -1252,5 +1345,26 @@ mod pathological_input_tests {
 
         let long_doc = "今天开会讨论了系统架构和接口设计。\n".repeat(200);
         assert!(!is_pathological_input(&long_doc));
+    }
+}
+
+#[cfg(test)]
+mod todo_dedup_tests {
+    use super::{normalize_todo_title, todo_titles_similar};
+
+    /// N-16：只差"把/将""的"的两条待办必须判为同一条
+    #[test]
+    fn test_similar_titles_with_different_function_words() {
+        let a = normalize_todo_title("把 internal_api_token 默认空串改成必填");
+        let b = normalize_todo_title("将 internal_api_token 的默认空串改成必填");
+        assert!(todo_titles_similar(&a, &b), "应判为重复: {a} vs {b}");
+    }
+
+    /// 不相干的两条待办不能被误判
+    #[test]
+    fn test_different_titles_are_not_similar() {
+        let a = normalize_todo_title("给用户发测试报告");
+        let b = normalize_todo_title("把索引重建脚本交出来");
+        assert!(!todo_titles_similar(&a, &b));
     }
 }

@@ -548,7 +548,16 @@ impl AsyncMemory {
     pub async fn list_todos(&self, filter: TodoFilter, scope: Scope, user_id: Option<&str>) -> Result<Vec<TodoItem>, ShouxinError> {
         let (owner_type, owner_id) = scope.to_owner_params(user_id);
         let todo_store = self.get_todo_store();
-        todo_store.get_all_todos(owner_type, &owner_id, filter.status.as_deref(), filter.limit, filter.include_archived).await
+        todo_store
+        .get_all_todos(
+            owner_type,
+            &owner_id,
+            filter.status.as_deref(),
+            filter.limit,
+            filter.include_archived,
+            filter.contact_id.as_deref(),
+        )
+        .await
     }
 
     /// 完成待办事项

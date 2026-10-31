@@ -255,9 +255,14 @@ POST /api/memory/search/events
 
 | 参数 | 说明 |
 |---|---|
+| `query` | 在**标题 / 描述 / event_id** 里做子串匹配 |
 | `hot_only: true` | 只看热表（等价于 `include_archived: false`） |
 | `include_archived: false` | 显式只看热表 |
-| `archived_month: "2026-10"` | 按归档月份过滤 |
+| `archived_month: "2026-10"` | 按归档月份过滤（匹配 `archived_at` 前缀） |
+| `limit` | 上限 **200**，超过返回 400（不再静默截断） |
+
+> `event_type` 已废弃：抽取链路不产出类型，该列恒为空。传非空值会返回 **400** 并提示改用
+> `importance`（high / medium / low）。早期文档声称可按类型过滤，属于未兑现的承诺。
 
 ### 历史对话检索
 
@@ -267,7 +272,8 @@ POST /api/memory/search/history
 ```
 
 - `query` 会分词（并按已知联系人姓名反切）后做**任一命中**过滤；不传则等价于"按时间列出"。
-- `limit` 生效（默认 50，上限 200）。
+- `limit` 只控制**返回条数**（默认 50，上限 200）；候选集固定取 200 条再过滤，
+  不会再出现"`limit=2` 时关键词明明存在却返回 0 条"。
 - 结果按 **created_at 倒序**（最新在前）。此前的实现方向相反，取的是最旧的 100 条，
   对话超过 100 条后最新记忆永远进不了结果集。
 
@@ -325,7 +331,7 @@ POST /api/search/smart
 
 ## 事件合并确认
 
-相似度落在 **0.75–0.90** 的事件不会自动合并，而是进入待确认队列。
+相似度落在 **0.90–0.96** 的事件不会自动合并，而是进入待确认队列（>0.96 自动合并，<0.90 视为新事件）。
 
 ```http
 GET /api/events/pending_merges?owner_type=User&owner_id=default_user&limit=20
@@ -361,6 +367,10 @@ Content-Type: application/octet-stream
 
 <二进制内容>
 ```
+
+- `scope` 默认 **user**（此前默认 agent，而 agent 命名空间没有检索入口，
+  不带 scope 上传的文档等于"入了库但谁也搜不到"）。
+- 同一 `md5 + owner` 重复上传会命中去重，返回原 `file_id`。
 
 ```json
 { "success": true, "file_id": "9a443a5b-..." }

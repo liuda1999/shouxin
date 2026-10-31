@@ -325,6 +325,7 @@ impl ThreeLibraryMemoryManager {
             owner_id,
             user_id: task_user_id,
             retry_count: 0,
+            conversation_time: Some(conv.created_at),
         };
 
         queue.push_with_persist(task)?;
@@ -402,6 +403,7 @@ impl ThreeLibraryMemoryManager {
                 owner_id: owner_id.clone(),
                 user_id: user_id.map(|s| s.to_string()),
                 retry_count: 0,
+                conversation_time: Some(timestamp),
             };
             let task_key = BackgroundTaskQueue::task_key(&conversation_id);
             let task_value = BackgroundTaskQueue::serialize_task(&task)?;

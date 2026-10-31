@@ -422,59 +422,47 @@ impl TodoListStore {
     /// 待办事项列表
     pub async fn get_all_todos(
         &self,
-        owner_type: crate::core::contact::OwnerType, 
+        owner_type: crate::core::contact::OwnerType,
         owner_id: &str,
         status: Option<&str>,
         limit: i64,
         include_archived: bool,
+        contact_id: Option<&str>,
     ) -> Result<Vec<TodoItem>, ShouxinError> {
-        const SQL_STATUS_ARCHIVED: &str = "SELECT todo_id, contact_ids, owner_id, owner_type, title, description, deadline, status, created_at, completed_at, importance, source_event_id, todo_type, entity_type, entity_id, is_archived, archived_at, last_updated_at FROM todo_list WHERE status = ? AND owner_type = ? AND owner_id = ? AND is_archived = 0 ORDER BY deadline ASC LIMIT ?";
-        const SQL_STATUS_ALL: &str = "SELECT todo_id, contact_ids, owner_id, owner_type, title, description, deadline, status, created_at, completed_at, importance, source_event_id, todo_type, entity_type, entity_id, is_archived, archived_at, last_updated_at FROM todo_list WHERE status = ? AND owner_type = ? AND owner_id = ? ORDER BY deadline ASC LIMIT ?";
-        const SQL_ALL_ARCHIVED: &str = "SELECT todo_id, contact_ids, owner_id, owner_type, title, description, deadline, status, created_at, completed_at, importance, source_event_id, todo_type, entity_type, entity_id, is_archived, archived_at, last_updated_at FROM todo_list WHERE owner_type = ? AND owner_id = ? AND is_archived = 0 ORDER BY deadline ASC LIMIT ?";
-        const SQL_ALL_ALL: &str = "SELECT todo_id, contact_ids, owner_id, owner_type, title, description, deadline, status, created_at, completed_at, importance, source_event_id, todo_type, entity_type, entity_id, is_archived, archived_at, last_updated_at FROM todo_list WHERE owner_type = ? AND owner_id = ? ORDER BY deadline ASC LIMIT ?";
+        // 动态拼 SQL：4 组静态常量在加过滤条件时会指数膨胀，
+        // 而且 contact_id 过滤被"构造了但没消费"（N-19）。
+        let mut sql = String::from(
+            "SELECT todo_id, contact_ids, owner_id, owner_type, title, description, deadline, \
+             status, created_at, completed_at, importance, source_event_id, todo_type, \
+             entity_type, entity_id, is_archived, archived_at, last_updated_at \
+             FROM todo_list WHERE owner_type = ? AND owner_id = ?",
+        );
+        let mut binds: Vec<String> = vec![format!("{:?}", owner_type), owner_id.to_string()];
 
-        let rows = match (status, include_archived) {
-            (Some(s), false) => {
-                sqlx::query(SQL_STATUS_ARCHIVED)
-                    .bind(s)
-                    .bind(format!("{:?}", owner_type))
-                    .bind(owner_id)
-                    .bind(limit)
-                    .fetch_all(self.pool.as_ref())
-                    .await?
-            }
-            (Some(s), true) => {
-                sqlx::query(SQL_STATUS_ALL)
-                    .bind(s)
-                    .bind(format!("{:?}", owner_type))
-                    .bind(owner_id)
-                    .bind(limit)
-                    .fetch_all(self.pool.as_ref())
-                    .await?
-            }
-            (None, false) => {
-                sqlx::query(SQL_ALL_ARCHIVED)
-                    .bind(format!("{:?}", owner_type))
-                    .bind(owner_id)
-                    .bind(limit)
-                    .fetch_all(self.pool.as_ref())
-                    .await?
-            }
-            (None, true) => {
-                sqlx::query(SQL_ALL_ALL)
-                    .bind(format!("{:?}", owner_type))
-                    .bind(owner_id)
-                    .bind(limit)
-                    .fetch_all(self.pool.as_ref())
-                    .await?
-            }
-        };
+        if let Some(s) = status {
+            sql.push_str(" AND status = ?");
+            binds.push(s.to_string());
+        }
+        if !include_archived {
+            sql.push_str(" AND is_archived = 0");
+        }
+        if let Some(cid) = contact_id {
+            // contact_ids 存的是 JSON 数组字符串，用带引号的子串匹配避免 id 前缀误命中
+            sql.push_str(" AND contact_ids LIKE ?");
+            binds.push(format!("%\"{}\"%", cid));
+        }
+        sql.push_str(" ORDER BY deadline ASC LIMIT ?");
+
+        let mut q = sqlx::query(&sql);
+        for b in &binds {
+            q = q.bind(b);
+        }
+        let rows = q.bind(limit).fetch_all(self.pool.as_ref()).await?;
 
         let mut todos = Vec::new();
         for row in rows {
             todos.push(TodoItem::from_row(&row)?);
         }
-
         Ok(todos)
     }
 

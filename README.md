@@ -6,13 +6,13 @@
 
 **给智能体挂载的本地记忆子系统：对话进得去，事实落得住，换种问法也能想起来。**
 
-[![version](https://img.shields.io/badge/version-0.7.0-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.7.1-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 [![tests](https://img.shields.io/badge/tests-109%20unit%20%2B%2013%20suites-brightgreen)](docs/ARCHITECTURE.md)
 
 守心不是笔记软件，也不是聊天前端。它是**给智能体额外挂载的一套记忆**：智能体照常对话，
-把内容和时间戳丢给守心，守心在后台拆成**人物、事件、待办、知识**，写进三套存储，
+把内容和时间戳丢给守心，守心在后台拆成**人物、事件、待办**，写进三套存储，
 之后按语义或关键词取回，还会定期主动巡检（提醒待办、维护联系人）。
 
 全程本地：推理用内置 `llama.cpp`，嵌入用本地 ONNX 模型，**不联网、不依赖云服务、不需要 Ollama**。
@@ -21,7 +21,7 @@
 智能体 ──单条 / 批量 / 文件──▶ POST /api/memory/add · /batch · /files/upload
                                       │ 落盘 + 入队，毫秒返回
                                       ▼（后台异步，单并发）
-                        llama.cpp 抽取 ──▶ 人物 / 事件 / 待办 / 知识
+                        llama.cpp 抽取 ──▶ 人物 / 事件 / 待办
                                       │
                  ┌────────────────────┼────────────────────┐
                  ▼                    ▼                    ▼
@@ -519,6 +519,8 @@ ShouXin/
 ## 已知限制
 
 1. **多模态未启用**：`mmproj-BF16.gguf` 视觉塔已预留但不加载，抽取链路是纯文本。
+1.1 **"知识/learning"维度未实现**：抽取提示词只要求人物/事件/待办，`learnings` 恒为空；
+   只有正则降级路径会产出。早期文档把它算作第四维，实际是三维。
 2. **抽取吞吐受算力限制**：4B 模型纯 CPU 单条约 30–60 秒，队列单并发，约 **2.8 条/分钟**。
    大批量导入请先灌入再等排空；追求速度可换更小模型或走 API 后端。
 3. **抽取与心跳抢同一条推理通道**：心跳一轮会占住模型，导入期间建议临时调大
@@ -554,7 +556,7 @@ ShouXin/
 
 ## 版本
 
-当前版本 **0.7.0**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
+当前版本 **0.7.1**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 

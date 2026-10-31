@@ -52,8 +52,91 @@ pub fn resolve_event_time(
     try_resolve_event_time(time_info, time_raw, description, reference).unwrap_or(reference)
 }
 
+/// 时间表达的统一模式（扫描器共用）
+///
+/// 之前扫描器和解析器各写一条：解析器支持 `\s*` 与 `/`，扫描器不支持，
+/// 于是 "11 月 12 号" / "11/12" 扫不到 → 上层静默 +7 天。
+const TIME_EXPR_PATTERN: &str = concat!(
+    "(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|",
+    "这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|今天|今日|明天|明日|",
+    "后天|昨天|前天|周末|月底|月初|",
+    "(?:[一二两三四五六七八九十\\d]+\\s*(?:天|日|周|星期|个月|月|年)\\s*(?:以后|之后|后))|",
+    "半年后|\\d{1,2}\\s*[月/]\\s*\\d{1,2}\\s*[日号]?|\\d{1,2}\\s*[日号])"
+);
+
+/// 同上，额外接受"上个月/下个月"（截止时间场景需要）
+const PRECISE_TIME_EXPR_PATTERN: &str = concat!(
+    "(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|",
+    "这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|上个月|下个月|今天|今日|明天|明日|",
+    "后天|昨天|前天|周末|月底|月初|",
+    "(?:[一二两三四五六七八九十\\d]+\\s*(?:天|日|周|星期|个月|月|年)\\s*(?:以后|之后|后))|",
+    "半年后|\\d{1,2}\\s*[月/]\\s*\\d{1,2}\\s*[日号]?|\\d{1,2}\\s*[日号])"
+);
+
+static TIME_EXPR_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+static PRECISE_TIME_EXPR_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+
+fn time_expr_re() -> Option<&'static regex::Regex> {
+    Some(TIME_EXPR_RE.get_or_init(|| regex::Regex::new(TIME_EXPR_PATTERN).expect("TIME_EXPR_PATTERN")))
+}
+
+fn precise_time_expr_re() -> Option<&'static regex::Regex> {
+    Some(
+        PRECISE_TIME_EXPR_RE
+            .get_or_init(|| regex::Regex::new(PRECISE_TIME_EXPR_PATTERN).expect("PRECISE_TIME_EXPR_PATTERN")),
+    )
+}
+
+/// 中文数字 → 阿拉伯数字（只处理 1..=99）
+fn cn_numeral_to_u32(s: &str) -> Option<u32> {
+    let mut total = 0u32;
+    let mut cur = 0u32;
+    for ch in s.chars() {
+        match ch {
+            '一' => cur = 1,
+            '二' | '两' => cur = 2,
+            '三' => cur = 3,
+            '四' => cur = 4,
+            '五' => cur = 5,
+            '六' => cur = 6,
+            '七' => cur = 7,
+            '八' => cur = 8,
+            '九' => cur = 9,
+            '十' => {
+                if cur == 0 {
+                    cur = 1;
+                }
+                total += cur * 10;
+                cur = 0;
+            }
+            _ => return None,
+        }
+    }
+    Some(total + cur)
+}
+
+/// 把日期语境里的中文数字换成阿拉伯数字："十二月二十号" → "12月20号"
+///
+/// 只替换紧跟"月/日/号"的中文数字，避免误伤普通叙述（"一起""十分"）。
+pub(crate) fn normalize_cn_numerals(input: &str) -> String {
+    static CN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    // 注意：Rust regex 不支持 look-ahead，这里把尾部分隔符一起捕获再拼回去。
+    let re = CN.get_or_init(|| {
+        regex::Regex::new(r"([一二两三四五六七八九十]{1,3})(\s*[月日号])").expect("cn date regex")
+    });
+    re.replace_all(input, |caps: &regex::Captures| {
+        let raw = &caps[1];
+        match cn_numeral_to_u32(raw) {
+            Some(n) => format!("{}{}", n, &caps[2]),
+            None => caps[0].to_string(),
+        }
+    })
+    .to_string()
+}
+
 pub fn parse_event_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let text = text.trim();
+    let normalized = normalize_cn_numerals(text);
+    let text = normalized.trim();
     if text.is_empty() {
         return None;
     }
@@ -295,6 +378,21 @@ static_regex!(re_last_year_month, r"去年\s*(\d{1,2})\s*月");
 /// 为什么不用 `(Utc::now() + days).date_naive()`：
 /// 在 UTC+8 的 00:00–08:00 之间，UTC 日期比本地日期**早一天**，
 /// 于是"7 天后"会算成"6 天后"，用户看到的是提前一天的截止日。
+/// 以给定时间为基准算"n 天后 23:59:59"（历史导入不能以今天为基准）
+pub fn default_deadline_from(reference: DateTime<Utc>, days: i64) -> DateTime<Utc> {
+    let local = reference.with_timezone(&Local);
+    let target = local + chrono::Duration::days(days);
+    let date = target.date_naive();
+    let end = date
+        .and_hms_opt(23, 59, 59)
+        .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap());
+    Local
+        .from_local_datetime(&end)
+        .single()
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|| reference + chrono::Duration::days(days))
+}
+
 pub fn default_deadline_in_days(days: i64) -> DateTime<Utc> {
     let target = Local::now() + chrono::Duration::days(days);
     let date = target.date_naive();
@@ -756,7 +854,10 @@ pub fn resolve_deadline_in_text(
     title: &str,
     reference_time: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
-    let sentences: Vec<&str> = conversation
+    // 先把中文数字归一成阿拉伯数字（"十一月十二号" → "11月12号"），
+    // 后续扫描/解析/偏移计算都在这份文本上做，避免两套正则口径不一致。
+    let normalized = normalize_cn_numerals(conversation);
+    let sentences: Vec<&str> = normalized
         .split(|c| c == '。' || c == '！' || c == '？' || c == ';' || c == '；' || c == '\n')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
@@ -830,14 +931,14 @@ pub fn resolve_deadline_in_text(
                 continue;
             }
             if let Some(dt) = parse_event_time(expr, reference_time) {
-                return Some(end_of_day(dt));
+                return Some(end_of_day(shift_this_week_if_past(expr, reference_time, dt)));
             }
         }
 
         // 没有截止标记时，退回"第一个能解析的时间"
         for (expr, _) in &exprs {
             if let Some(dt) = parse_event_time(expr, reference_time) {
-                return Some(end_of_day(dt));
+                return Some(end_of_day(shift_this_week_if_past(expr, reference_time, dt)));
             }
         }
     }
@@ -845,13 +946,26 @@ pub fn resolve_deadline_in_text(
     None
 }
 
+/// "本周X/这周X" 解出过去日期时顺延一周
+///
+/// 事件场景需要保留"补记昨天"的能力，但待办截止时间不能指向过去——
+/// 周日说"这周五"，解出 10-30（已过），待办创建即被判 auto_invalid 而消失。
+fn shift_this_week_if_past(
+    expr: &str,
+    reference: DateTime<Utc>,
+    dt: DateTime<Utc>,
+) -> DateTime<Utc> {
+    let is_this_week = expr.contains("本周") || expr.contains("这周") || expr.contains("本星期");
+    if is_this_week && dt.date_naive() < reference.date_naive() {
+        return dt + chrono::Duration::days(7);
+    }
+    dt
+}
+
 /// 找出句中所有"精确时间表达"及其结束位置（字节偏移）
 fn find_time_exprs_with_pos(sentence: &str) -> Vec<(String, usize)> {
-    let re = match regex::Regex::new(
-        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|(?:[一二两三四五六七八九十\d]+\s*(?:天|日|周|星期|个月|月|年)\s*(?:以后|之后|后))|半年后|\d{1,2}月\d{1,2}[日号]|\d{1,2}号)",
-    ) {
-        Ok(re) => re,
-        Err(_) => return Vec::new(),
+    let Some(re) = time_expr_re() else {
+        return Vec::new();
     };
     re.find_iter(sentence)
         .map(|m| (m.as_str().to_string(), m.end()))
@@ -873,10 +987,7 @@ fn find_time_exprs(sentence: &str) -> Vec<String> {
 /// 例如"整理下季度的客户反馈，下周一之前要完成"里，
 /// 截止日是"下周一"而不是"下季度"（后者会让日期偏到季度初）。
 fn find_precise_time_expr(sentence: &str) -> Option<String> {
-    let re = regex::Regex::new(
-        r"(大后天|下下周[一二三四五六日]|下周[一二三四五六日]|本周[一二三四五六日]|这周[一二三四五六日]|周[一二三四五六日]|下下周|下周|本周|这周|上个月|下个月|今天|今日|明天|明日|后天|昨天|前天|周末|月底|月初|(?:[一二两三四五六七八九十\d]+\s*(?:天|日|周|星期|个月|月|年)\s*(?:以后|之后|后))|半年后|\d{1,2}月\d{1,2}[日号]|\d{1,2}号)",
-    )
-    .ok()?;
+    let re = precise_time_expr_re()?;
     re.find(sentence).map(|m| m.as_str().to_string())
 }
 
@@ -949,6 +1060,55 @@ mod deadline_tests {
         let c3 = "两周后要交体检报告。";
         let d3 = resolve_deadline_in_text(c3, "交体检报告", ref_time()).unwrap();
         assert_eq!(d3.date_naive().to_string(), "2026-11-11");
+    }
+
+    /// 回归：N-14 日期写法必须一致容错（空格 / 斜杠 / 中文数字）
+    ///
+    /// 之前扫描正则不支持 `\s*` 与 `/`，解析器却支持，导致
+    /// "11 月 12 号" 扫不到 → 静默落到"今天 +7"。
+    #[test]
+    fn test_n14_date_formats_are_consistent() {
+        use chrono::TimeZone;
+        let r = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+        let d = |s: &str| parse_event_time(s, r).map(|x| x.date_naive().to_string());
+
+        assert_eq!(d("11月12号"), Some("2026-11-12".to_string()));
+        assert_eq!(d("11 月 12 号"), Some("2026-11-12".to_string()));
+        assert_eq!(d("11/12"), Some("2026-11-12".to_string()));
+        assert_eq!(d("11月12日"), Some("2026-11-12".to_string()));
+        assert_eq!(d("十二月二十号"), Some("2026-12-20".to_string()));
+        assert_eq!(d("十一月十二号"), Some("2026-11-12".to_string()));
+
+        // 整句也要能落到正确日期（扫描器 + 解析器联合）
+        let dt = resolve_deadline_in_text(
+            "提醒我 11 月 12 号前把索引重建脚本交出来",
+            "交索引重建脚本",
+            r,
+        )
+        .expect("应解析出 11 月 12 号");
+        assert_eq!(dt.date_naive().to_string(), "2026-11-12");
+    }
+
+    /// 回归：N-17「这周五」在周日不能解成已过去的日期
+    ///
+    /// 事件场景允许指向过去（补记），但待办截止时间指向过去会让待办
+    /// 创建即 auto_invalid、用户在列表里永远看不到。
+    #[test]
+    fn test_n17_this_week_does_not_go_past_for_deadline() {
+        use chrono::TimeZone;
+        // 2026-11-01 是周日
+        let r = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+        let dt = resolve_deadline_in_text(
+            "我答应用户这周五给出一份按级别排序的问题清单。",
+            "给出问题清单",
+            r,
+        )
+        .expect("应解析出这周五");
+        assert_eq!(dt.date_naive().to_string(), "2026-11-06");
+
+        // 事件侧仍保留"补记过去"的能力：直接解析仍是上周五
+        let ev = parse_event_time("这周五", r).unwrap();
+        assert_eq!(ev.date_naive().to_string(), "2026-10-30");
     }
 
     /// 回归：X-05「12月20号」不能被截成「20号」，也不能借用下一句的「月底」
