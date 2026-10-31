@@ -127,3 +127,9 @@ data_smoke/
 .speed*.err
 .startup_*.log
 .startup_*.err
+
+# 本地临时验证脚本（不进版本库）
+.cpu_*.py
+.cpu_*.txt
+.verify_*.py
+.restart_*.py
