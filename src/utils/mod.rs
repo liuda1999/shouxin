@@ -2,6 +2,7 @@
 //!
 //! 提供通用工具函数和辅助方法
 
+pub mod cpu_budget;
 pub mod event_meta;
 pub mod time_parser;
 pub mod validation;

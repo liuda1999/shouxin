@@ -28,7 +28,29 @@ pub struct Settings {
     pub extraction: ExtractionSettings,
     #[serde(default)]
     pub todo: TodoSettings,
+    /// 运行时资源约束
+    #[serde(default)]
+    pub runtime: RuntimeSettings,
 }
+
+/// 运行时资源约束
+///
+/// `max_cpu_percent` 约束的是**整个进程**占整机 CPU 的上限（不是"线程数占比"）：
+/// Windows 下通过作业对象 CPU 速率控制硬上限实现，其余平台退化为线程预算。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeSettings {
+    /// 进程 CPU 占用上限（百分比，1-100）
+    #[serde(default = "default_max_cpu_percent")]
+    pub max_cpu_percent: u32,
+}
+
+impl Default for RuntimeSettings {
+    fn default() -> Self {
+        Self { max_cpu_percent: default_max_cpu_percent() }
+    }
+}
+
+fn default_max_cpu_percent() -> u32 { 60 }
 
 /// 待办生命周期策略
 ///
@@ -438,6 +460,7 @@ impl Default for Settings {
             event: EventSettings::default(),
             extraction: ExtractionSettings::default(),
             todo: TodoSettings::default(),
+            runtime: RuntimeSettings::default(),
         }
     }
 }

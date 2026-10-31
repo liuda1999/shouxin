@@ -6,7 +6,7 @@
 
 **本地优先、隐私至上的智能体记忆子系统。**
 
-[![version](https://img.shields.io/badge/version-0.6.9-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.7.0-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 
@@ -312,13 +312,20 @@ port = 3000
    模型全部驻留内存，不向 GPU 卸载任何层；`n_gpu_layers` 强制为 0。
    需要 GPU 时必须显式改 `use_gpu = true` 并用 `--features gguf-cuda` 编译。
 
-2. **GPU 模式下 CPU 占用不超过 60%**
-   即使推理主要跑在 GPU 上，llama.cpp 仍会开线程做数据搬运与采样。
-   实际线程数 = `min(threads, **物理核数** × gpu_max_cpu_percent%)`（向下取整，默认 60%）。
-   16 物理核机器上最多用 9 个线程，绝不会吃满；
-   生效时日志会打印：`[GGUF] GPU 模式限制 CPU 占用：threads 16 -> 9（核心 16，上限 60%）`。
+2. **整个进程占整机 CPU 不超过 60%**
+   约束对象是"**这个项目**能用多少 CPU"，不是"线程数占核数多少"——后者只是代理指标，
+   而且 API / 嵌入 / 心跳的线程都不在 llama.cpp 线程数里。
 
-纯 CPU 模式下线程数按 `threads` 配置，并且不会超过核心数。
+   - 第一道闸门：Windows **作业对象 CPU 速率硬上限**（`max_cpu_percent`，默认 60），
+     由内核按时间片结算，覆盖进程内所有线程；
+   - 第二道闸门：推理与嵌入线程数按同一比例折算（32 逻辑核 → 19 线程），
+     并在非 Windows 平台作为兜底。
+
+   启动日志：`[CPU] 进程级硬上限已生效: 60%（整机 32 逻辑核，线程预算 19）`。
+
+   实测（13MB 文本嵌入压测，5 秒窗口）：约束前峰值 **94.2%**，约束后均值 **60.4%**。
+   注意 Windows 的速率控制按时间片结算，2 秒窗口仍可能瞬时到 65%；
+   要严格不越线，把 `max_cpu_percent` 调到 55 留出余量。
 
 ---
 
@@ -490,7 +497,7 @@ ShouXin/
 
 ## 版本
 
-当前版本 **0.6.9**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
+当前版本 **0.7.0**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 

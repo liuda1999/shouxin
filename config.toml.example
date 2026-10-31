@@ -134,3 +134,11 @@ max_pending_before_archive = 50   # 超过该值心跳归档最旧一批
 archive_keep_count = 50           # 归档时保留的 pending 数
 reminder_threshold = 30           # 超过该值生成"任务提醒"
 archive_after_days = 30           # 超过该天数未更新视为陈旧
+
+# ============ 运行时资源约束 ============
+[runtime]
+# 整个进程允许占用整机 CPU 的上限（百分比）
+# 注意：约束的是"本项目占整机 CPU"，不是"线程数占核数"。
+# Windows 下由作业对象 CPU 速率硬上限强制执行（覆盖推理/嵌入/心跳等所有线程）；
+# 线程数会按同一比例折算作为第二道约束。
+max_cpu_percent = 60

@@ -164,9 +164,12 @@ impl GgufClient {
         // 原则：本项目是后台服务，不能把 CPU 核心吃满。
         // 即使推理主要跑在 GPU 上，llama.cpp 仍会开多个线程做数据搬运/采样，
         // 因此这里把线程数硬性压到"核心数 × gpu_max_cpu_percent%"以内。
+        // CPU 预算：优先用 [runtime].max_cpu_percent（进程级语义），
+        // 兼容旧的 [llm.gguf].gpu_max_cpu_percent。
         let gpu_max_cpu_percent = config
             .extra_params
-            .get("gpu_max_cpu_percent")
+            .get("cpu_budget_percent")
+            .or_else(|| config.extra_params.get("gpu_max_cpu_percent"))
             .and_then(|v| v.as_u64())
             .unwrap_or(60) as u32;
 
@@ -970,18 +973,17 @@ pub(crate) fn physical_cores() -> usize {
 ///
 /// * 纯 CPU：按配置值，但不超过核心数（后台服务原则：不主动开超线程以外的额外并发）
 /// * GPU：再叠加"最多占用 N% 核心"的硬性上限
+/// 线程数预算
+///
+/// **所有模式**都按"核心数 × 百分比"封顶：设计约束是"本项目占整机 CPU ≤ N%"，
+/// CPU 模式下同样适用。`gpu_enabled` 仅保留参数以兼容调用方，不再影响上限。
 pub(crate) fn resolve_threads(
     configured: usize,
     cores: usize,
-    gpu_enabled: bool,
+    _gpu_enabled: bool,
     percent: u32,
 ) -> usize {
-    let cores = cores.max(1);
-    if gpu_enabled {
-        cap_threads_for_gpu(configured, cores, percent)
-    } else {
-        configured.max(1).min(cores)
-    }
+    cap_threads_for_gpu(configured, cores, percent)
 }
 
 /// GPU 模式下按"最多占用 N% 核心"折算线程数
@@ -998,11 +1000,17 @@ pub(crate) fn cap_threads_for_gpu(configured: usize, cores: usize, percent: u32)
 mod thread_cap_tests {
     use super::{cap_threads_for_gpu, resolve_threads};
 
+    /// 回归：CPU 模式也必须按"整机 60%"封顶
+    ///
+    /// 设计约束是"本项目占整机 CPU ≤ 60%"，不是"GPU 模式下才限制"。
+    /// 旧实现 CPU 模式直接把 16 线程全开，等于没有约束。
     #[test]
-    fn cpu_mode_uses_configured_threads_up_to_cores() {
-        // 纯 CPU：配置 16、32 核 → 16；配置 64 → 夹到 32
+    fn cpu_mode_is_also_capped_to_percent() {
+        // 32 核 × 60% = 19，配置 16 不被抬高、64 被压到 19
         assert_eq!(resolve_threads(16, 32, false, 60), 16);
-        assert_eq!(resolve_threads(64, 32, false, 60), 32);
+        assert_eq!(resolve_threads(64, 32, false, 60), 19);
+        // 16 核 × 60% = 9，配置 16 必须压到 9
+        assert_eq!(resolve_threads(16, 16, false, 60), 9);
         assert_eq!(resolve_threads(0, 32, false, 60), 1);
     }
 

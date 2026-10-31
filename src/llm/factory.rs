@@ -76,6 +76,18 @@ fn build_client(
                         "timeout_secs".to_string(),
                         serde_json::Value::Number(settings.timeout_secs.into()),
                     );
+                    // 进程级 CPU 预算：线程数按同一比例折算
+                    params.insert(
+                        "cpu_budget_percent".to_string(),
+                        serde_json::Value::Number(
+                            std::env::var("SHOUXIN_CPU_BUDGET_PERCENT")
+                                .ok()
+                                .and_then(|v| v.parse::<u64>().ok())
+                                .unwrap_or(60)
+                                .clamp(1, 100)
+                                .into(),
+                        ),
+                    );
                     params.insert(
                         "context_size".to_string(),
                         serde_json::Value::Number(gguf.context_size.into()),

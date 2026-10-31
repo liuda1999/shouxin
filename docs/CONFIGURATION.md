@@ -54,7 +54,7 @@ threads = 16
 batch_size = 2048
 use_gpu = false          # 后台服务原则：默认不占显存
 n_gpu_layers = 0
-gpu_max_cpu_percent = 60 # 仅 GPU 模式生效
+gpu_max_cpu_percent = 60 # 已弃用：改用 [runtime].max_cpu_percent（保留兼容）
 offload_kv_cache = false
 ```
 

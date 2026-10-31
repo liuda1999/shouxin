@@ -354,6 +354,35 @@ async fn run_api_server(
     tracing::info!("Loaded config: LLM primary={}, secondary={:?}", settings.llm.primary, settings.llm.secondary);
 
     // ------------------------------------------------------------------
+    // 进程级 CPU 预算：设计约束是"本项目占整机 CPU ≤ N%"，不是"线程数 ≤ 核数×N%"。
+    // 必须在模型加载/嵌入器初始化之前施加，否则启动阶段的峰值不受约束。
+    // ------------------------------------------------------------------
+    let cpu_cap = settings.runtime.max_cpu_percent.clamp(1, 100);
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let thread_budget = shouxin::utils::cpu_budget::thread_budget(cores, cpu_cap);
+    match shouxin::utils::cpu_budget::apply_process_cpu_cap(cpu_cap) {
+        Ok(pct) => tracing::info!(
+            "[CPU] 进程级硬上限已生效: {}%（整机 {} 逻辑核，线程预算 {}）",
+            pct,
+            cores,
+            thread_budget
+        ),
+        Err(e) => tracing::warn!(
+            "[CPU] 进程级硬上限未能施加（{}），退化为线程预算：{}%（{} 核 × {}% → {} 线程）",
+            e,
+            cpu_cap,
+            cores,
+            cpu_cap,
+            thread_budget
+        ),
+    }
+    // 把同一预算传给 ONNX Runtime / OpenMP：嵌入器默认会吃满所有核
+    std::env::set_var("OMP_NUM_THREADS", thread_budget.to_string());
+    std::env::set_var("ORT_INTRA_OP_NUM_THREADS", thread_budget.to_string());
+    // LlmSettings 层拿不到 runtime 配置，用环境变量把预算透传给 LLM 工厂
+    std::env::set_var("SHOUXIN_CPU_BUDGET_PERCENT", cpu_cap.to_string());
+
+    // ------------------------------------------------------------------
     // 数据目录解析：命令行 --data-dir > 配置 [storage].data_dir > 默认 "./data"
     //
     // 兼容性：默认值 "./data" 保持历史布局（Sled 在仓库根的 ./.sled_data），
