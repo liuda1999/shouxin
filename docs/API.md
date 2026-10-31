@@ -276,6 +276,12 @@ POST /api/memory/search/history
 响应新增 `matched_terms`（实际参与匹配的词）。全空结果时可据此判断是"确实没有记忆"
 还是"问法没被识别"；`query` 会先分词，再把其中出现的联系人姓名补进候选词。
 
+**语义兜底**：某一类（events / history）关键词命中少于 2 条时，自动用向量召回补足，
+并通过 `source_conversation_id` 回源字典库返回**对话原文**。兜底结果带
+`"source": "semantic"` 与 `similarity` 字段，便于调用方判断可信度。
+
+实测（两套新语料、问法不含原句关键词）：关键词-only 召回 1/12，开启兜底后 12/12 与 8/8。
+
 ```json
 { "matched_terms": ["李明最近有什么变化", "李明"] }
 ```

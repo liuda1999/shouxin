@@ -2746,6 +2746,73 @@ async fn smart_search(
         }
     }
 
+    // 语义兜底：关键词只认字面命中，而真实回忆经常换词（"办喜事" vs "婚礼"、
+    // "周转" vs "借钱"）。某类结果稀少时用向量召回补足，并回源到字典库给出原文。
+    if req.types.iter().any(|t| t == "events") && response.events.len() < 2 {
+        if let Ok(hits) = async_memory
+            .semantic_search(
+                &req.query,
+                safe_limit,
+                req.scope,
+                req.user_id.as_deref(),
+                Some(vec!["event".to_string()]),
+            )
+            .await
+        {
+            for h in hits {
+                if response.events.len() >= safe_limit {
+                    break;
+                }
+                let title = h
+                    .material
+                    .summary
+                    .clone()
+                    .unwrap_or_else(|| h.material.content.chars().take(40).collect());
+                response.events.push(serde_json::json!({
+                    "title": title,
+                    "summary": h.material.content,
+                    "similarity": (h.score * 1000.0).round() / 1000.0,
+                    "source": "semantic",
+                    "source_conversation_id": h.material.source_conversation_id,
+                }));
+            }
+        }
+    }
+
+    if req.types.iter().any(|t| t == "history") && response.history.len() < 2 {
+        let dict = async_memory.get_dictionary_store();
+        if let Ok(hits) = async_memory
+            .semantic_search(
+                &req.query,
+                safe_limit * 2,
+                req.scope,
+                req.user_id.as_deref(),
+                None,
+            )
+            .await
+        {
+            let mut seen: std::collections::HashSet<String> = response
+                .history
+                .iter()
+                .filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+                .collect();
+            for h in hits {
+                if response.history.len() >= safe_limit {
+                    break;
+                }
+                let Some(cid) = h.material.source_conversation_id.clone() else {
+                    continue;
+                };
+                if !seen.insert(cid.clone()) {
+                    continue;
+                }
+                if let Ok(Some(conv)) = dict.get_conversation_by_id(&cid).await {
+                    response.history.push(serde_json::to_value(conv).unwrap_or_default());
+                }
+            }
+        }
+    }
+
     ApiResponse::success(response)
 }
 

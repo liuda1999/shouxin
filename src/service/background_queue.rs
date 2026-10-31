@@ -554,6 +554,50 @@ impl BackgroundTaskQueue {
         let owner_type = task.owner_type;
         let owner_id = &task.owner_id;
 
+        // 对话原文也入向量库。
+        //
+        // 之前只有"事件"进向量库，语义召回看不到没有抽取出事件的对话
+        // （纯闲聊、抽取漏召回），于是"换一种问法就找不到"。实测 12 个自然语言问题里
+        // 有 4 个因此失败。这里给原文补一条 embedding，类型记为 conversation，
+        // 不计入素材统计（COUNTED_MATERIAL_TYPES 不含它）。
+        if let Ok(emb) = state.embedder.embed(&task.conversation_text).await {
+            let mut md = HashMap::new();
+            md.insert(
+                "material_type".to_string(),
+                serde_json::Value::String("conversation".to_string()),
+            );
+            md.insert(
+                "source_conversation_id".to_string(),
+                serde_json::Value::String(task.conversation_id.clone()),
+            );
+            md.insert(
+                "owner_type".to_string(),
+                serde_json::Value::String(format!("{:?}", owner_type)),
+            );
+            md.insert(
+                "owner_id".to_string(),
+                serde_json::Value::String(owner_id.clone()),
+            );
+            let conv_memory = crate::core::Memory {
+                id: format!("conversation:{}", task.conversation_id),
+                user_id: task.user_id.clone(),
+                agent_id: None,
+                content: task.conversation_text.clone(),
+                embedding: Some(emb),
+                metadata: md,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                memory_type: crate::core::MemoryType::LongTerm,
+                state: crate::core::MemoryState::Active,
+                hash: None,
+                score: 0.5,
+            };
+            // 写失败不阻断抽取主流程：召回质量下降比整条链路失败更可接受
+            if let Err(e) = state.vector.insert(conv_memory).await {
+                tracing::warn!("[write_results] 对话原文入向量库失败: {}", e);
+            }
+        }
+
         // 统一写入层：联系人写入（字典库权威 + 关系库索引 + 别名 + 活跃度）
         //
         // 这里不再自己拼 ContactIndex（旧实现硬编码 aliases="[]" 等，会把已有
