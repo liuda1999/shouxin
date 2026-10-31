@@ -259,7 +259,13 @@ impl EmbeddedVectorStore {
                     let mat = LearningMaterial {
                         id: 0,
                         content: mem.content.clone(),
-                        summary: None,
+                        // 文件块把文件名写在 metadata.summary 里（N-08），
+                        // 这里不能硬编码 None，否则检索结果拿不到来源文件。
+                        summary: mem
+                            .metadata
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                         source_conversation_id: mem.metadata
                             .get("source_conversation_id")
                             .and_then(|v| v.as_str())

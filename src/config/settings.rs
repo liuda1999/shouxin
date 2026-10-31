@@ -42,15 +42,25 @@ pub struct SearchSettings {
     /// 语义兜底的最低相似度（e5-base 中文无关句基线约 0.84–0.89）
     #[serde(default = "default_semantic_min_score")]
     pub semantic_min_score: f32,
+    /// 文件块的语义下限
+    ///
+    /// 文档切片短、上下文少，同一份文档的相关问法通常比对话低 3–5 个点
+    /// （实测相关 0.866–0.892、无关 0.803–0.819），所以单独放低一档。
+    #[serde(default = "default_semantic_min_score_file")]
+    pub semantic_min_score_file: f32,
 }
 
 impl Default for SearchSettings {
     fn default() -> Self {
-        Self { semantic_min_score: default_semantic_min_score() }
+        Self {
+            semantic_min_score: default_semantic_min_score(),
+            semantic_min_score_file: default_semantic_min_score_file(),
+        }
     }
 }
 
 fn default_semantic_min_score() -> f32 { 0.90 }
+fn default_semantic_min_score_file() -> f32 { 0.85 }
 
 /// 运行时资源约束
 ///

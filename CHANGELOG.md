@@ -1,5 +1,52 @@
 # 变更记录
 
+## [0.7.2] 2026-11-01 — 补上 N-09 / N-08：虚拟角色接入联系人体系、文件块进入融合检索
+
+上一轮把这两条列为"结构性改动、未修"。这次按原设计补齐，都是**读取路径没接上**造成的空洞。
+
+### N-09 虚拟角色与联系人体系断裂
+
+**现象**：`POST /api/virtual_entities` 成功，但 `GET /api/contacts/:id/detail` 404、
+`search/contacts?include_virtual=true` 返回 0。
+
+**根因**：虚拟角色独立建表（`(name, source_work)` 唯一），联系人检索与详情只查 `contact_index`，
+两条数据从不交汇。
+
+**修复**：单向镜像——创建/更新/删除时同步维护 `contact_index` 里的一行（`is_virtual=1`），
+`relationship_tags` 与 `disambiguation` 写入作品名用于区分同名角色；
+启动时全量补镜像，覆盖升级前创建的历史角色（实测补了 11 个内置角色）。
+虚拟表仍是权威，镜像只是检索投影。
+
+**实测**：创建"角色N89" → 检索 `include_virtual=true` 命中 1 条（disambiguation=作品名）；
+不传参数时返回 0 条（不混入真人联系人）；详情接口 200，`is_virtual=true`。
+
+### N-08 文件内容进不了融合检索
+
+**现象**：上传文档后 `/api/vector/search` 能查到切片，但 `/api/search/smart` 只有对话，
+"文档知识"进不了统一检索面。
+
+**根因**：`smart_search` 只查四类结构化数据 + 对话/事件向量，没有文件块通道；
+且文件块的文件名在 material 映射里被丢掉了（三处映射中有一处硬编码 `summary: None`）。
+
+**修复**：
+
+- `smart_search` 新增 `files` 通道（默认类型之一），按 `material_type=file_chunk` 做语义召回，
+  返回 `file_id / file_name / snippet / similarity / source`；
+- 文件块入库时把 `file_name` 写入 `metadata.summary`、`file_id` 写入 `source_conversation_id`；
+- 修正三处 `LearningMaterial` 映射，其中 `vector/store.rs` 那处硬编码 `summary: None`
+  是"文件名永远为空"的真凶；
+- 文件块单独适用 `[search].semantic_min_score_file`（默认 **0.85**），
+  因为文档切片短、上下文少：实测相关问法 0.866–0.892，无关问法 0.803–0.819，
+  用对话的 0.90 会把"配额和限流是多少"这种正确问法挡掉。
+
+**实测**：上传 `n8-spec.md` → 处理完成 → 问"跨命名空间访问会返回什么" →
+`files=1`，`file_name=n8-spec.md`，`similarity=0.893`。
+
+### 验证
+
+真实接口 10 项全部通过（创建/检索/默认隔离/详情/上传/处理/召回/文件名/相似度）。
+
+
 ## [0.7.1] 2026-11-01 — 按合并测试报告修复：时间语义、检索可信度、事件字段
 
 来源：[docs/TEST_REPORT_MERGED_2026-11-01.md](docs/TEST_REPORT_MERGED_2026-11-01.md)。

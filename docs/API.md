@@ -282,6 +282,16 @@ POST /api/memory/search/history
 响应新增 `matched_terms`（实际参与匹配的词）。全空结果时可据此判断是"确实没有记忆"
 还是"问法没被识别"；`query` 会先分词，再把其中出现的联系人姓名补进候选词。
 
+响应还包含 `files`（上传文档的切片命中）：
+
+```json
+{ "files": [{ "file_id": "f098…", "file_name": "n8-spec.md",
+             "snippet": "跨命名空间访问规范 …", "similarity": 0.893, "source": "semantic" }] }
+```
+
+文件块只存在于向量库，走语义检索召回，并单独适用 `[search].semantic_min_score_file`
+（默认 0.85；实测相关 0.866–0.892、无关 0.803–0.819）。
+
 **语义兜底**：某一类（events / history）关键词命中少于 2 条时，自动用向量召回补足，
 并通过 `source_conversation_id` 回源字典库返回**对话原文**。兜底结果带
 `"source": "semantic"` 与 `similarity` 字段，便于调用方判断可信度。

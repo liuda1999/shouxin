@@ -751,6 +751,67 @@ impl RelationalStore {
         Ok(contacts)
     }
 
+    /// 把虚拟角色镜像到 contact_index（is_virtual=1）
+    ///
+    /// 原设计里虚拟角色独立建表（(name, source_work) 唯一、可按作品共存），
+    /// 但联系人检索/详情只认 contact_index，于是"创建成功却查不到详情"（N-09）。
+    /// 这里做单向镜像：虚拟表仍是权威，contact_index 只是便于统一检索的投影。
+    pub async fn upsert_virtual_contact(
+        &self,
+        info: &crate::stores::relational::VirtualCharacterInfo,
+    ) -> Result<(), ShouxinError> {
+        let c = &info.character;
+        let aliases: Vec<String> = info.aliases.iter().map(|a| a.alias_name.clone()).collect();
+        let aliases_json = serde_json::to_string(&aliases).unwrap_or_else(|_| "[]".into());
+        // 作品名进 relationship_tags 与 disambiguation：
+        // "孙悟空" 可能来自《西游记》也可能来自《龙珠》，靠它区分。
+        let tags = serde_json::to_string(&c.source_work.clone().into_iter().collect::<Vec<_>>())
+            .unwrap_or_else(|_| "[]".into());
+        let background = c
+            .persona
+            .clone()
+            .or_else(|| c.canon.clone())
+            .unwrap_or_default();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO contact_index \
+             (id, name, aliases, is_self, created_at, last_interaction_at, related_contact_ids, \
+              relationship_tags, relation_weight, background, notes, owner_type, owner_id, \
+              is_agent, is_virtual, is_archived, activity_score, disambiguation) \
+             VALUES (?, ?, ?, 0, ?, ?, '[]', ?, '0.5', ?, '', ?, ?, 0, 1, 0, 0.0, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+              name = excluded.name, \
+              aliases = excluded.aliases, \
+              relationship_tags = excluded.relationship_tags, \
+              background = excluded.background, \
+              disambiguation = excluded.disambiguation, \
+              is_virtual = 1",
+        )
+        .bind(&c.id)
+        .bind(&c.name)
+        .bind(&aliases_json)
+        .bind(&c.created_at.to_rfc3339())
+        .bind(&now)
+        .bind(&tags)
+        .bind(&background)
+        .bind(format!("{:?}", c.owner_type))
+        .bind(&c.owner_id)
+        .bind(c.source_work.clone())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 删除虚拟角色在 contact_index 的镜像行
+    pub async fn delete_virtual_contact_mirror(&self, id: &str) -> Result<(), ShouxinError> {
+        sqlx::query("DELETE FROM contact_index WHERE id = ? AND is_virtual = 1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// 按摘要精确搜索事件
     ///
     /// # 参数

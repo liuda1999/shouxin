@@ -216,6 +216,13 @@ meta                    day_index_version                 （日索引版本，�
 `contact_index.aliases` 与 `contact_alias_index` 的**并集**，
 `related_contacts` 已把 ID 解析为姓名，`is_virtual` 用于区分真实联系人与虚拟角色。
 
+### 6.1.2 虚拟角色的镜像
+
+虚拟角色独立建表（`(name, source_work)` 唯一、可按作品共存），但联系人的检索与详情
+只认 `contact_index`。创建/更新/删除时把角色**单向镜像**到 `contact_index`（`is_virtual=1`），
+`relationship_tags` 与 `disambiguation` 写入作品名，用于区分同名角色（孙悟空@西游记 vs 孙悟空@龙珠）。
+启动时做一次全量补镜像，覆盖升级前创建的历史角色。虚拟表仍是权威，`contact_index` 只是检索投影。
+
 ### 6.2 联系人全息详情（三库联查）
 
 `GET /api/contacts/:id/detail` 是唯一一个同时读三库的联系人接口：

@@ -1350,7 +1350,11 @@ impl ThreeLibraryMemoryManager {
         LearningMaterial {
             id: numeric_id,
             content: memory.content.clone(),
-            summary: None,
+            summary: memory
+                .metadata
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             source_conversation_id,
             created_at: memory.created_at,
             material_type,

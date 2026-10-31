@@ -55,7 +55,12 @@ fn memory_to_material(mem: &crate::core::Memory) -> LearningMaterial {
     LearningMaterial {
         id: 0,
         content: mem.content.clone(),
-        summary: None,
+        // 文件块把文件名放在 summary 里，检索结果可直接展示来源
+        summary: mem
+            .metadata
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         source_conversation_id: mem
             .metadata
             .get("source_conversation_id")

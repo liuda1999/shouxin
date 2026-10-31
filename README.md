@@ -6,7 +6,7 @@
 
 **给智能体挂载的本地记忆子系统：对话进得去，事实落得住，换种问法也能想起来。**
 
-[![version](https://img.shields.io/badge/version-0.7.1-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.7.2-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 [![tests](https://img.shields.io/badge/tests-109%20unit%20%2B%2013%20suites-brightgreen)](docs/ARCHITECTURE.md)
@@ -45,7 +45,7 @@
 |------|------|
 | 单条写入 | `POST /api/memory/add`，立即返回 `conversation_id`，可带历史 `timestamp` 导入旧数据 |
 | 批量导入 | `POST /api/memory/batch`，单批 ≤500 条，逐条返回 id；实测 12 条接收耗时 1.7ms |
-| 文件入库 | 上传文本/文档 → 提取 → 按 1200 字上限切块（句读处断开）→ 嵌入 → 可检索 |
+| 文件入库 | 上传文本/文档 → 提取 → 按 1200 字上限切块（句读处断开）→ 嵌入 → **融合检索直接可召回**（带文件名与相似度） |
 | 异步抽取 | 后台队列单并发执行；`extract_status` 查进度，失败可 `replay` 重放 |
 | 多轮对话 | `messages: [{role, content}]`，落库与抽取提示词都保留「我：/对方：」，用于判方向 |
 
@@ -73,7 +73,7 @@
 |------|------|
 | 联系人档案 | 姓名 / 别名 / 关系标签 / 画像 / 关联事件 / 原文证据，`/api/contacts/:id/detail` 一次取全 |
 | 同名消歧 | 身份是 UUID，姓名不唯一；靠消歧标签 / 身份线索 / 别名多字段投票区分 |
-| 虚拟角色 | 历史 / 神话 / 动漫 / 游戏角色独立建表，与真人隔离，同名可共存 |
+| 虚拟角色 | 历史 / 神话 / 动漫 / 游戏角色独立建表（按作品唯一），与真人隔离；通过 `include_virtual=true` 共用联系人检索与详情 |
 | 待办 | 自动识别待办与截止时间（中文相对时间本地解析），完成操作幂等，冷热归档 |
 | 主动心跳 | 自适应频率巡检：待办提醒、画像维护、待确认问题；空转轮次毫秒级，不空烧 CPU |
 
@@ -556,7 +556,7 @@ ShouXin/
 
 ## 版本
 
-当前版本 **0.7.1**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
+当前版本 **0.7.2**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 

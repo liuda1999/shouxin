@@ -2657,6 +2657,8 @@ fn default_search_types() -> Vec<String> {
         "events".to_string(),
         "history".to_string(),
         "todos".to_string(),
+        // 文件块：上传的文档同样属于"记忆"，默认参与召回（N-08）
+        "files".to_string(),
     ]
 }
 
@@ -2666,6 +2668,8 @@ pub struct SmartSearchResponse {
     pub events: Vec<serde_json::Value>,
     pub history: Vec<serde_json::Value>,
     pub todos: Vec<serde_json::Value>,
+    /// 文件块命中（上传文档的切片）
+    pub files: Vec<serde_json::Value>,
     /// 实际参与匹配的词（分词结果 + 从 query 里识别出的联系人名）
     ///
     /// 全空结果时调用方可以据此区分"确实没有记忆"与"问法没被识别"。
@@ -2704,8 +2708,17 @@ async fn smart_search(
         events: Vec::new(),
         history: Vec::new(),
         todos: Vec::new(),
+        files: Vec::new(),
         matched_terms: terms.clone(),
     };
+
+    // 语义兜底的最低相似度：e5-base 中文无关句基线约 0.84–0.89，
+    // 不设门槛时"火星殖民计划"也能返回两三条无关记忆，调用方无法判断可信度。
+    let min_score: f32 = std::env::var("SHOUXIN_SEMANTIC_MIN_SCORE")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.90)
+        .clamp(0.5, 0.99);
 
     for search_type in &req.types {
         match search_type.as_str() {
@@ -2779,6 +2792,42 @@ async fn smart_search(
                     }
                 }
             }
+            "files" => {
+                let file_min_score: f32 = std::env::var("SHOUXIN_SEMANTIC_MIN_SCORE_FILE")
+                    .ok()
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .unwrap_or(0.85)
+                    .clamp(0.5, 0.99);
+                // 文件块只存在于向量库（关系库没有它的结构化索引），
+                // 所以这里直接用语义检索，并同样受 min_score 约束（N-08）。
+                if let Ok(hits) = async_memory
+                    .semantic_search(
+                        &req.query,
+                        safe_limit,
+                        req.scope,
+                        req.user_id.as_deref(),
+                        Some(vec!["file_chunk".to_string()]),
+                    )
+                    .await
+                {
+                    for h in hits {
+                        if response.files.len() >= safe_limit {
+                            break;
+                        }
+                        if h.score < file_min_score {
+                            continue;
+                        }
+                        let snippet: String = h.material.content.chars().take(200).collect();
+                        response.files.push(serde_json::json!({
+                            "file_id": h.material.source_conversation_id,
+                            "file_name": h.material.summary,
+                            "snippet": snippet,
+                            "similarity": (h.score * 1000.0).round() / 1000.0,
+                            "source": "semantic",
+                        }));
+                    }
+                }
+            }
             "history" => {
                 // 不再硬编码 30 天：对话原文没有冷热分区、永久保留，按需回溯。
                 let time_range = (
@@ -2808,14 +2857,6 @@ async fn smart_search(
 
     // 语义兜底：关键词只认字面命中，而真实回忆经常换词（"办喜事" vs "婚礼"、
     // "周转" vs "借钱"）。某类结果稀少时用向量召回补足，并回源到字典库给出原文。
-    // 语义兜底的最低相似度：e5-base 中文无关句基线约 0.84–0.89，
-    // 不设门槛时"火星殖民计划"也能返回两三条无关记忆，调用方无法判断可信度。
-    let min_score: f32 = std::env::var("SHOUXIN_SEMANTIC_MIN_SCORE")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(0.90)
-        .clamp(0.5, 0.99);
-
     if req.types.iter().any(|t| t == "events") && response.events.len() < 2 {
         if let Ok(hits) = async_memory
             .semantic_search(
@@ -3068,7 +3109,14 @@ async fn add_virtual_entity(
     };
 
     match rel_store.virtual_alias_store().create(input).await {
-        Ok(info) => ApiResponse::success(VirtualEntityResponse::from(&info)),
+        Ok(info) => {
+            // 镜像到 contact_index：否则"创建成功但 /api/contacts/:id/detail 404、
+            // 联系人检索查不到"（N-09）。镜像失败不阻断创建，但必须留日志。
+            if let Err(e) = rel_store.upsert_virtual_contact(&info).await {
+                warn!("虚拟角色镜像到 contact_index 失败: {}", e);
+            }
+            ApiResponse::success(VirtualEntityResponse::from(&info))
+        }
         Err(e) => {
             error!("创建虚拟角色失败: {}", e);
             ApiResponse::error_with_status(e.to_string(), StatusCode::BAD_REQUEST)
@@ -3113,7 +3161,12 @@ async fn update_virtual_entity(
                 }
             }
             match store.get_by_id(&character_id).await {
-                Ok(Some(info)) => ApiResponse::success(VirtualEntityResponse::from(&info)),
+                Ok(Some(fresh)) => {
+                    if let Err(e) = rel_store.upsert_virtual_contact(&fresh).await {
+                        warn!("虚拟角色镜像更新失败: {}", e);
+                    }
+                    ApiResponse::success(VirtualEntityResponse::from(&fresh))
+                }
                 _ => ApiResponse::success(VirtualEntityResponse::from(&info)),
             }
         }
@@ -3131,7 +3184,12 @@ async fn delete_virtual_entity(
 ) -> ApiResponse<serde_json::Value> {
     let rel_store = async_memory.get_relational_store();
     match rel_store.virtual_alias_store().delete(&character_id).await {
-        Ok(true) => ApiResponse::success(serde_json::json!({ "deleted": true })),
+        Ok(true) => {
+            if let Err(e) = rel_store.delete_virtual_contact_mirror(&character_id).await {
+                warn!("清理虚拟角色镜像失败: {}", e);
+            }
+            ApiResponse::success(serde_json::json!({ "deleted": true }))
+        }
         Ok(false) => ApiResponse::error_with_status("虚拟角色不存在".to_string(), StatusCode::NOT_FOUND),
         Err(e) => {
             error!("删除虚拟角色失败: {}", e);

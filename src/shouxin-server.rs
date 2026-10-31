@@ -310,14 +310,32 @@ async fn init_builtin_virtual_characters(relational: &RelationalStore) -> Result
         };
 
         match store.create(input).await {
-            Ok(_) => {
+            Ok(info) => {
                 inserted_count += 1;
+                if let Err(e) = relational.upsert_virtual_contact(&info).await {
+                    eprintln!("镜像内置角色到 contact_index 失败 {}: {}", name, e);
+                }
                 println!("Initialized built-in virtual character: {}", name);
             }
             Err(e) => {
                 eprintln!("Failed to initialize built-in virtual character {}: {}", name, e);
             }
         }
+    }
+
+    // 老库补镜像：镜像机制是后加的，升级前创建的虚拟角色在 contact_index 里没有行，
+    // 不补的话"历史角色查不到详情"会一直存在。upsert 幂等，每次启动跑一遍即可。
+    match store.list(None, true, 5000).await {
+        Ok(all) => {
+            let mut backfilled = 0;
+            for info in &all {
+                if relational.upsert_virtual_contact(info).await.is_ok() {
+                    backfilled += 1;
+                }
+            }
+            println!("Virtual characters mirrored to contact_index: {}", backfilled);
+        }
+        Err(e) => eprintln!("镜像虚拟角色失败: {}", e),
     }
 
     println!(
@@ -385,6 +403,10 @@ async fn run_api_server(
     std::env::set_var(
         "SHOUXIN_SEMANTIC_MIN_SCORE",
         settings.search.semantic_min_score.clamp(0.5, 0.99).to_string(),
+    );
+    std::env::set_var(
+        "SHOUXIN_SEMANTIC_MIN_SCORE_FILE",
+        settings.search.semantic_min_score_file.clamp(0.5, 0.99).to_string(),
     );
 
     // ------------------------------------------------------------------

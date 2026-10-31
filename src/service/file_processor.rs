@@ -129,6 +129,10 @@ impl FileProcessor {
                 .with_metadata("source_file_id", serde_json::Value::String(file_id.to_string()))
                 .with_metadata("chunk_index", serde_json::Value::String(i.to_string()))
                 .with_metadata("file_name", serde_json::Value::String(file_record.file_name.clone()))
+                // 让检索层能拿到"这段文本来自哪个文件"：material 只透出
+                // source_conversation_id / summary 两个字段，这里复用它们。
+                .with_metadata("source_conversation_id", serde_json::Value::String(file_id.to_string()))
+                .with_metadata("summary", serde_json::Value::String(file_record.file_name.clone()))
                 .with_metadata("owner_type", serde_json::Value::String(owner_type.clone()))
                 .with_metadata("owner_id", serde_json::Value::String(owner_id.clone()));
 
