@@ -132,8 +132,12 @@ meta                    day_index_version                 （日索引版本，�
 ```
 
 - **待确认队列**必须有出口：`GET /api/events/pending_merges` 查询，
-  `POST /api/events/pending_merges/:id/resolve` 确认（merge / create / dismiss）。
+  `POST /api/events/pending_merges/:id/resolve` 确认（merge / create / dismiss），
+  `/api/events/confirm_merge` 是同一实现的旧别名。
   没有这个出口，0.90–0.96 区间的事件永远进不了索引 —— 这是早期版本的一个真实缺口。
+- **出口必须真干活**：`merge`/`create` 调用 `confirm_pending_event_merge`（改 `event_index`
+  并回写状态），只有 `dismiss` 类纯标记才走 `resolve_pending_event_merge`。
+  后者对影响行数为 0 的情况返回 `EntityNotFound`，避免"不存在的 id 也回成功"。
 - **热冷分层**：热库按 **长期（`importance_score > 0.7`）** 与 **短期（`(0, 0.7]`）两个桶**
   各自独立计数，超出 `[event].long_term_hot_limit / short_term_hot_limit` 后，按 `created_at`
   淘汰**本桶最旧**的事件，置 `is_archived = 1`（数据不删除）。触发点是事件写入的唯一出口

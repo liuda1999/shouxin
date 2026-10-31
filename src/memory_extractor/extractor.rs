@@ -328,12 +328,15 @@ impl LlmMemoryExtractor {
      * "medium" - 中等优先级（需要在截止时间前完成）
      * "high" - 高优先级（紧急且重要）
    - deadline: 截止时间，ISO 8601 格式（如"2026-07-20T00:00:00Z"），如果有明确截止时间则填写，没有则不填此字段
+     * 必须以输入开头的【对话发生时间】为基准换算相对时间（今天/明天/本周X/下周X/下下周X/月底）
+     * deadline 必须晚于【对话发生时间】；算出的日期早于或等于它，说明换算错了，请重算
+     * 无法确定具体日期时不要填 deadline，禁止猜测年份
    - assigned_to: 负责人姓名（如果对话中明确提到负责人），没有则不填此字段
    - 判断标准：待办是需要主动去"做"的任务（如"明天要交报告"、"下周需要完成方案"、"记得回复邮件"），而非已经发生的事件
    - 不要把已发生的事件提取为待办；事件是描述发生了什么，待办是描述需要去做什么
 4. 修改待办（todo_update_intent）: 如果对话中包含修改待办截止时间的意图，输出待办标题提示和新截止时间
    - title_hint: 待办标题关键词（用于模糊匹配）
-   - new_deadline: 新的截止时间，ISO 8601 格式（如"2026-07-03T00:00:00Z"）
+   - new_deadline: 新的截止时间，ISO 8601 格式（如"2026-07-03T00:00:00Z"），同样以【对话发生时间】为基准换算
    - 没有修改待办意图时设为 null
 
 **Few-shot 示例**：
@@ -630,23 +633,35 @@ impl LlmMemoryExtractor {
         }
     }
 
+    /// 清理抽取出的姓名里的句子碎片
+    ///
+    /// 只剥**明确不会出现在姓名末尾**的虚词。
+    ///
+    /// 原表还含"国/家/城/市/县/省/区/镇/村/中/上/下/里/外/…"，把「王建国」砍成「王建」、
+    /// 「李卫国」砍成「李卫」（P1-3）——中文名字里"国""家""城"是极常见的收尾字。
+    /// 加上 `while changed` 会裁到不能再裁，一次写库就把真名改掉且无处复原。
     fn fix_name_truncation(name: &str) -> String {
-        let mut name = name.trim().to_string();
+        // 保留项：只有虚词与明显的时间/指代词。这些字不可能是一个中文名的结尾。
         let truncated_markers = [
-            "很", "的", "了", "是", "在", "和", "与", "或", "很厉", "厉", "害",
-            "说", "道", "问", "答", "叫", "被", "把", "将", "对", "向",
-            "做", "去", "来", "过", "要", "会", "能", "可", "请", "让",
-            "我", "你", "他", "她", "它", "们", "这", "那", "个", "些",
-            "一", "个", "两", "三", "四", "五", "六", "七", "八", "九", "十",
-            "中", "上", "下", "里", "外", "内", "间", "边", "面", "头",
-            "借", "诗", "文", "画", "歌", "舞", "得", "好", "想",
-            "打", "走", "跑", "跳", "飞", "游", "吃", "喝", "睡",
-            "今天", "昨天", "明天", "现在", "当时", "后来", "之前", "之后",
-            "国", "家", "城", "市", "县", "省", "区", "镇", "村",
-            "是魏", "是勇", "是魔", "是传", "是主", "是角", "是幻",
-            "君主", "的人", "的人", "的人", "的人",
+            // 虚词（单字）
+            "的", "了", "是", "在", "说", "道", "问", "答", "叫", "把", "将", "被", "让",
+            "请", "对", "向", "和", "与", "或", "得", "过",
+            // 多字短语
+            "今天", "昨天", "明天", "现在", "当时", "后来", "之前", "之后", "很厉", "的人",
         ];
-        
+
+        let mut name = name.trim().to_string();
+
+        // 「曹操是魏国君主」这类整句片段：抽取把"X是Y"当人名了。
+        // 从"是"处截断比维护一长串"是魏/是勇/是魔…"的特例表更可靠。
+        if let Some(pos) = name.find('是') {
+            let head = &name[..pos];
+            if head.chars().count() >= 2 {
+                info!("[Name Fix] Name contains sentence fragment: '{}' -> '{}'", name, head);
+                name = head.trim().to_string();
+            }
+        }
+
         let mut changed = true;
         while changed {
             changed = false;
@@ -654,7 +669,10 @@ impl LlmMemoryExtractor {
             for marker in &truncated_markers {
                 if name.ends_with(marker) && name.chars().count() > 2 {
                     let cleaned = name.trim_end_matches(marker).trim().to_string();
-                    if !cleaned.is_empty() && cleaned.chars().count() >= 2 && cleaned.chars().count() < original_len {
+                    if !cleaned.is_empty()
+                        && cleaned.chars().count() >= 2
+                        && cleaned.chars().count() < original_len
+                    {
                         info!("[Name Fix] Truncated name detected: '{}' -> '{}'", name, cleaned);
                         name = cleaned;
                         changed = true;
@@ -663,7 +681,7 @@ impl LlmMemoryExtractor {
                 }
             }
         }
-        
+
         // 只剥"中文名 + 数字后缀"（张伟2 / 李娜03 这类导出重名标记）。
         // 纯英文/账号名（liuda1999、user_42）必须原样保留——数字是名字的一部分。
         let has_cjk = name.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
@@ -680,7 +698,7 @@ impl LlmMemoryExtractor {
                 return cleaned;
             }
         }
-        
+
         name
     }
 
@@ -1938,6 +1956,36 @@ mod name_sanity_tests {
         ] {
             assert!(!is_relational_phrase(name), "不应误杀: {}", name);
         }
+    }
+
+    /// P1-3 回归：以「国」结尾的真名不能被截断
+    ///
+    /// 旧后缀表含"国/家/城/市/…"，配合 `while changed` 会把「王建国」切成「王建」，
+    /// 写库后任何字段都不再有全名，搜全名 0 条。
+    #[test]
+    fn keeps_names_ending_with_place_like_chars() {
+        for good in ["王建国", "李卫国", "张兴国", "欧阳建国", "赵家", "陈城"] {
+            assert_eq!(
+                super::LlmMemoryExtractor::fix_name_truncation(good),
+                good,
+                "真名被改写: {}",
+                good
+            );
+        }
+    }
+
+    /// P1-3 回归：虚词后缀仍然要剥，别把真名词表修得过头
+    #[test]
+    fn still_strips_function_word_suffix() {
+        assert_eq!(super::LlmMemoryExtractor::fix_name_truncation("李小明说"), "李小明");
+        assert_eq!(super::LlmMemoryExtractor::fix_name_truncation("王建的"), "王建");
+        assert_eq!(super::LlmMemoryExtractor::fix_name_truncation("张三了"), "张三");
+    }
+
+    /// 「X是Y」这类句子片段从"是"处截断（替代原先的特例表）
+    #[test]
+    fn strips_sentence_fragment_after_shi() {
+        assert_eq!(super::LlmMemoryExtractor::fix_name_truncation("曹操是魏国君主"), "曹操");
     }
 
     #[test]

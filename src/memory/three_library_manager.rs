@@ -1232,7 +1232,16 @@ impl ThreeLibraryMemoryManager {
         
         // 从关系库搜索事件（使用 owner 过滤）
         let trait_events = self.relational_store.search_events_with_owner(&filter, owner_type, &owner_id).await?;
-        
+
+        // related_contacts 原先是硬编码空数组，调用方拿不到"这条事件和谁有关"。
+        // contact_ids 不在 SELECT 里，按 id 批量反查一次。
+        let event_ids: Vec<String> = trait_events.iter().map(|e| e.event_id.clone()).collect();
+        let contact_map = self
+            .relational_store
+            .contact_names_by_event_ids(&event_ids)
+            .await
+            .unwrap_or_default();
+
         // 转换为 EventDetail
         let events: Vec<EventDetail> = trait_events.into_iter().map(|trait_event| {
             EventDetail {
@@ -1242,12 +1251,15 @@ impl ThreeLibraryMemoryManager {
                 time_info: Some(trait_event.event_time.to_rfc3339()),
                 importance: if trait_event.importance >= 0.8 { "high".to_string() } else if trait_event.importance >= 0.5 { "medium".to_string() } else { "low".to_string() },
                 status: "pending".to_string(),
-                related_contacts: vec![],
+                related_contacts: contact_map
+                    .get(&trait_event.event_id)
+                    .cloned()
+                    .unwrap_or_default(),
                 created_at: trait_event.created_at,
                 completed_at: None,
             }
         }).collect();
-        
+
         Ok(events)
     }
 

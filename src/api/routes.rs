@@ -207,6 +207,9 @@ pub struct SearchEventsRequest {
     /// 关键词（在标题与描述里做子串匹配）
     #[serde(default)]
     pub query: Option<String>,
+    /// 只看与该联系人相关的事件
+    #[serde(default)]
+    pub contact_id: Option<String>,
     /// 事件类型
     ///
     /// **已废弃**：抽取链路不产出类型，event_type 列恒为空，
@@ -1808,25 +1811,61 @@ struct ResolveMergeRequest {
 /// 确认或拒绝一条待合并事件
 ///
 /// action 取值：`merge`（合并）、`create`（保留为独立事件）、`dismiss`（忽略）。
+///
+/// **这是文档里推荐给用户的唯一出口**，所以它必须真干活：
+/// 原实现只 UPDATE 状态、从不碰 event_index，真实 id 也返回 `resolved:true`，
+/// 而两条事件依旧并排存在（P1-4）。`merge`/`create` 走真正执行合并的函数，
+/// 只有纯标记类 action 才只改状态。
 async fn resolve_pending_event_merge(
     Extension(async_memory): Extension<Arc<AsyncMemory>>,
     Path(merge_id): Path<i64>,
     Json(req): Json<ResolveMergeRequest>,
 ) -> ApiResponse<serde_json::Value> {
-    let rel_store = async_memory.get_relational_store();
-    match rel_store.resolve_pending_event_merge(merge_id, &req.action).await {
-        Ok(()) => ApiResponse::success(serde_json::json!({
-            "merge_id": merge_id,
-            "action": req.action,
-            "resolved": true
-        })),
-        Err(e) => {
-            error!("处置待确认合并失败 {}: {}", merge_id, e);
-            ApiResponse::error_with_status(
-                format!("处理失败: {}", e),
-                StatusCode::BAD_REQUEST,
-            )
+    match req.action.as_str() {
+        "merge" | "create" => {
+            match async_memory
+                .confirm_event_merge(merge_id, &req.action, None)
+                .await
+            {
+                Ok(event_id) => ApiResponse::success(serde_json::json!({
+                    "merge_id": merge_id,
+                    "action": req.action,
+                    "resolved": true,
+                    "event_id": event_id
+                })),
+                Err(e) => {
+                    warn!("处置待确认合并失败 {} ({}): {}", merge_id, req.action, e);
+                    ApiResponse::error_with_status(
+                        format!("处理失败: {}", e),
+                        StatusCode::BAD_REQUEST,
+                    )
+                }
+            }
         }
+        "dismiss" | "reject" | "approve" => {
+            let rel_store = async_memory.get_relational_store();
+            match rel_store.resolve_pending_event_merge(merge_id, &req.action).await {
+                Ok(()) => ApiResponse::success(serde_json::json!({
+                    "merge_id": merge_id,
+                    "action": req.action,
+                    "resolved": true
+                })),
+                Err(e) => {
+                    warn!("处置待确认合并失败 {} ({}): {}", merge_id, req.action, e);
+                    ApiResponse::error_with_status(
+                        format!("处理失败: {}", e),
+                        StatusCode::BAD_REQUEST,
+                    )
+                }
+            }
+        }
+        other => ApiResponse::error_with_status(
+            format!(
+                "无效的 action: {}（可用：merge / create / dismiss）",
+                other
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
     }
 }
 
@@ -1983,6 +2022,12 @@ async fn search_events(
         let q = q.trim();
         if !q.is_empty() {
             filter = filter.with_search_query(q.to_string());
+        }
+    }
+    if let Some(ref cid) = req.contact_id {
+        let cid = cid.trim();
+        if !cid.is_empty() {
+            filter = filter.with_contact_id(cid.to_string());
         }
     }
     if let Some(ref t) = req.event_type {

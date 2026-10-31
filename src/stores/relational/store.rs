@@ -1126,6 +1126,47 @@ impl RelationalStore {
         Ok(contacts)
     }
 
+    /// 按事件 id 批量取关联联系人姓名
+    ///
+    /// `search_events_with_owner` 的 SELECT 没有取 `contact_ids`（它是 JSON 数组字符串），
+    /// 结构体里也没有这个字段，所以只能按 id 反查一次。
+    /// 用 `json_each` 展开后 JOIN 联系人表，避免在 Rust 里解析 JSON 再逐个查库。
+    pub async fn contact_names_by_event_ids(
+        &self,
+        event_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, ShouxinError> {
+        let mut out: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        if event_ids.is_empty() {
+            return Ok(out);
+        }
+
+        // SQLite 单条语句的变量上限是 999，分批查避免大结果集直接报错
+        for chunk in event_ids.chunks(400) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT e.event_id, c.name FROM event_index e \
+                 JOIN json_each(e.contact_ids) j \
+                 JOIN contact_index c ON c.id = j.value \
+                 WHERE e.event_id IN ({})",
+                placeholders
+            );
+            let mut q = sqlx::query(&sql);
+            for id in chunk {
+                q = q.bind(id);
+            }
+            let rows = q.fetch_all(&self.pool).await?;
+            for row in rows {
+                let eid: String = sqlx::Row::try_get(&row, 0).unwrap_or_default();
+                let name: String = sqlx::Row::try_get(&row, 1).unwrap_or_default();
+                if !name.is_empty() {
+                    out.entry(eid).or_default().push(name);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// 搜索事件（支持 owner 过滤）
     ///
     /// 在 event_index 表中按条件搜索事件，同时过滤所有者。
@@ -1189,6 +1230,15 @@ impl RelationalStore {
             params.push(format!("{}%", month));
         }
 
+        if let Some(ref contact_id) = filter.contact_id {
+            // 用 json_each 做**精确**成员判断。子串 LIKE 会让 "abc" 命中 "abcd"，
+            // 联系人 id 是 UUID 前缀相同的情况并不罕见。
+            sql.push_str(
+                " AND EXISTS (SELECT 1 FROM json_each(event_index.contact_ids) WHERE value = ?)",
+            );
+            params.push(contact_id.clone());
+        }
+
         sql.push_str(" ORDER BY time_range_start DESC LIMIT ?");
         params.push(filter.limit.to_string());
 
@@ -1229,7 +1279,13 @@ impl RelationalStore {
             let event = TraitEventIndex {
                 event_id,
                 title: title_val,
-                event_type: event_type_val.unwrap_or_else(|| summary.clone().unwrap_or_default()),
+                // event_type 是 `Some("")` 而不是 None：N-15 之后写路径把它置空串、
+                // 描述挪进 summary，于是 unwrap_or_else 的兜底永远不触发，
+                // 读出来的 description 恒为空（P1-2）。空串必须当作"没有值"。
+                event_type: event_type_val
+                    .filter(|s: &String| !s.trim().is_empty())
+                    .or_else(|| summary.clone())
+                    .unwrap_or_default(),
                 user_id: None,
                 agent_id: None,
                 event_time,
@@ -3156,11 +3212,11 @@ impl RelationalStore {
             _ => return Err(ShouxinError::GeneralError(format!("Unknown action: {}", action))),
         }
 
-        query(
+        let result = query(
             r#"
             UPDATE pending_event_merge
             SET status = 'resolved', resolved_at = ?, resolution_action = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'pending'
             "#,
         )
         .bind(Utc::now().to_rfc3339())
@@ -3168,6 +3224,15 @@ impl RelationalStore {
         .bind(merge_id)
         .execute(&self.pool)
         .await?;
+
+        // 从不检查影响行数的后果：不存在的 id 返回成功、已处理的 id 也能再"成功"一次，
+        // 调用方以为合并做完了，实际什么都没发生（P1-4）。
+        if result.rows_affected() == 0 {
+            return Err(ShouxinError::EntityNotFound(format!(
+                "待确认合并记录不存在或已处理: {}",
+                merge_id
+            )));
+        }
 
         Ok(())
     }

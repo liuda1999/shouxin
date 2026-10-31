@@ -353,6 +353,12 @@ pub struct EventFilter {
     pub include_archived: bool,
     /// 按归档月份过滤（如 "2026-06"）
     pub archived_month: Option<String>,
+    /// 只看与该联系人相关的事件
+    ///
+    /// `contact_ids` 是 JSON 数组字符串（`["id1","id2"]`）。API 层原来根本没有这个字段，
+    /// 传了 `contact_id` 会被 serde 静默丢弃，接口照常返回全量——
+    /// "看起来过滤了、其实没过滤"比报错更难发现。
+    pub contact_id: Option<String>,
 }
 
 impl EventFilter {
@@ -362,6 +368,12 @@ impl EventFilter {
             limit: 100,
             ..Default::default()
         }
+    }
+
+    /// 按联系人过滤
+    pub fn with_contact_id(mut self, contact_id: String) -> Self {
+        self.contact_id = Some(contact_id);
+        self
     }
 
     /// 设置用户 ID

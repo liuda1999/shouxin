@@ -256,6 +256,7 @@ POST /api/memory/search/events
 | 参数 | 说明 |
 |---|---|
 | `query` | 在**标题 / 描述 / event_id** 里做子串匹配 |
+| `contact_id` | 只看与该联系人相关的事件（`json_each` 精确匹配，不会误命中 id 前缀） |
 | `hot_only: true` | 只看热表（等价于 `include_archived: false`） |
 | `include_archived: false` | 显式只看热表 |
 | `archived_month: "2026-10"` | 按归档月份过滤（匹配 `archived_at` 前缀） |
@@ -351,7 +352,7 @@ GET /api/events/pending_merges?owner_type=User&owner_id=default_user&limit=20
 { "count": 11, "merges": [ { "id": 1, "event_id": "...", "candidate_id": "...", "similarity": 0.8407 } ] }
 ```
 
-确认：
+确认（**唯一出口**，`/api/events/confirm_merge` 是它的旧别名，行为一致）：
 
 ```http
 POST /api/events/pending_merges/:id/resolve
@@ -359,11 +360,20 @@ POST /api/events/pending_merges/:id/resolve
 { "action": "merge" }      // merge | create | dismiss
 ```
 
-- `merge`：合并到现有事件；
-- `create`：作为新事件落库；
-- `dismiss`：忽略该候选。
+- `merge`：合并到现有事件 —— 会把源事件的联系人并入目标、把源事件标记 `is_merged`，
+  返回 `{"resolved": true, "event_id": "<目标事件 id>"}`；
+- `create`：作为新事件落库，同样返回 `event_id`；
+- `dismiss`：忽略该候选，只改状态，事件数不变。
 
-返回 `{"resolved": true}`。
+错误约定：
+
+| 情况 | 返回 |
+|---|---|
+| `merge_id` 不存在 / 已处理 | **400** + `"待确认合并记录不存在或已处理: <id>"` |
+| `action` 不在 `merge/create/dismiss` 内 | **400** + 可用值提示 |
+
+> 早期实现只 `UPDATE` 状态、从不碰 `event_index`：真实 id 也返回 `resolved: true`，
+> 两条事件却仍然并排存在。v0.7.4 起 `merge`/`create` 走真正的合并逻辑，并对影响行数做校验。
 
 ---
 

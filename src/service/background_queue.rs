@@ -321,9 +321,27 @@ impl BackgroundTaskQueue {
             task.retry_count
         );
 
+        // 把"对话发生时间"送进模型。
+        //
+        // 系统提示词是静态的，模型不知道这段对话是哪天说的，于是"下周三"只能靠猜：
+        // 实测 2026-06-10 说的"下周三"被填成当天、2026-09-21 说的"11 月 12 号"
+        // 被填成 2027-11-12（P1-1）。提示词里不给日期，靠事后校验是修不干净
+        // ——模型给的日期本身自洽，只是基准错了。
+        let ref_time = task
+            .conversation_time
+            .unwrap_or_else(chrono::Utc::now);
+        let weekday_cn = ["一", "二", "三", "四", "五", "六", "日"]
+            [(chrono::Datelike::weekday(&ref_time).num_days_from_monday() as usize) % 7];
+        let time_hint = format!(
+            "【对话发生时间】{}（周{}）\n\
+             所有相对时间（今天/明天/本周X/下周X/下下周X/月底/周末）都以该时间为基准换算，\
+             不要使用其他日期。\n\n",
+            ref_time.format("%Y-%m-%d %H:%M"),
+            weekday_cn
+        );
         let messages = vec![crate::core::Message::new(
             crate::core::message::MessageRole::User,
-            task.conversation_text.clone(),
+            format!("{}{}", time_hint, task.conversation_text),
         ).unwrap()];
 
         // 病态输入直接跳过 LLM，走正则兜底。
@@ -1010,48 +1028,80 @@ impl BackgroundTaskQueue {
                     .map(|dt| dt.with_timezone(&Utc));
 
                 let ref_time = task.conversation_time.unwrap_or_else(Utc::now);
-                // 模型给的日期只在"相对对话时间合理"时采信：
-                // 历史导入时它常把年份写成今年，或干脆给个过期很久的日期。
-                // 截止时间必须**不早于对话发生日**（允许同日）：
-                // 模型经常给出 2026-07 这类过期日期，之前用 now±1y 的窗口会误采信，
-                // 结果"这周五"被记成 7 月（N-17 复现）。
-                let ref_day_start = ref_time.date_naive().and_hms_opt(0, 0, 0).unwrap();
-                let ref_day_start = chrono::DateTime::<Utc>::from_naive_utc_and_offset(ref_day_start, Utc);
-                let model_ok = model_deadline.filter(|dt| {
-                    *dt >= ref_day_start && *dt < ref_time + chrono::Duration::days(365 * 5)
-                });
+                let ref_day_start = chrono::DateTime::<Utc>::from_naive_utc_and_offset(
+                    ref_time.date_naive().and_hms_opt(0, 0, 0).unwrap(),
+                    Utc,
+                );
 
-                let deadline = match model_ok {
-                    Some(dt) => dt,
-                    _ => {
-                        let local = crate::utils::time_parser::resolve_deadline_in_text(
-                            &task.conversation_text,
-                            &extracted_todo.title,
-                            ref_time,
+                // 模型给的日期只在"相对对话时间合理"时采信：
+                //  - 不早于对话发生日（模型常把年份写成今年，或给一个早已过去的日期）；
+                //  - 不超过两年（原来是 5 年，几乎等于不设限，
+                //    实测 2026-09-21 说的"11 月 12 号"被填成 2027-11-12）；
+                //  - 统一成当天 23:59:59，与本地解析口径一致（模型给 00:00:00Z 会让
+                //    待办在截止日凌晨就过期）。
+                let model_deadline = extracted_todo
+                    .deadline
+                    .as_ref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .filter(|dt| *dt >= ref_day_start)
+                    .filter(|dt| *dt < ref_time + chrono::Duration::days(730))
+                    .map(crate::utils::end_of_day);
+
+                let local = crate::utils::resolve_deadline_ex(
+                    &task.conversation_text,
+                    &extracted_todo.title,
+                    ref_time,
+                );
+
+                // 交叉校验：两边都可能错，但错法不同。
+                //  - 本地命中"显式截止"（X 前 / 最后期限）却与模型差 >1 天 → 信本地，
+                //    模型读不懂中文相对时间，这类句式它必错；
+                //  - 模型原样返回对话当天，而原文里有未来时间词 → 视为模型失败；
+                //  - 其余情况以模型为准（它能读懂上下文，本地只会取"第一个时间"）。
+                let deadline = match (model_deadline, local) {
+                    (Some(m), Some(l))
+                        if l.explicit
+                            && (m.date_naive() - l.at.date_naive()).num_days().abs() > 1 =>
+                    {
+                        warn!(
+                            "[deadline] 模型 {} 与本地显式截止 {} 相差过大，采用本地：{}",
+                            m.date_naive(),
+                            l.at.date_naive(),
+                            extracted_todo.title
                         );
-                        match local {
-                            Some(dt) => {
-                                warn!(
-                                    "[P1-4] 模型给出的 deadline 不可用，已改用本地解析：{} → {}",
-                                    extracted_todo.title,
-                                    dt.date_naive()
-                                );
-                                dt
-                            }
-                            None => {
-                                // 没解析出任何时间就 +7 天：这条是猜的，必须留痕，
-                                // 否则用户会把"11-08"当成自己说过的话（N-14）。
-                                let guessed =
-                                    crate::utils::default_deadline_from(ref_time, 7);
-                                warn!(
-                                    "[P1-4] 对话中没有可识别的时间表达，deadline 按 +7 天估算：{} → {}（conversation={}）",
-                                    extracted_todo.title,
-                                    guessed.date_naive(),
-                                    task.conversation_id
-                                );
-                                guessed
-                            }
-                        }
+                        l.at
+                    }
+                    (Some(m), Some(l)) if m.date_naive() == ref_time.date_naive() => {
+                        warn!(
+                            "[deadline] 模型返回对话当天 {}，改用本地解析 {}：{}",
+                            m.date_naive(),
+                            l.at.date_naive(),
+                            extracted_todo.title
+                        );
+                        l.at
+                    }
+                    (Some(m), _) => m,
+                    (None, Some(l)) => {
+                        warn!(
+                            "[deadline] 模型未给可用日期，改用本地解析：{} → {}（explicit={}）",
+                            extracted_todo.title,
+                            l.at.date_naive(),
+                            l.explicit
+                        );
+                        l.at
+                    }
+                    (None, None) => {
+                        // 一点时间线索都没有：这条是猜的，必须留痕，
+                        // 否则用户会把"11-08"当成自己说过的话（N-14）。
+                        let guessed = crate::utils::default_deadline_from(ref_time, 7);
+                        warn!(
+                            "[deadline] 对话中没有可识别的时间表达，按 +7 天估算：{} → {}（conversation={}）",
+                            extracted_todo.title,
+                            guessed.date_naive(),
+                            task.conversation_id
+                        );
+                        guessed
                     }
                 };
 

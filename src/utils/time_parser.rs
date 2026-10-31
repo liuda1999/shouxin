@@ -134,6 +134,29 @@ pub(crate) fn normalize_cn_numerals(input: &str) -> String {
     .to_string()
 }
 
+/// 把"日历日期 + 时刻"按**本地时区**解释成 UTC 瞬间
+///
+/// 解析器里所有 naive 日期都来自用户的口语表达（"10 月 31 日 23:59" 指本地时间），
+/// 用 `Utc.from_utc_datetime` 会把它们当成 UTC，在 +08:00 下整体偏 8 小时：
+/// "月底"拼出来的 10-31T23:59Z 在本地已经是 11-01 07:59，日终再取本地日期就串到下个月。
+fn to_utc_local(date: NaiveDate, time: NaiveTime) -> DateTime<Utc> {
+    Local
+        .from_local_datetime(&date.and_time(time))
+        .single()
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|| Utc.from_utc_datetime(&date.and_time(time)))
+}
+
+/// 取"用户本地日期"
+///
+/// 所有日期算术（今天几号、周几、+N 天）都必须基于**本地**日期。
+/// 直接用 `reference_time.date_naive()` 拿到的是 UTC 日期：在 +08:00 时区下，
+/// 每天 00:00–08:00（UTC 还是前一天）说"明天"会被算成"今天"、
+/// 说"本周六"会被算成已经过去的那个周六。
+pub(crate) fn local_date(dt: DateTime<Utc>) -> NaiveDate {
+    dt.with_timezone(&Local).date_naive()
+}
+
 pub fn parse_event_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let normalized = normalize_cn_numerals(text);
     let text = normalized.trim();
@@ -173,7 +196,7 @@ pub fn parse_event_time(text: &str, reference_time: DateTime<Utc>) -> Option<Dat
 }
 
 fn parse_absolute_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let today = reference_time.date_naive();
+    let today = local_date(reference_time);
 
     // 说明：原实现按 `caps.len()` 分派，导致 "6月15日"（3 组）被当成 06:15；
     // 且 `4 if` 守卫分支永远不可达。这里改为"每个形态独立匹配"，语义显式、无歧义。
@@ -243,7 +266,7 @@ fn parse_absolute_time(text: &str, reference_time: DateTime<Utc>) -> Option<Date
             today
         };
         return NaiveTime::from_hms_opt(hour, minute, 0)
-            .map(|time| Utc.from_utc_datetime(&target_date.and_time(time)));
+            .map(|time| to_utc_local(target_date, time));
     }
 
     // 6) 纯时间：15:30（落在参考日当天）
@@ -251,7 +274,7 @@ fn parse_absolute_time(text: &str, reference_time: DateTime<Utc>) -> Option<Date
         let hour = caps.get(1)?.as_str().parse::<u32>().ok()?;
         let minute = caps.get(2)?.as_str().parse::<u32>().ok()?;
         return NaiveTime::from_hms_opt(hour, minute, 0)
-            .map(|time| Utc.from_utc_datetime(&today.and_time(time)));
+            .map(|time| to_utc_local(today, time));
     }
 
     None
@@ -276,7 +299,7 @@ fn build_datetime(
 ) -> Option<DateTime<Utc>> {
     let date = NaiveDate::from_ymd_opt(year, month, day)?;
     let time = NaiveTime::from_hms_opt(hour, minute, 0)?;
-    Some(Utc.from_utc_datetime(&date.and_time(time)))
+    Some(to_utc_local(date, time))
 }
 
 macro_rules! static_regex {
@@ -413,7 +436,7 @@ pub fn default_deadline_in_days(days: i64) -> DateTime<Utc> {
 fn parse_month_edge(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
     use chrono::Datelike;
 
-    let today = reference_time.date_naive();
+    let today = local_date(reference_time);
     let (year, month) = (today.year(), today.month());
 
     let day = if text.contains("月底") || text.contains("月末") {
@@ -428,11 +451,11 @@ fn parse_month_edge(text: &str, reference_time: DateTime<Utc>) -> Option<DateTim
 
     let (hour, minute) = extract_time_from_text(text, 23, 59);
     chrono::NaiveTime::from_hms_opt(hour, minute, 0)
-        .map(|t| Utc.from_utc_datetime(&day.and_time(t)))
+        .map(|t| to_utc_local(day, t))
 }
 
 fn parse_relative_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let today = reference_time.date_naive();
+    let today = local_date(reference_time);
 
     // 去年 X 月：落到该月 1 号（"去年十一月在杭州分部"这类历史事实）
     if let Some(caps) = re_last_year_month().captures(text) {
@@ -546,7 +569,7 @@ fn parse_relative_time(text: &str, reference_time: DateTime<Utc>) -> Option<Date
     let target_date = today + chrono::Duration::days(day_offset);
     let (hour, minute) = extract_time_from_text(text, default_hour, default_minute);
     NaiveTime::from_hms_opt(hour, minute, 0)
-        .map(|time| Utc.from_utc_datetime(&target_date.and_time(time)))
+        .map(|time| to_utc_local(target_date, time))
 }
 
 /// 星期词表（有序；"天"与"日"都表示周日）
@@ -566,7 +589,7 @@ const WEEKDAY_HINTS: &[(&str, i64)] = &[
 /// 原实现把"下周/本周"的判断写成 `pattern.starts_with("下")`，而词表里没有"下"
 /// 前缀，分支永远不成立，导致"下周三"被解析成"最近的那个周三"。这里显式处理。
 fn parse_weekday_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let today = reference_time.date_naive();
+    let today = local_date(reference_time);
     let days_since_monday = today.weekday().num_days_from_monday() as i64;
 
     let target_offset = WEEKDAY_HINTS.iter().find_map(|(suffix, offset)| {
@@ -577,7 +600,10 @@ fn parse_weekday_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateT
         }
     })?;
 
-    let next_week = text.contains("下周") || text.contains("下星期");
+    // "下下周五"包含"下周"，先判"下下周"再判"下周"，否则会被当成本周五、
+    // 整体早一周（P1-5b：09-08 说"下下周五"记成 09-18，应为 09-25）。
+    let next2_week = text.contains("下下周") || text.contains("下下星期");
+    let next_week = !next2_week && (text.contains("下周") || text.contains("下星期"));
     let this_week = text.contains("本周") || text.contains("这周") || text.contains("本星期");
     // 上周 / 上上周：事件已经发生，落到过去那一周的同一天
     let weeks_back = if text.contains("上上周") || text.contains("上上星期") {
@@ -588,7 +614,11 @@ fn parse_weekday_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateT
         0
     };
 
-    let days_until = if next_week {
+    let days_until = if next2_week {
+        // 下下周的同一星期几：本周一 + 14 天 + 目标偏移
+        // 例：09-08(周二,1) 的"下下周五"(4) → 7-1+4+7 = 17 天后 = 09-25
+        (7 - days_since_monday + target_offset + 7).max(8)
+    } else if next_week {
         // 下周的同一星期几：距离"下周一"还有 (7 - days_since_monday) 天，再加上目标星期几的偏移。
         // 例：今天周三(2) → 下周一 = 7-2+0 = 5 天后；下周三 = 7-2+2 = 7 天后。
         // （旧公式 `(offset - since + 7) % 7 + 7` 会多算一周，把"下周一"推到 11-09）
@@ -612,12 +642,12 @@ fn parse_weekday_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateT
     let target_date = today + chrono::Duration::days(days_until);
     let (hour, minute) = extract_time_from_text(text, 10, 0);
     NaiveTime::from_hms_opt(hour, minute, 0)
-        .map(|time| Utc.from_utc_datetime(&target_date.and_time(time)))
+        .map(|time| to_utc_local(target_date, time))
 }
 
 
 fn parse_fuzzy_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let today = reference_time.date_naive();
+    let today = local_date(reference_time);
     let fuzzy_patterns: HashMap<&str, (i64, u32, u32)> = HashMap::from([
         ("今晚", (0, 20, 0)),
         ("明早", (1, 8, 0)),
@@ -634,7 +664,7 @@ fn parse_fuzzy_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTim
         if text.contains(pattern) {
             let target_date = today + chrono::Duration::days(*days_offset);
             if let Some(time) = NaiveTime::from_hms_opt(*hour, *minute, 0) {
-                return Some(Utc.from_utc_datetime(&target_date.and_time(time)));
+                return Some(to_utc_local(target_date, time));
             }
         }
     }
@@ -646,6 +676,41 @@ fn parse_fuzzy_time(text: &str, reference_time: DateTime<Utc>) -> Option<DateTim
 mod tests {
     use super::*;
     use chrono::Weekday;
+
+    /// 断言用：把 UTC 瞬间按本地时区看，验证"用户看到的日期/时刻"
+    ///
+    /// 解析器现在一律把口语时间按**本地**解释，所以断言也必须看本地字段：
+    /// 直接用 `date_naive()`（UTC 日期）在 +08:00 下会整体早一天。
+    trait LocalView {
+        fn ldate(&self) -> String;
+        fn lyear(&self) -> i32;
+        fn lmonth(&self) -> u32;
+        fn lday(&self) -> u32;
+        fn lhour(&self) -> u32;
+        fn ltime(&self) -> NaiveTime;
+    }
+
+    impl LocalView for DateTime<Utc> {
+        fn ldate(&self) -> String {
+            local_date(*self).to_string()
+        }
+        fn lyear(&self) -> i32 {
+            local_date(*self).year()
+        }
+        fn lmonth(&self) -> u32 {
+            local_date(*self).month()
+        }
+        fn lday(&self) -> u32 {
+            local_date(*self).day()
+        }
+        fn lhour(&self) -> u32 {
+            self.with_timezone(&Local).hour()
+        }
+        fn ltime(&self) -> NaiveTime {
+            self.with_timezone(&Local).time()
+        }
+    }
+
 
     /// 回归：截止时间必须取自"和待办相关的句子"，不能跨句乱借
     #[test]
@@ -698,10 +763,10 @@ mod tests {
         let result = parse_event_time("2026-06-03 15:00", ref_time);
         assert!(result.is_some());
         let dt = result.unwrap();
-        assert_eq!(dt.year(), 2026);
-        assert_eq!(dt.month(), 6);
-        assert_eq!(dt.day(), 3);
-        assert_eq!(dt.hour(), 15);
+        assert_eq!(dt.lyear(), 2026);
+        assert_eq!(dt.lmonth(), 6);
+        assert_eq!(dt.lday(), 3);
+        assert_eq!(dt.lhour(), 15);
         assert_eq!(dt.minute(), 0);
     }
 
@@ -711,10 +776,10 @@ mod tests {
         let result = parse_event_time("2026-06-10", ref_time);
         assert!(result.is_some());
         let dt = result.unwrap();
-        assert_eq!(dt.year(), 2026);
-        assert_eq!(dt.month(), 6);
-        assert_eq!(dt.day(), 10);
-        assert_eq!(dt.hour(), 0);
+        assert_eq!(dt.lyear(), 2026);
+        assert_eq!(dt.lmonth(), 6);
+        assert_eq!(dt.lday(), 10);
+        assert_eq!(dt.lhour(), 0);
     }
 
     #[test]
@@ -723,10 +788,10 @@ mod tests {
         let result = parse_event_time("今天下午2点", ref_time);
         assert!(result.is_some());
         let dt = result.unwrap();
-        assert_eq!(dt.year(), 2026);
-        assert_eq!(dt.month(), 6);
-        assert_eq!(dt.day(), 2);
-        assert_eq!(dt.hour(), 14);
+        assert_eq!(dt.lyear(), 2026);
+        assert_eq!(dt.lmonth(), 6);
+        assert_eq!(dt.lday(), 2);
+        assert_eq!(dt.lhour(), 14);
     }
 
     #[test]
@@ -735,10 +800,10 @@ mod tests {
         let result = parse_event_time("明天上午10点", ref_time);
         assert!(result.is_some());
         let dt = result.unwrap();
-        assert_eq!(dt.year(), 2026);
-        assert_eq!(dt.month(), 6);
-        assert_eq!(dt.day(), 3);
-        assert_eq!(dt.hour(), 10);
+        assert_eq!(dt.lyear(), 2026);
+        assert_eq!(dt.lmonth(), 6);
+        assert_eq!(dt.lday(), 3);
+        assert_eq!(dt.lhour(), 10);
     }
 
     #[test]
@@ -757,7 +822,7 @@ mod tests {
         assert!(result.is_some());
         let dt = result.unwrap();
         assert_eq!(dt.weekday(), Weekday::Wed);
-        assert_eq!(dt.hour(), 14);
+        assert_eq!(dt.lhour(), 14);
     }
 
     /// 回归：事件是已发生的事，"上周三 / 三个月前 / 去年十一月"必须落到过去日期
@@ -769,7 +834,7 @@ mod tests {
         use chrono::TimeZone;
         // 2026-10-30 是周五
         let r = Utc.with_ymd_and_hms(2026, 10, 30, 12, 0, 0).unwrap();
-        let d = |s: &str| parse_event_time(s, r).map(|x| x.date_naive().to_string());
+        let d = |s: &str| parse_event_time(s, r).map(|x| x.ldate());
 
         assert_eq!(d("昨天下午"), Some("2026-10-29".to_string()));
         assert_eq!(d("前天上午"), Some("2026-10-28".to_string()));
@@ -793,7 +858,7 @@ mod tests {
         use chrono::TimeZone;
         // 2026-10-30 是周五
         let r = Utc.with_ymd_and_hms(2026, 10, 30, 12, 0, 0).unwrap();
-        let d = |s: &str| parse_event_time(s, r).map(|x| x.date_naive().to_string());
+        let d = |s: &str| parse_event_time(s, r).map(|x| x.ldate());
 
         assert_eq!(d("3天后"), Some("2026-11-02".to_string()));
         assert_eq!(d("两周后"), Some("2026-11-13".to_string()));
@@ -811,7 +876,7 @@ mod tests {
         let result = parse_event_time("3天后", ref_time);
         assert!(result.is_some());
         let dt = result.unwrap();
-        assert_eq!(dt.day(), 5);
+        assert_eq!(dt.lday(), 5);
     }
 
     #[test]
@@ -820,8 +885,8 @@ mod tests {
         let result = parse_event_time("6月15日", ref_time);
         assert!(result.is_some());
         let dt = result.unwrap();
-        assert_eq!(dt.month(), 6);
-        assert_eq!(dt.day(), 15);
+        assert_eq!(dt.lmonth(), 6);
+        assert_eq!(dt.lday(), 15);
     }
 
     #[test]
@@ -830,7 +895,7 @@ mod tests {
         let result = parse_event_time("今天 15:30", ref_time);
         assert!(result.is_some());
         let dt = result.unwrap();
-        assert_eq!(dt.hour(), 15);
+        assert_eq!(dt.lhour(), 15);
         assert_eq!(dt.minute(), 30);
     }
 
@@ -849,11 +914,30 @@ mod tests {
 /// 相对时间表达，结果比依赖模型更可靠。
 ///
 /// 解析结果统一归一到当天 23:59:59（与项目内待办 deadline 约定一致）。
+/// 本地解析出的截止时间，以及它是否来自"显式截止"
+///
+/// 调用方需要区分两种情况：句子里明说"X 前 / 最后期限"（可信），
+/// 和"只找到一个时间、拿它顶上"（不可信，模型给了更好的就用模型的）。
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedDeadline {
+    pub at: DateTime<Utc>,
+    /// true = 命中显式截止（"前/之前/最后期限/截止"），false = 退回第一个时间表达
+    pub explicit: bool,
+}
+
 pub fn resolve_deadline_in_text(
     conversation: &str,
     title: &str,
     reference_time: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
+    resolve_deadline_ex(conversation, title, reference_time).map(|r| r.at)
+}
+
+pub fn resolve_deadline_ex(
+    conversation: &str,
+    title: &str,
+    reference_time: DateTime<Utc>,
+) -> Option<ResolvedDeadline> {
     // 先把中文数字归一成阿拉伯数字（"十一月十二号" → "11月12号"），
     // 后续扫描/解析/偏移计算都在这份文本上做，避免两套正则口径不一致。
     let normalized = normalize_cn_numerals(conversation);
@@ -931,14 +1015,41 @@ pub fn resolve_deadline_in_text(
                 continue;
             }
             if let Some(dt) = parse_event_time(expr, reference_time) {
-                return Some(end_of_day(shift_this_week_if_past(expr, reference_time, dt)));
+                return Some(ResolvedDeadline {
+                    at: end_of_day(shift_this_week_if_past(expr, reference_time, dt)),
+                    explicit: true,
+                });
             }
         }
 
-        // 没有截止标记时，退回"第一个能解析的时间"
+        // 截止词出现在句尾时，"X 是……的最后期限"这种句式里时间后面跟的是"是供应商…"，
+        // 紧跟标记的判断必然失败，然后退回"第一个能解析的时间"——取到句首的"今天上午"，
+        // 截止日记成对话当天，待办创建即 auto_invalid（P1-5a）。
+        //
+        // 只在这种句式下改用"最后一个时间表达"：无条件改成取最后一个会破坏
+        // "周六谈续约……下周一前给报价单"这类已经修对的用例。
+        const DEADLINE_WORDS: &[&str] = &[
+            "最后期限", "期限", "到期", "截止", "deadline", "必须完成", "务必",
+        ];
+        if DEADLINE_WORDS.iter().any(|w| sentence.contains(w)) {
+            for (expr, _) in exprs.iter().rev() {
+                if let Some(dt) = parse_event_time(expr, reference_time) {
+                    return Some(ResolvedDeadline {
+                        at: end_of_day(shift_this_week_if_past(expr, reference_time, dt)),
+                        explicit: true,
+                    });
+                }
+            }
+        }
+
+        // 没有截止标记时，退回"第一个能解析的时间"。
+        // 这种结果只是"句子里恰好有时间"，不是用户说的截止日，标记 explicit=false。
         for (expr, _) in &exprs {
             if let Some(dt) = parse_event_time(expr, reference_time) {
-                return Some(end_of_day(shift_this_week_if_past(expr, reference_time, dt)));
+                return Some(ResolvedDeadline {
+                    at: end_of_day(shift_this_week_if_past(expr, reference_time, dt)),
+                    explicit: false,
+                });
             }
         }
     }
@@ -956,7 +1067,7 @@ fn shift_this_week_if_past(
     dt: DateTime<Utc>,
 ) -> DateTime<Utc> {
     let is_this_week = expr.contains("本周") || expr.contains("这周") || expr.contains("本星期");
-    if is_this_week && dt.date_naive() < reference.date_naive() {
+    if is_this_week && local_date(dt) < local_date(reference) {
         return dt + chrono::Duration::days(7);
     }
     dt
@@ -992,18 +1103,60 @@ fn find_precise_time_expr(sentence: &str) -> Option<String> {
 }
 
 /// 归一到当天 23:59:59
-fn end_of_day(dt: DateTime<Utc>) -> DateTime<Utc> {
-    let date = dt.date_naive();
-    DateTime::<Utc>::from_naive_utc_and_offset(
-        date.and_hms_opt(23, 59, 59).unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap()),
-        Utc,
-    )
+pub(crate) fn end_of_day(dt: DateTime<Utc>) -> DateTime<Utc> {
+    // 取**本地**那天的 23:59:59 再转回 UTC。
+    // 原来直接用 UTC 日期拼 23:59:59Z，在 +08:00 下等于次日 07:59:59 本地，
+    // 待办会比"当天结束"晚 8 小时才过期，和 `default_deadline_from` 的口径也不一致。
+    let date = local_date(dt);
+    let end = date
+        .and_hms_opt(23, 59, 59)
+        .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap());
+    Local
+        .from_local_datetime(&end)
+        .single()
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|| dt)
 }
 
 #[cfg(test)]
 mod deadline_tests {
     use super::*;
     use chrono::TimeZone;
+
+    /// 断言用：把 UTC 瞬间按本地时区看，验证"用户看到的日期/时刻"
+    ///
+    /// 解析器现在一律把口语时间按**本地**解释，所以断言也必须看本地字段：
+    /// 直接用 `date_naive()`（UTC 日期）在 +08:00 下会整体早一天。
+    trait LocalView {
+        fn ldate(&self) -> String;
+        fn lyear(&self) -> i32;
+        fn lmonth(&self) -> u32;
+        fn lday(&self) -> u32;
+        fn lhour(&self) -> u32;
+        fn ltime(&self) -> NaiveTime;
+    }
+
+    impl LocalView for DateTime<Utc> {
+        fn ldate(&self) -> String {
+            local_date(*self).to_string()
+        }
+        fn lyear(&self) -> i32 {
+            local_date(*self).year()
+        }
+        fn lmonth(&self) -> u32 {
+            local_date(*self).month()
+        }
+        fn lday(&self) -> u32 {
+            local_date(*self).day()
+        }
+        fn lhour(&self) -> u32 {
+            self.with_timezone(&Local).hour()
+        }
+        fn ltime(&self) -> NaiveTime {
+            self.with_timezone(&Local).time()
+        }
+    }
+
 
     fn ref_time() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap()
@@ -1018,7 +1171,7 @@ mod deadline_tests {
         let conversation = "周六要和供应商王海涛谈续约，价格压到八折以内，下周一前给我报价单。";
         let got = resolve_deadline_in_text(conversation, "提供报价单", ref_time()).unwrap();
         // 参考时间 2026-10-28（周三）→ 下周一 = 2026-11-02
-        assert_eq!(got.date_naive().to_string(), "2026-11-02", "实际: {}", got);
+        assert_eq!(got.ldate(), "2026-11-02", "实际: {}", got);
     }
 
     #[test]
@@ -1027,15 +1180,15 @@ mod deadline_tests {
              另外我答应李姐帮她整理下季度的客户反馈，下周一之前要完成。";
         let dt = resolve_deadline_in_text(conversation, "整理下季度客户反馈", ref_time()).unwrap();
         // 2026-10-28 是周三，"下周一" = 2026-11-02
-        assert_eq!(dt.date_naive().to_string(), "2026-11-02");
-        assert_eq!(dt.time(), chrono::NaiveTime::from_hms_opt(23, 59, 59).unwrap());
+        assert_eq!(dt.ldate(), "2026-11-02");
+        assert_eq!(dt.ltime(), NaiveTime::from_hms_opt(23, 59, 59).unwrap());
     }
 
     #[test]
     fn test_resolve_deadline_fallback_to_first_sentence() {
         let conversation = "明天下午三点开会。顺便把周报写了。";
         let dt = resolve_deadline_in_text(conversation, "不相关的标题", ref_time()).unwrap();
-        assert_eq!(dt.date_naive().to_string(), "2026-10-29");
+        assert_eq!(dt.ldate(), "2026-10-29");
     }
 
     #[test]
@@ -1051,15 +1204,68 @@ mod deadline_tests {
     fn test_resolve_deadline_future_units() {
         let c1 = "三个月后要去车管所换驾照，记得提前预约。";
         let d1 = resolve_deadline_in_text(c1, "提前预约车管所换驾照", ref_time()).unwrap();
-        assert_eq!(d1.date_naive().to_string(), "2027-01-26");
+        assert_eq!(d1.ldate(), "2027-01-26");
 
         let c2 = "半年后要续签租房合同，提前一个月联系房东。";
         let d2 = resolve_deadline_in_text(c2, "联系房东续签租房合同", ref_time()).unwrap();
-        assert_eq!(d2.date_naive().to_string(), "2027-04-26");
+        assert_eq!(d2.ldate(), "2027-04-26");
 
         let c3 = "两周后要交体检报告。";
         let d3 = resolve_deadline_in_text(c3, "交体检报告", ref_time()).unwrap();
-        assert_eq!(d3.date_naive().to_string(), "2026-11-11");
+        assert_eq!(d3.ldate(), "2026-11-11");
+    }
+
+    /// P1-5a：「X 是……最后期限」不能取到句首的事件时间
+    ///
+    /// 原文"下周三是供应商老陈承诺补货的最后期限"里，"下周三"后面跟的是"是供应商…"，
+    /// 紧跟式截止标记判断失败，旧实现退回第一个时间（句首"今天上午"），
+    /// 截止日记成对话当天，待办创建即 auto_invalid、用户永远看不到。
+    #[test]
+    fn test_p1_5a_deadline_word_at_sentence_end() {
+        use chrono::TimeZone;
+        // 2026-08-03 是周一
+        let r = Utc.with_ymd_and_hms(2026, 8, 3, 10, 0, 0).unwrap();
+        let dt = resolve_deadline_in_text(
+            "今天上午和何晓岚盘完账，下周三是供应商老陈承诺补货的最后期限。",
+            "确认补货时间",
+            r,
+        )
+        .expect("应解析出下周三");
+        assert_eq!(dt.ldate(), "2026-08-12");
+    }
+
+    /// P1-5b：「下下周五」不能当成「下周五」（整体早一周）
+    #[test]
+    fn test_p1_5b_next_next_week() {
+        use chrono::TimeZone;
+        // 2026-09-08 是周二
+        let r1 = Utc.with_ymd_and_hms(2026, 9, 8, 10, 0, 0).unwrap();
+        let d1 = resolve_deadline_in_text("下下周五之前把报价单发出去。", "发报价单", r1).unwrap();
+        assert_eq!(d1.ldate(), "2026-09-25");
+
+        // 2026-06-10 是周三
+        let r2 = Utc.with_ymd_and_hms(2026, 6, 10, 10, 0, 0).unwrap();
+        let d2 = resolve_deadline_in_text("下下周五之前把检修单送过来。", "送检修单", r2).unwrap();
+        assert_eq!(d2.ldate(), "2026-06-26");
+
+        // 回归：普通"下周三"不能被"下下周"分支带偏
+        let d3 = resolve_deadline_in_text("下周三之前把排班表发出去。", "发排班表", r2).unwrap();
+        assert_eq!(d3.ldate(), "2026-06-17");
+    }
+
+    /// 回归：「周六谈续约……下周一前给报价单」仍取带截止标记的那个
+    #[test]
+    fn test_deadline_marker_still_wins_over_last_expr() {
+        use chrono::TimeZone;
+        // 2026-10-28 是周三
+        let r = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let dt = resolve_deadline_in_text(
+            "周六要和王海涛谈续约，下周一前给我报价单。",
+            "给报价单",
+            r,
+        )
+        .unwrap();
+        assert_eq!(dt.ldate(), "2026-11-02");
     }
 
     /// 回归：N-14 日期写法必须一致容错（空格 / 斜杠 / 中文数字）
@@ -1070,7 +1276,7 @@ mod deadline_tests {
     fn test_n14_date_formats_are_consistent() {
         use chrono::TimeZone;
         let r = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
-        let d = |s: &str| parse_event_time(s, r).map(|x| x.date_naive().to_string());
+        let d = |s: &str| parse_event_time(s, r).map(|x| x.ldate());
 
         assert_eq!(d("11月12号"), Some("2026-11-12".to_string()));
         assert_eq!(d("11 月 12 号"), Some("2026-11-12".to_string()));
@@ -1086,7 +1292,7 @@ mod deadline_tests {
             r,
         )
         .expect("应解析出 11 月 12 号");
-        assert_eq!(dt.date_naive().to_string(), "2026-11-12");
+        assert_eq!(dt.ldate(), "2026-11-12");
     }
 
     /// 回归：N-17「这周五」在周日不能解成已过去的日期
@@ -1104,11 +1310,11 @@ mod deadline_tests {
             r,
         )
         .expect("应解析出这周五");
-        assert_eq!(dt.date_naive().to_string(), "2026-11-06");
+        assert_eq!(dt.ldate(), "2026-11-06");
 
         // 事件侧仍保留"补记过去"的能力：直接解析仍是上周五
         let ev = parse_event_time("这周五", r).unwrap();
-        assert_eq!(ev.date_naive().to_string(), "2026-10-30");
+        assert_eq!(ev.ldate(), "2026-10-30");
     }
 
     /// 回归：X-05「12月20号」不能被截成「20号」，也不能借用下一句的「月底」
@@ -1116,7 +1322,7 @@ mod deadline_tests {
     fn test_deadline_x_hao_and_no_cross_sentence_borrow() {
         use chrono::TimeZone;
         let r = Utc.with_ymd_and_hms(2026, 10, 30, 12, 0, 0).unwrap();
-        let d = |s: &str| parse_event_time(s, r).map(|x| x.date_naive().to_string());
+        let d = |s: &str| parse_event_time(s, r).map(|x| x.ldate());
 
         assert_eq!(d("12月20号"), Some("2026-12-20".to_string()));
         assert_eq!(d("12月20日"), Some("2026-12-20".to_string()));
@@ -1126,6 +1332,6 @@ mod deadline_tests {
         // 句1 有明确截止日期，句2 的"月底"不得被借用
         let c = "提醒我12月20号前把年度总结交上去。另外月底要给王芳过生日，她喜欢蓝色的东西。";
         let dt = resolve_deadline_in_text(c, "提交年度总结", r).expect("应解析出 12月20号");
-        assert_eq!(dt.date_naive().to_string(), "2026-12-20");
+        assert_eq!(dt.ldate(), "2026-12-20");
     }
 }

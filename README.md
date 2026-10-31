@@ -6,7 +6,7 @@
 
 **给智能体挂载的本地记忆子系统：对话进得去，事实落得住，换种问法也能想起来。**
 
-[![version](https://img.shields.io/badge/version-0.7.3-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.7.4-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 [![tests](https://img.shields.io/badge/tests-109%20unit%20%2B%2013%20suites-brightgreen)](docs/ARCHITECTURE.md)
@@ -527,8 +527,11 @@ ShouXin/
    `[heartbeat] base_interval_secs`，导完再调回。
 4. **待办覆盖率取决于模型**：10 条生活语料实测只产出 1 条待办，模型偏保守；
    重要事项建议在对话里写清"截止/要做什么"。
-5. **一句话里多个时间表达时取哪个未定策略**：如"今天……我答应下周一……"可能取到"今天"。
-   目前只在"明确日期"与"跨句借用"两类上做了修正（见 CHANGELOG）。
+5. **一句话里多个时间表达时取哪个**：现在的策略是——有"X 前 / 之前 / 最后期限 / 截止"
+   这类截止标记时取标记前的那个；句中出现"最后期限/到期"等词时取**最后**一个时间表达；
+   其余情况交给模型判断并与本地解析交叉校验。仍不是通用规则，
+   "今天……我答应下周一……"这种没有截止词的并列句，取哪个取决于模型。
+   时间语义细节见 CHANGELOG 0.7.4（含日期算术按**本地时区**计算的修正）。
 6. **事件合并需人工确认**：相似度 0.90–0.96 的事件进 `pending_merges`；到期（48h）标记
    `expired`，不再自动入库，需要时得显式 resolve。
 7. **推理队列无背压**：入队是无界通道，持续高速灌入时内存会增长（单条 1–2 KB 量级），
@@ -556,7 +559,7 @@ ShouXin/
 
 ## 版本
 
-当前版本 **0.7.3**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
+当前版本 **0.7.4**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 
