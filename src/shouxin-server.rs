@@ -376,21 +376,21 @@ async fn run_api_server(
     // 必须在模型加载/嵌入器初始化之前施加，否则启动阶段的峰值不受约束。
     // ------------------------------------------------------------------
     let cpu_cap = settings.runtime.max_cpu_percent.clamp(1, 100);
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
-    let thread_budget = shouxin::utils::cpu_budget::thread_budget(cores, cpu_cap);
+    let (physical, logical) = shouxin::utils::cpu_budget::core_counts();
+    let thread_budget = shouxin::utils::cpu_budget::thread_budget(logical, cpu_cap);
     match shouxin::utils::cpu_budget::apply_process_cpu_cap(cpu_cap) {
         Ok(pct) => tracing::info!(
-            "[CPU] 进程级硬上限已生效: {}%（整机 {} 逻辑核，线程预算 {}）",
+            "[CPU] 进程级硬上限已生效: {}%（整机 {} 逻辑核 / {} 物理核，线程预算 {}）",
             pct,
-            cores,
+            logical,
+            physical,
             thread_budget
         ),
         Err(e) => tracing::warn!(
-            "[CPU] 进程级硬上限未能施加（{}），退化为线程预算：{}%（{} 核 × {}% → {} 线程）",
+            "[CPU] 进程级硬上限未能施加（{}），退化为线程预算：{}%（{} 逻辑核 → {} 线程）",
             e,
             cpu_cap,
-            cores,
-            cpu_cap,
+            logical,
             thread_budget
         ),
     }

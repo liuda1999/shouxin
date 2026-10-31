@@ -6,7 +6,7 @@
 
 **给智能体挂载的本地记忆子系统：对话进得去，事实落得住，换种问法也能想起来。**
 
-[![version](https://img.shields.io/badge/version-0.7.4-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.7.5-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-%E2%89%A51.75-informational)](docs/BUILD.md)
 [![tests](https://img.shields.io/badge/tests-109%20unit%20%2B%2013%20suites-brightgreen)](docs/ARCHITECTURE.md)
@@ -323,7 +323,7 @@ timeout_secs = 1800      # 抽取链路整轮超时（纯 CPU 时别开太小）
 [llm.gguf]
 model_path   = "./models/gemma-4-E4B-it-Q4_K_M.gguf"
 context_size = 4096
-threads      = 16        # 物理核心数；实际会被 [runtime] 预算压到 核数×60%
+threads      = 0         # 0 = 自动：按 [runtime].max_cpu_percent 取预算（32 核 × 60% ≈ 19）
 batch_size   = 2048      # prompt 分块预填充的块大小
 use_gpu      = false     # 默认纯 CPU（内存驻留，不卸载到 GPU）
 n_gpu_layers = 0
@@ -342,8 +342,8 @@ host = "127.0.0.1"  # 默认只监听本机；--host 优先级更高
 port = 3000
 ```
 
-> **`threads` 建议设为物理核心数**（超线程对 llama.cpp 通常无益甚至更慢），
-> 但它只是上限：实际线程数还会被 `[runtime].max_cpu_percent` 压到 `核心数 × N%`。
+> **`threads = 0` 表示自动**：实际线程数 = `整机逻辑核数 × max_cpu_percent%`（32 核 × 60% ≈ 19）。
+> 显式填数字则作为**上限**，不会被抬高——想手动压到 8 线程就填 8。
 > 更多配置项见 `config.toml` 内注释与 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
 
 ### 资源占用原则（重要）
@@ -361,10 +361,14 @@ port = 3000
 
    - 第一道闸门：Windows **作业对象 CPU 速率硬上限**（`max_cpu_percent`，默认 60），
      由内核按时间片结算，覆盖进程内所有线程；
-   - 第二道闸门：推理与嵌入线程数按同一比例折算（32 逻辑核 → 19 线程），
-     并在非 Windows 平台作为兜底。
+   - 第二道闸门：推理与嵌入线程数 = **整机逻辑核数 × max_cpu_percent%**
+     （32 逻辑核 × 60% → 19 线程），非 Windows 平台全靠这一层兜底。
 
-   启动日志：`[CPU] 进程级硬上限已生效: 60%（整机 32 逻辑核，线程预算 19）`。
+   启动日志：`[CPU] 进程级硬上限已生效: 60%（整机 32 逻辑核 / 16 物理核，线程预算 19）`，
+   紧接着 `[GGUF] 初始化: ... threads=19（逻辑核 32 / 物理核 16，CPU 上限 60%，预计峰值约 59%）`。
+
+   > 百分比乘的是**逻辑核**。曾经乘在物理核上（16 × 60% = 9 线程），
+   > 结果整机只能吃到 28%，看起来像"模型没在推理"——见 CHANGELOG 0.7.5。
 
    实测（13MB 文本嵌入压测，5 秒窗口）：约束前峰值 **94.2%**，约束后均值 **60.4%**。
    注意 Windows 的速率控制按时间片结算，2 秒窗口仍可能瞬时到 65%；
@@ -559,7 +563,7 @@ ShouXin/
 
 ## 版本
 
-当前版本 **0.7.4**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
+当前版本 **0.7.5**。变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 [Releases](https://github.com/liuda1999/shouxin/releases)。
 
 ---
 

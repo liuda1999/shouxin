@@ -22,10 +22,29 @@ pub fn apply_process_cpu_cap(percent: u32) -> Result<u32, String> {
     APPLIED.get_or_init(|| imp::apply(pct)).clone()
 }
 
-/// 线程预算：核心数按百分比折算（向下取整，至少 1）
-pub fn thread_budget(cores: usize, percent: u32) -> usize {
+/// 线程预算：**整机逻辑核数** × 百分比（向下取整，至少 1）
+///
+/// 语义就是"本项目允许占用整机 CPU 的 N%"：32 逻辑核 × 60% → 19 个线程，
+/// 也就是允许吃到整机 60%（16 物理核会跑超线程，这是操作系统的事）。
+///
+/// 历史问题：
+/// - 旧实现 `物理核 × 百分比`：16 × 60% → 9 线程，整机只能吃到 28%；
+/// - 中间版本又用物理核封顶（16 线程 → 50%），仍然低于设计上限。
+/// 两者都让"上限"变成了"天花板"，用户看到的是"CPU 只用 30%，模型像没在推理"。
+pub fn thread_budget(logical: usize, percent: u32) -> usize {
     let pct = percent.clamp(1, 100) as usize;
-    ((cores.max(1) * pct) / 100).max(1)
+    let logical = logical.max(1);
+    ((logical * pct) / 100).max(1)
+}
+
+/// 返回 (物理核数, 逻辑核数)
+pub fn core_counts() -> (usize, usize) {
+    let logical = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+    let physical = num_cpus::get_physical().max(1);
+    (physical.min(logical), logical)
 }
 
 #[cfg(windows)]
@@ -107,18 +126,22 @@ mod imp {
 mod tests {
     use super::*;
 
+    /// 预算 = 逻辑核 × 百分比（就是"整机占比"本身）
+    ///
+    /// 32 逻辑核、60% → 19 线程，允许吃到整机 60%。
     #[test]
-    fn test_thread_budget_never_exceeds_percent() {
-        assert_eq!(thread_budget(16, 60), 9);
+    fn test_thread_budget_is_logical_times_percent() {
         assert_eq!(thread_budget(32, 60), 19);
-        assert_eq!(thread_budget(4, 100), 4);
+        assert_eq!(thread_budget(32, 50), 16);
+        assert_eq!(thread_budget(16, 60), 9);
+        assert_eq!(thread_budget(8, 100), 8);
         // 小核心数也不能算出 0
         assert_eq!(thread_budget(1, 60), 1);
     }
 
     #[test]
     fn test_thread_budget_clamps_weird_percentages() {
-        assert_eq!(thread_budget(16, 0), 1); // 0% 视为 1%
-        assert_eq!(thread_budget(16, 250), 16); // >100% 视为 100%
+        assert_eq!(thread_budget(32, 0), 1); // 0% 视为 1%
+        assert_eq!(thread_budget(32, 250), 32); // >100% 视为 100%
     }
 }

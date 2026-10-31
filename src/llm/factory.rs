@@ -310,9 +310,12 @@ pub fn build_heartbeat_client(
                             "context_size".to_string(),
                             serde_json::Value::Number(4096.into()),
                         );
+                        // 0 = 按 [runtime].max_cpu_percent 自动取预算。
+                        // 这里原来硬编码 16：32 逻辑核 / 60% 的预算本该是 19，
+                        // 心跳一旦抢到锁就只跑 50%，和主客户端不一致。
                         params.insert(
                             "threads".to_string(),
-                            serde_json::Value::Number(16.into()),
+                            serde_json::Value::Number(0.into()),
                         );
                         params.insert(
                             "batch_size".to_string(),
@@ -328,10 +331,18 @@ pub fn build_heartbeat_client(
                             "use_gpu".to_string(),
                             serde_json::Value::Bool(false),
                         );
-                        // 心跳客户端强制纯 CPU（不占显存），GPU 上限参数用默认 60 即可
+                        // 心跳客户端强制纯 CPU（不占显存）；CPU 上限与主客户端同源，
+                        // 不写死 60，避免 [runtime].max_cpu_percent 改了这里不跟。
                         params.insert(
-                            "gpu_max_cpu_percent".to_string(),
-                            serde_json::Value::Number(60.into()),
+                            "cpu_budget_percent".to_string(),
+                            serde_json::Value::Number(
+                                std::env::var("SHOUXIN_CPU_BUDGET_PERCENT")
+                                    .ok()
+                                    .and_then(|v| v.parse::<u64>().ok())
+                                    .unwrap_or(60)
+                                    .clamp(1, 100)
+                                    .into(),
+                            ),
                         );
                         params
                     },

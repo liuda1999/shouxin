@@ -48,6 +48,9 @@ primary = "gguf"
 secondary = "none"
 
 [llm.gguf]
+# 0 = 自动：线程数 = 整机逻辑核数 × [runtime].max_cpu_percent%（32 核 60% → 19）
+# 显式填数字则作为上限，不会被抬高
+threads = 0
 model_path = "./models/gemma-4-E4B-it-Q4_K_M.gguf"
 context_size = 4096
 threads = 16

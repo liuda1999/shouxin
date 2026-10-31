@@ -285,7 +285,7 @@ meta                    day_index_version                 （日索引版本，�
 | 资源 | 策略 | 实现位置 |
 |------|------|----------|
 | **显存** | **默认完全不用**。`use_gpu` 在配置缺省与代码缺省下均为 `false`，`n_gpu_layers` 恒为 0；只有显式 `use_gpu = true` 且以 `--features gguf-cuda` 编译才会卸载到 GPU | `config/settings.rs::default_gguf_use_gpu`、`llm/gguf.rs` |
-| **进程 CPU** | **整个进程**占整机 ≤ `[runtime].max_cpu_percent`（默认 60%）：Windows 作业对象 CPU 速率硬上限（覆盖所有线程）+ 线程预算（`核心数 × N%`）。实测 94% → 60% | `utils/cpu_budget.rs` / `llm/gguf.rs::resolve_threads` |
+| **进程 CPU** | **整个进程**占整机 ≤ `[runtime].max_cpu_percent`（默认 60%）：Windows 作业对象 CPU 速率硬上限（覆盖所有线程）+ 线程预算（**逻辑核数 × N%**，32 核 60% → 19 线程）。实测推理峰值 59%、整机 63% | `utils/cpu_budget.rs` / `llm/gguf.rs::resolve_threads` |
 | **CPU（纯 CPU 模式）** | 用配置的 `threads`，且不超过核心数 | 同上 |
 | 内存 | 模型 mmap 驻留，受 `[heartbeat].memory_threshold_mb` 保护，超阈值跳过心跳 | `service/heartbeat*` |
 

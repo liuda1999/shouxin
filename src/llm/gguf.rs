@@ -173,36 +173,37 @@ impl GgufClient {
             .and_then(|v| v.as_u64())
             .unwrap_or(60) as u32;
 
-        // 用**物理核心数**做配额基准。
-        // 若按逻辑核（含超线程）算，32 线程 × 60% = 19 会超过 16 个物理核，
-        // 反而造成超载 —— 与"不吃满 CPU"的初衷相反。
-        let cores = physical_cores();
+        // 线程预算 = 逻辑核数 × N%（就是"整机占比"本身）。
+        //
+        // 32 逻辑核、上限 60% → 19 线程，允许吃到整机 60%。不要把百分比乘在
+        // **物理核**上：16 物理核 × 60% = 9 线程，整机只能吃到 28%，
+        // 用户看到的就是"CPU 只有 30%，模型像没在推理"（实测钉在 28.0%）。
+        // 也不要用物理核封顶：那样 60% 的上限会被折成 50%，等于上限失效。
+        let (physical, logical) = (physical_cores(), logical_cores());
 
-        // 注意：这里用 `use_gpu`（配置意图）而不是 `gpu_enabled`（硬件探测结果）。
-        // 只要配置声明要用 GPU，就按"GPU 模式"限制线程数；
-        // 即使本机没装 CUDA（gpu_enabled=false），保守收紧也不会造成问题。
-        let effective_threads =
-            resolve_threads(threads, cores, use_gpu, gpu_max_cpu_percent);
-        if use_gpu && effective_threads != threads {
+        let effective_threads = resolve_threads(threads, logical, gpu_max_cpu_percent);
+        if effective_threads != threads {
             tracing::info!(
-                "[GGUF] GPU 模式限制 CPU 占用：threads {} -> {}（核心 {}，上限 {}%）",
+                "[GGUF] 线程预算收敛：threads {} -> {}（逻辑核 {}，CPU 上限 {}%）",
                 threads,
                 effective_threads,
-                cores,
+                logical,
                 gpu_max_cpu_percent
             );
         }
         threads = effective_threads;
 
         tracing::info!(
-            "[GGUF] 初始化: GPU={}, n_gpu_layers={}, offload_kv_cache={}, context={}, threads={}（物理核 {}，GPU 上限 {}%）",
+            "[GGUF] 初始化: GPU={}, n_gpu_layers={}, offload_kv_cache={}, context={}, threads={}（逻辑核 {} / 物理核 {}，CPU 上限 {}%，预计峰值约 {}%）",
             gpu_enabled,
             n_gpu_layers,
             offload_kv_cache,
             context_size,
             threads,
-            cores,
-            gpu_max_cpu_percent
+            logical,
+            physical,
+            gpu_max_cpu_percent,
+            (threads * 100) / logical.max(1)
         );
 
         let timeout_secs = config
@@ -977,73 +978,65 @@ pub(crate) fn physical_cores() -> usize {
 ///
 /// **所有模式**都按"核心数 × 百分比"封顶：设计约束是"本项目占整机 CPU ≤ N%"，
 /// CPU 模式下同样适用。`gpu_enabled` 仅保留参数以兼容调用方，不再影响上限。
-pub(crate) fn resolve_threads(
-    configured: usize,
-    cores: usize,
-    _gpu_enabled: bool,
-    percent: u32,
-) -> usize {
-    cap_threads_for_gpu(configured, cores, percent)
+pub(crate) fn resolve_threads(configured: usize, logical: usize, percent: u32) -> usize {
+    cap_threads_for_gpu(configured, logical, percent)
 }
 
 /// GPU 模式下按"最多占用 N% 核心"折算线程数
 ///
 /// 取向下取整，保证**不会超过**给定比例；同时至少为 1，避免算出 0 线程。
-pub(crate) fn cap_threads_for_gpu(configured: usize, cores: usize, percent: u32) -> usize {
-    let pct = percent.clamp(1, 100) as usize;
-    let cores = cores.max(1);
-    let allowed = ((cores * pct) / 100).max(1);
-    configured.max(1).min(allowed)
+/// 实际线程数
+///
+/// `configured == 0` 表示"按 CPU 上限自动"（推荐）：直接取预算，
+/// 32 逻辑核 × 60% → 19 线程。显式配置则是**上限**，不会被抬高。
+pub(crate) fn cap_threads_for_gpu(configured: usize, logical: usize, percent: u32) -> usize {
+    let budget = crate::utils::cpu_budget::thread_budget(logical, percent);
+    if configured == 0 {
+        budget
+    } else {
+        configured.min(budget)
+    }
+}
+
+/// 逻辑核数（含超线程）
+pub(crate) fn logical_cores() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1)
 }
 
 #[cfg(test)]
 mod thread_cap_tests {
     use super::{cap_threads_for_gpu, resolve_threads};
 
-    /// 回归：CPU 模式也必须按"整机 60%"封顶
+    /// 预算 = 逻辑核 × N%：32 核 60% → 19 线程（整机 60%）
     ///
-    /// 设计约束是"本项目占整机 CPU ≤ 60%"，不是"GPU 模式下才限制"。
-    /// 旧实现 CPU 模式直接把 16 线程全开，等于没有约束。
+    /// 旧实现 `物理核 × N%`（16×60%=9）让整机最多只吃到 28%，
+    /// 用户看到"CPU 只有 30%"，误以为模型没推理。
     #[test]
-    fn cpu_mode_is_also_capped_to_percent() {
-        // 32 核 × 60% = 19，配置 16 不被抬高、64 被压到 19
-        assert_eq!(resolve_threads(16, 32, false, 60), 16);
-        assert_eq!(resolve_threads(64, 32, false, 60), 19);
-        // 16 核 × 60% = 9，配置 16 必须压到 9
-        assert_eq!(resolve_threads(16, 16, false, 60), 9);
-        assert_eq!(resolve_threads(0, 32, false, 60), 1);
+    fn thread_budget_is_logical_times_percent() {
+        assert_eq!(resolve_threads(16, 32, 60), 16); // 配置 16 是上限
+        assert_eq!(resolve_threads(64, 32, 60), 19); // 配置过大 → 压到预算
+        assert_eq!(resolve_threads(0, 32, 60), 19); // 0 = 自动
+        assert_eq!(resolve_threads(0, 32, 30), 9);
+        assert_eq!(resolve_threads(0, 16, 60), 9);
     }
 
+    /// 配置值是上限，自动模式取预算
     #[test]
-    fn gpu_mode_is_capped_to_percent() {
-        // 本机物理 16 核：16 × 60% = 9，配置 32 也要被压到 9
-        assert_eq!(resolve_threads(32, 16, true, 60), 9);
-        // 配置本来就低时不受影响
-        assert_eq!(resolve_threads(4, 16, true, 60), 4);
-        // 8 核 × 60% = 4
-        assert_eq!(resolve_threads(8, 8, true, 60), 4);
+    fn configured_threads_is_upper_bound() {
+        assert_eq!(resolve_threads(4, 32, 60), 4);
+        assert_eq!(cap_threads_for_gpu(4, 32, 60), 4);
+        assert_eq!(cap_threads_for_gpu(0, 32, 60), 19);
     }
 
+    /// 100% 上限时也不超过逻辑核数（硬上限仍由作业对象兜住）
     #[test]
-    fn caps_to_60_percent_of_cores() {
-        // 16 核 × 60% = 9 核（向下取整）
-        assert_eq!(cap_threads_for_gpu(16, 16, 60), 9);
-        assert_eq!(cap_threads_for_gpu(32, 16, 60), 9);
-        // 配置本来就低于上限时不受影响
-        assert_eq!(cap_threads_for_gpu(4, 16, 60), 4);
-    }
-
-    #[test]
-    fn never_below_one_thread() {
-        assert_eq!(cap_threads_for_gpu(1, 1, 60), 1);
-        assert_eq!(cap_threads_for_gpu(8, 1, 60), 1);
-    }
-
-    #[test]
-    fn percent_is_clamped() {
-        // 0% / 超过 100% 都会被夹到合法区间
-        assert_eq!(cap_threads_for_gpu(16, 8, 0), 1);
-        assert_eq!(cap_threads_for_gpu(16, 8, 200), 8);
+    fn never_exceeds_logical_cores() {
+        assert_eq!(resolve_threads(64, 32, 100), 32);
+        assert_eq!(resolve_threads(0, 8, 100), 8);
+        assert_eq!(resolve_threads(0, 8, 1), 1);
     }
 }
 
