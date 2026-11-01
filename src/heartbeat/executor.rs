@@ -232,27 +232,20 @@ impl HeartbeatExecutor {
         for action in &all_actions {
             match action {
                 HeartbeatAction::AskUser(question) => {
+                    // 这里**不再**建待办。
+                    //
+                    // 旧实现在此用 `TodoItem::new(..., "default_user", ...)` 又建一条：
+                    // - 属主写死 default_user，与调用方属主无关（P1-1）；
+                    // - 与 analyzer 的 create_ambiguity_todo 重复，一次检测落两条（P1-2）；
+                    // - 这条 todo 从未写进 ambiguity_log.resolved_todo_id，
+                    //   因此 POST /api/heartbeat/resolve_question 更新它时
+                    //   rows_affected == 0，闭环本来就断的（只有一行 debug 日志）。
+                    // 待办由 create_ambiguity_todo 统一建（属主正确、带 ambiguity 标记、
+                    // 与 ambiguity_log 关联可闭环），问题本身留在 question pool。
                     if let Err(e) = self.question_pool.add_question(question.clone()).await {
                         warn!("Failed to add question to pool: {:?}", e);
                     } else {
                         stats.questions_created += 1;
-                    }
-
-                    let todo = crate::stores::relational::TodoItem::new(
-                        question.id.clone(),
-                        question.related_contact_ids.clone(),
-                        "default_user".to_string(),
-                        crate::core::contact::OwnerType::User,
-                        question.title.clone(),
-                        question.expires_at.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::days(3)),
-                        "medium".to_string(),
-                    )
-                    .with_description(question.detail.clone())
-                    .with_todo_type("ambiguity".to_string())
-                    .with_entity("ambiguity".to_string(), question.id.clone());
-
-                    if let Err(e) = self.rel_store.add_todo(&todo).await {
-                        warn!("Failed to add ambiguity todo to store: {:?}", e);
                     }
                 }
                 HeartbeatAction::UpdateContactSummary { contact_id, new_summary } => {

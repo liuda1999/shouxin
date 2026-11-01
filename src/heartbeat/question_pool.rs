@@ -354,6 +354,15 @@ impl QuestionPool {
             expires_at,
             related_contact_ids,
             related_event_ids,
+            // 合并的一组问题同属一个属主（合并前已按 contact 分组），取第一个即可
+            owner_type: questions
+                .first()
+                .map(|q| q.owner_type.clone())
+                .unwrap_or(crate::core::contact::OwnerType::User),
+            owner_id: questions
+                .first()
+                .map(|q| q.owner_id.clone())
+                .unwrap_or_else(|| crate::core::owner::DEFAULT_USER_ID.to_string()),
         }
     }
 }

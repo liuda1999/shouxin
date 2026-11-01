@@ -1169,7 +1169,7 @@ impl BackgroundTaskQueue {
                 if let Ok(existing) = state
                     .relational
                     .get_todo_store()
-                    .get_all_todos(task.owner_type, &task.owner_id, Some("pending"), 200, false, None)
+                    .get_all_todos(task.owner_type, &task.owner_id, Some("pending"), 200, false, None, None)
                     .await
                 {
                     let new_norm = normalize_todo_title(&extracted_todo.title);

@@ -314,7 +314,7 @@ POST /api/search/smart
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/todos` | 列表（支持 `status` / `contact_id` / `include_archived` 过滤） |
+| GET | `/api/todos` | 列表（支持 `status` / `contact_id` / `todo_type` / `include_archived` 过滤） |
 | POST | `/api/todos` | 新建 |
 | GET | `/api/todos/:id` | 详情 |
 | PUT | `/api/todos/:id/complete` | 完成（**幂等**，见下） |
@@ -323,10 +323,21 @@ POST /api/search/smart
 新建：
 
 ```json
-{ "title": "整理下季度客户反馈", "deadline": "2026-11-02T23:59:59+08:00", "importance": "high" }
+{ "title": "整理下季度客户反馈", "deadline": "2026-11-02T23:59:59+08:00",
+  "importance": "high", "user_id": "alice", "scope": "user" }
 ```
 
 `importance`：`high` / `medium` / `low`。
+
+> **属主必须显式携带**：不带 `user_id` 时**不会报错**，待办归属内置属主 `default_user`；
+> 读取时须使用同一属主参数才能取回。也就是说，写入时不带 `user_id`、
+> 读取时带 `user_id=alice`，这条待办**查不到**——按上面示例写上属主字段即可避免。
+> 服务端在缺 `user_id` 时会记一条 `WARN` 日志。
+
+**按类型过滤（v0.7.8 起）**：`GET /api/todos?user_id=alice&todo_type=normal`。
+`todo_type` 取值 `normal`（普通待办）/ `reminder`（心跳提醒）/ `ambiguity`（澄清类）。
+`ambiguity` 是系统对自身不确定性的自述（如"检测到指代不清，请澄清"），不是"要做的事"；
+智能体想只拿真正要做的事时传 `todo_type=normal`。不传该参数则不过滤，行为与旧版一致。
 
 **完成的幂等语义（v0.6.4 起）**：`completed_at` 只在首次完成时写入，重复调用不会覆盖，
 只有 `last_updated_at` 会刷新。这样外部重试、心跳或对话抽取反复判定"已完成"都不会让完成时间向后漂移。

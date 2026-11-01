@@ -404,6 +404,11 @@ pub struct ListTodosRequest {
     /// 是否包含已归档的待办
     #[serde(default)]
     pub include_archived: bool,
+    /// 待办类型过滤（normal / reminder / ambiguity）
+    ///
+    /// 传 `normal` 可排除澄清类待办（系统自述，非"要做的事"）。不传则不过滤。
+    #[serde(default)]
+    pub todo_type: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -483,6 +488,12 @@ pub struct ApiResponse<T> {
     /// 错误信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 补充说明（顶层可读的提示，如批量部分失败）。
+    ///
+    /// 为什么要有这个字段：程序化调用方通常只看顶层 `success` 决定是否重试，
+    /// 逐条失败信息埋在 `data.items[].error` 里根本不会被读到。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// HTTP 状态码（不序列化到 JSON）
     #[serde(skip)]
     pub status_code: StatusCode,
@@ -495,6 +506,18 @@ impl<T> ApiResponse<T> {
             success: true,
             data: Some(data),
             error: None,
+            message: None,
+            status_code: StatusCode::OK,
+        }
+    }
+
+    /// 创建成功响应，并附带顶层提示（用于"整体成功但部分失败"这类场景）
+    pub fn success_with_message(data: T, message: String) -> Self {
+        Self {
+            success: true,
+            data: Some(data),
+            error: None,
+            message: Some(message),
             status_code: StatusCode::OK,
         }
     }
@@ -505,6 +528,7 @@ impl<T> ApiResponse<T> {
             success: false,
             data: None,
             error: Some(error),
+            message: None,
             status_code: StatusCode::OK,
         }
     }
@@ -515,6 +539,7 @@ impl<T> ApiResponse<T> {
             success: false,
             data: None,
             error: Some(error),
+            message: None,
             status_code: status,
         }
     }
@@ -1525,9 +1550,16 @@ async fn batch_add_conversations(
                     let now = Utc::now();
                     if ts > now + chrono::Duration::days(1) || ts.year() < 2000 {
                         failed += 1;
+                        // 写清边界，便于调用方自动修正后重发：
+                        // 允许的最晚时间是"现在 + 1 天"（容忍时区与时钟误差），最早 2000 年。
                         items.push(serde_json::json!({
                             "index": index, "success": false,
-                            "error": format!("timestamp 超出合理范围：{}", raw)
+                            "error": format!(
+                                "timestamp 超出合理范围：{}（须在 2000-01-01 与 {} 之间，\
+                                 即不晚于当前时间 +1 天）",
+                                raw,
+                                (now + chrono::Duration::days(1)).format("%Y-%m-%d %H:%M:%S UTC")
+                            )
                         }));
                         continue;
                     }
@@ -1565,12 +1597,32 @@ async fn batch_add_conversations(
         }
     }
 
-    ApiResponse::success(serde_json::json!({
+    let total = req.items.len();
+    // 部分失败必须在**顶层**可见。
+    //
+    // 程序化调用方（智能体）通常只看顶层 success 决定是否重试，而失败明细埋在
+    // items[].error 里；6 条里 4 条静默未入库，调用方却认为全写完了——
+    // 这是数据丢失而不自知。这里加 partial + message，不改变 success 语义
+    // （批处理不该因单条失败整体失败），但让"存在失败"无法被忽略。
+    let data = serde_json::json!({
         "accepted": accepted,
         "failed": failed,
-        "total": req.items.len(),
+        "total": total,
+        "partial": failed > 0,
         "items": items,
-    }))
+    });
+
+    if failed > 0 {
+        ApiResponse::success_with_message(
+            data,
+            format!(
+                "{} 条中 {} 条失败，未写入记忆，详见 data.items[].error",
+                total, failed
+            ),
+        )
+    } else {
+        ApiResponse::success(data)
+    }
 }
 
 /// 在线备份：对关系库做一致性快照（WAL 下安全，不需要停服）
@@ -2432,11 +2484,22 @@ async fn add_todo(
     // 根据scope获取所有者信息（owner_id 统一从配置解析，禁止写死）
     let user_id_opt = req.user_id.clone();
     let (owner_type, owner_id) = match req.scope {
-        Scope::User => (
-            crate::core::contact::OwnerType::User,
-            req.user_id
-                .unwrap_or_else(|| crate::core::owner::DEFAULT_USER_ID.to_string()),
-        ),
+        Scope::User => {
+            let owner_id = match req.user_id.clone() {
+                Some(id) => id,
+                None => {
+                    // 静默兜底会在多属主部署下造成"写入了但按自己的 user_id 取不回"。
+                    // 不报错（单属主部署依赖这个缺省），但必须留痕。
+                    warn!(
+                        "POST /api/todos 未指定 user_id，待办归属默认属主 {}；\
+                         读取时须使用同一属主参数才能取回",
+                        crate::core::owner::DEFAULT_USER_ID
+                    );
+                    crate::core::owner::DEFAULT_USER_ID.to_string()
+                }
+            };
+            (crate::core::contact::OwnerType::User, owner_id)
+        }
         Scope::Agent => (
             crate::core::contact::OwnerType::Agent,
             crate::core::owner::primary_agent_id().to_string(),
@@ -2536,6 +2599,12 @@ async fn list_todos(
 
     let filter = if let Some(ref contact_id) = req.contact_id {
         filter.with_contact(contact_id.clone())
+    } else {
+        filter
+    };
+
+    let filter = if let Some(ref todo_type) = req.todo_type {
+        filter.with_todo_type(todo_type.clone())
     } else {
         filter
     };

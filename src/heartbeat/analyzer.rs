@@ -706,6 +706,8 @@ impl HeartbeatAnalyzer {
                     expires_at: Some(Utc::now() + chrono::Duration::days(3)),
                     related_contact_ids: ambiguity.related_contact_ids,
                     related_event_ids: ambiguity.related_event_ids,
+                    owner_type: ambiguity.owner_type,
+                    owner_id: ambiguity.owner_id,
                 };
                 actions.push(HeartbeatAction::AskUser(question));
             }
@@ -1074,6 +1076,18 @@ impl HeartbeatAnalyzer {
 
         debug!("detect_knowledge_conflicts: analyzing {} recent conversations", recent_convs.len());
 
+        // 属主：本轮分析的是谁的对话，派生产物就必须落回谁的属主空间。
+        // 旧实现只有后面的 create_ambiguity_todo 用到了它，AskUser 支路拿不到，
+        // 于是 executor 硬编码 default_user。这里提前算好，两条支路共用。
+        let owner_id = recent_convs
+            .first()
+            .map(|c| c.owner_id.clone())
+            .unwrap_or_else(|| crate::core::owner::DEFAULT_USER_ID.to_string());
+        let owner_type = recent_convs
+            .first()
+            .map(|c| c.owner_type.clone())
+            .unwrap_or(crate::core::contact::OwnerType::User);
+
         // 拼接时必须有**字符预算**。
         //
         // 原实现把最多 30 段对话全量拼进一个提示词：200 条压测语料下实测拼出
@@ -1174,6 +1188,8 @@ impl HeartbeatAnalyzer {
                         expires_at: Some(Utc::now() + chrono::Duration::days(3)),
                         related_contact_ids: vec![],
                         related_event_ids: vec![],
+                        owner_type: owner_type.clone(),
+                        owner_id: owner_id.clone(),
                     })]);
                 }
                 return Ok(Vec::new());
@@ -1198,8 +1214,10 @@ impl HeartbeatAnalyzer {
 
         let entity_ids: Vec<String> = result.related_entities.into_iter().take(5).collect();
 
-        let owner_id = recent_convs.first().map(|c| c.owner_id.clone()).unwrap_or_else(|| "default_user".to_string());
-        match self.rel_store.create_ambiguity_todo(
+        // 用待办 id 作为 question id，使 POST /api/heartbeat/resolve_question
+        // 能按 resolved_todo_id 找到 ambiguity_log 并置为 resolved。
+        // 旧实现另起一个 Uuid，导致 resolve 时 rows_affected == 0，闭环是断的。
+        let ambiguity_todo_id = match self.rel_store.create_ambiguity_todo(
             &ambiguity_type,
             "contact",
             &entity_ids.join(","),
@@ -1208,12 +1226,18 @@ impl HeartbeatAnalyzer {
             crate::core::contact::OwnerType::User,
             &owner_id,
         ).await {
-            Ok(_) => info!("Created ambiguity todo from conflict detection"),
-            Err(e) => warn!("Failed to create ambiguity todo: {}", e),
-        }
+            Ok(id) => {
+                info!("Created ambiguity todo from conflict detection");
+                Some(id)
+            }
+            Err(e) => {
+                warn!("Failed to create ambiguity todo: {}", e);
+                None
+            }
+        };
 
         Ok(vec![HeartbeatAction::AskUser(Question {
-            id: Uuid::new_v4().to_string(),
+            id: ambiguity_todo_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
             priority: QuestionPriority::High,
             category: if entity_ids.len() > 1 {
                 QuestionCategory::EntityDisambiguation
@@ -1227,6 +1251,8 @@ impl HeartbeatAnalyzer {
             expires_at: Some(Utc::now() + chrono::Duration::days(3)),
             related_contact_ids: entity_ids.clone(),
             related_event_ids: vec![],
+            owner_type,
+            owner_id,
         })])
     }
 
@@ -1261,6 +1287,8 @@ impl HeartbeatAnalyzer {
                     expires_at: Some(Utc::now() + chrono::Duration::days(7)),
                     related_contact_ids: vec![candidate.primary_contact_id.clone(), candidate.merged_contact_id.clone()],
                     related_event_ids: Vec::new(),
+                    owner_type: candidate.owner_type,
+                    owner_id: candidate.owner_id,
                 };
                 actions.push(HeartbeatAction::AskUser(question));
             }

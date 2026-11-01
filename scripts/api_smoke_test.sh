@@ -96,9 +96,10 @@ check "POST /api/vector/search" POST "/api/vector/search" 200 \
 echo "== 3. 待办 CRUD =="
 TID=""
 check "POST /api/todos" POST "/api/todos" 200 \
-  '{"title":"冒烟测试待办","deadline":"2026-11-10T23:59:59+08:00","importance":"medium"}' 'todo_id'
+  "{\"title\":\"冒烟测试待办\",\"deadline\":\"2026-11-10T23:59:59+08:00\",\"importance\":\"medium\",\"user_id\":\"$UID_\",\"scope\":\"user\"}" 'todo_id'
 TID=$(json_get "$TMP/out.json" todo_id)
 check "GET  /api/todos" GET "/api/todos" 200 "" '"success"'
+check "GET  /api/todos?todo_type=normal" GET "/api/todos?todo_type=normal&user_id=$UID_" 200 "" '"success"'
 if [ -n "$TID" ]; then
   check "GET  /api/todos/:id" GET "/api/todos/$TID" 200 200 "" '' 2>/dev/null || true
   check "PUT  /api/todos/:id/complete" PUT "/api/todos/$TID/complete" 200 "" ''

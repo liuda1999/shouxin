@@ -1632,7 +1632,26 @@ impl RelationalStore {
         contact_id: Option<&str>,
     ) -> Result<Vec<TodoItem>, ShouxinError> {
         self.todo_list_store
-            .get_all_todos(owner_type, owner_id, status, limit, include_archived, contact_id)
+            .get_all_todos(owner_type, owner_id, status, limit, include_archived, contact_id, None)
+            .await
+    }
+
+    /// 获取待办列表（可按类型过滤）
+    ///
+    /// 与上面的区别在于多一个 `todo_type`：澄清类待办（`ambiguity`）是系统自述，
+    /// 智能体想只拿"真正要做的事"时传 `Some("normal")`。
+    pub async fn get_all_todos_by_type(
+        &self,
+        owner_type: crate::core::contact::OwnerType,
+        owner_id: &str,
+        status: Option<&str>,
+        limit: i64,
+        include_archived: bool,
+        contact_id: Option<&str>,
+        todo_type: Option<&str>,
+    ) -> Result<Vec<TodoItem>, ShouxinError> {
+        self.todo_list_store
+            .get_all_todos(owner_type, owner_id, status, limit, include_archived, contact_id, todo_type)
             .await
     }
 
@@ -2653,13 +2672,17 @@ impl RelationalStore {
     pub async fn get_pending_ambiguities(&self) -> Result<Vec<crate::heartbeat::types::AmbiguityInfo>, ShouxinError> {
         let rows = query(
             r#"
-            SELECT id, ambiguity_type, entity_type, entity_id, description, context_summary,
-                   resolved_todo_id, status
-            FROM ambiguity_log
-            WHERE status = 'pending'
-            ORDER BY created_at DESC
+            SELECT a.id, a.ambiguity_type, a.entity_type, a.entity_id, a.description, a.context_summary,
+                   a.resolved_todo_id,
+                   COALESCE(t.owner_type, 'User') AS owner_type,
+                   COALESCE(t.owner_id, ?) AS owner_id
+            FROM ambiguity_log a
+            LEFT JOIN todo_list t ON t.todo_id = a.resolved_todo_id
+            WHERE a.status = 'pending'
+            ORDER BY a.created_at DESC
             "#,
         )
+        .bind(crate::core::owner::DEFAULT_USER_ID)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2688,6 +2711,9 @@ impl RelationalStore {
                 related_event_ids: Vec::new(),
                 todo_id: row.get("resolved_todo_id"),
                 status: crate::heartbeat::types::AmbiguityStatus::Pending,
+                owner_type: crate::core::contact::OwnerType::parse(&row.get::<String, _>("owner_type"))
+                    .unwrap_or(crate::core::contact::OwnerType::User),
+                owner_id: row.get("owner_id"),
             });
         }
 
@@ -2927,6 +2953,9 @@ impl RelationalStore {
                 shared_event_ratio: 0.0,
                 confidence_score: confidence,
                 merge_type: crate::heartbeat::types::MergeType::AliasOverlap,
+                owner_type: crate::core::contact::OwnerType::parse(&row.get::<String, _>("owner_type"))
+                    .unwrap_or(crate::core::contact::OwnerType::User),
+                owner_id: row.get("owner_id"),
             });
         }
 
@@ -3077,16 +3106,24 @@ impl RelationalStore {
         .await?
         .last_insert_rowid() as i64;
 
+        // 标题只放前 30 字，完整分析留在 description。
+        // 旧实现 `format!("澄清: {}", description)` 把整段 130 字分析当标题，
+        // 智能体拉待办列表时看到的是系统的自述文本，和"真正要做的事"混在一起。
+        let short_desc: String = description.chars().take(30).collect();
         let todo = crate::stores::relational::todo_list::TodoItem::new(
             todo_id.clone(),
             vec![entity_id.to_string()],
             owner_id.to_string(),
             owner_type,
-            format!("澄清: {}", description),
+            format!("澄清: {}", short_desc),
             deadline,
             "medium".to_string(),
         )
-        .with_description(context_summary.to_string());
+        .with_description(context_summary.to_string())
+        // 标记类型，让 `GET /api/todos?todo_type=normal` 能把它筛掉；
+        // 并关联 ambiguity_log，使 resolve_question 能闭环（旧实现两个都没有）。
+        .with_todo_type("ambiguity".to_string())
+        .with_entity("ambiguity".to_string(), ambiguity_id_int.to_string());
 
         self.add_todo(&todo).await?;
 
@@ -3944,5 +3981,129 @@ impl RelationalStore {
         }
 
         Ok(best.map(|(_, id)| id))
+    }
+}
+
+#[cfg(test)]
+mod p1_ambiguity_owner_tests {
+    use super::*;
+    use crate::core::contact::OwnerType;
+
+    /// P1-2①：澄清待办必须带 ambiguity 类型标记并关联 ambiguity_log，标题只截 30 字
+    #[tokio::test]
+    async fn ambiguity_todo_is_typed_and_linked() {
+        let store = RelationalStore::in_memory().await.unwrap();
+        let long_desc = "在最后一条对话中，实体读的书和我已经买了八本的指代对象不明确".repeat(3);
+
+        let todo_id = store
+            .create_ambiguity_todo(
+                "SelfContradiction",
+                "contact",
+                "读的书",
+                &long_desc,
+                "对话分析中发现：指代不清",
+                OwnerType::User,
+                "alice",
+            )
+            .await
+            .unwrap();
+
+        let todos = store
+            .get_todo_store()
+            .get_all_todos(OwnerType::User, "alice", None, 100, false, None, None)
+            .await
+            .unwrap();
+        assert_eq!(todos.len(), 1, "一次检测只应产生一条待办");
+        let t = &todos[0];
+        assert_eq!(t.todo_id, todo_id);
+        assert_eq!(t.todo_type, "ambiguity", "必须打类型标记，否则无法筛掉");
+        assert_eq!(t.owner_id, "alice", "必须落在调用方属主下");
+        assert_eq!(t.entity_type.as_deref(), Some("ambiguity"));
+        assert!(
+            t.entity_id.is_some(),
+            "必须关联 ambiguity_log，否则 resolve 时 rows_affected=0"
+        );
+        assert!(
+            t.title.chars().count() <= 40,
+            "标题不应塞整段分析，实际 {} 字: {}",
+            t.title.chars().count(),
+            t.title
+        );
+        assert!(
+            t.description.as_deref().unwrap_or_default().contains("指代不清"),
+            "完整内容应留在 description"
+        );
+    }
+
+    /// P1-1：待办列表按类型过滤后，澄清类不再混在"要做的事"里
+    #[tokio::test]
+    async fn list_todos_by_type_excludes_ambiguity() {
+        let store = RelationalStore::in_memory().await.unwrap();
+        let todos = store.get_todo_store();
+
+        let normal = crate::stores::relational::todo_list::TodoItem::new(
+            "n1".to_string(),
+            vec![],
+            "alice".to_string(),
+            OwnerType::User,
+            "举办读书会".to_string(),
+            chrono::Utc::now() + chrono::Duration::days(1),
+            "medium".to_string(),
+        );
+        todos.add_todo(&normal).await.unwrap();
+        store
+            .create_ambiguity_todo("SelfContradiction", "contact", "x", "指代不清", "ctx", OwnerType::User, "alice")
+            .await
+            .unwrap();
+
+        let only_normal = store
+            .get_all_todos_by_type(OwnerType::User, "alice", None, 100, false, None, Some("normal"))
+            .await
+            .unwrap();
+        assert_eq!(only_normal.len(), 1, "澄清类必须能被 todo_type=normal 过滤掉");
+        assert_eq!(only_normal[0].todo_id, "n1");
+
+        let all = store
+            .get_all_todos_by_type(OwnerType::User, "alice", None, 100, false, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2, "不传 todo_type 时行为不变（向后兼容）");
+    }
+
+    /// P1-1：pending 歧义的属主从关联待办反查，不再退化成 default_user
+    #[tokio::test]
+    async fn pending_ambiguity_carries_real_owner() {
+        let store = RelationalStore::in_memory().await.unwrap();
+        store
+            .create_ambiguity_todo("SelfContradiction", "contact", "x", "指代不清", "ctx", OwnerType::User, "alice")
+            .await
+            .unwrap();
+
+        let pending = store.get_pending_ambiguities().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].owner_id, "alice",
+            "歧义的后续提问必须落回同一属主空间，实际: {}",
+            pending[0].owner_id
+        );
+        assert_eq!(pending[0].owner_type, OwnerType::User);
+        assert!(pending[0].todo_id.is_some(), "应带出关联待办 id 供 resolve 使用");
+    }
+
+    /// 关联待办缺失时退化为默认属主，不能 panic 或漏掉这条歧义
+    #[tokio::test]
+    async fn pending_ambiguity_without_todo_still_returned() {
+        let store = RelationalStore::in_memory().await.unwrap();
+        query(
+            "INSERT INTO ambiguity_log (ambiguity_type, entity_type, entity_id, description, context_summary, status) \
+             VALUES ('SelfContradiction','contact','x','孤儿的歧义','ctx','pending')",
+        )
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+        let pending = store.get_pending_ambiguities().await.unwrap();
+        assert_eq!(pending.len(), 1, "LEFT JOIN 不应把无待办的歧义筛掉");
+        assert_eq!(pending[0].owner_id, crate::core::owner::DEFAULT_USER_ID);
     }
 }

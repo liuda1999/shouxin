@@ -35,6 +35,11 @@ pub struct TodoFilter {
     pub limit: i64,
     /// 是否包含已归档的待办
     pub include_archived: bool,
+    /// 待办类型过滤（normal / reminder / ambiguity）
+    ///
+    /// 澄清类待办（`ambiguity`）是系统对自身不确定性的自述，不是"要做的事"。
+    /// 智能体想拿真正要做的事时传 `normal`。不传则不过滤，行为与旧版一致。
+    pub todo_type: Option<String>,
 }
 
 impl TodoFilter {
@@ -45,6 +50,7 @@ impl TodoFilter {
             contact_id: None,
             limit: 100,
             include_archived: false,
+            todo_type: None,
         }
     }
 
@@ -69,6 +75,12 @@ impl TodoFilter {
     /// 设置是否包含已归档
     pub fn with_include_archived(mut self, include_archived: bool) -> Self {
         self.include_archived = include_archived;
+        self
+    }
+
+    /// 设置待办类型过滤（normal / reminder / ambiguity）
+    pub fn with_todo_type(mut self, todo_type: String) -> Self {
+        self.todo_type = Some(todo_type);
         self
     }
 }
@@ -556,6 +568,7 @@ impl AsyncMemory {
             filter.limit,
             filter.include_archived,
             filter.contact_id.as_deref(),
+            filter.todo_type.as_deref(),
         )
         .await
     }

@@ -428,6 +428,7 @@ impl TodoListStore {
         limit: i64,
         include_archived: bool,
         contact_id: Option<&str>,
+        todo_type: Option<&str>,
     ) -> Result<Vec<TodoItem>, ShouxinError> {
         // 动态拼 SQL：4 组静态常量在加过滤条件时会指数膨胀，
         // 而且 contact_id 过滤被"构造了但没消费"（N-19）。
@@ -450,6 +451,10 @@ impl TodoListStore {
             // contact_ids 存的是 JSON 数组字符串，用带引号的子串匹配避免 id 前缀误命中
             sql.push_str(" AND contact_ids LIKE ?");
             binds.push(format!("%\"{}\"%", cid));
+        }
+        if let Some(t) = todo_type {
+            sql.push_str(" AND todo_type = ?");
+            binds.push(t.to_string());
         }
         sql.push_str(" ORDER BY deadline ASC LIMIT ?");
 
@@ -827,5 +832,97 @@ mod fuzzy_match_tests {
         assert!(fuzzy_subsequence_match("写报告", &hint));
         assert!(!fuzzy_subsequence_match("写代码", &hint));
         assert!(!fuzzy_subsequence_match("报告写", &hint));
+    }
+}
+
+#[cfg(test)]
+mod p1_todo_type_tests {
+    use super::*;
+    use crate::core::contact::OwnerType;
+
+    fn todo(id: &str, owner_id: &str, todo_type: &str, title: &str) -> TodoItem {
+        TodoItem::new(
+            id.to_string(),
+            vec![],
+            owner_id.to_string(),
+            OwnerType::User,
+            title.to_string(),
+            chrono::Utc::now() + chrono::Duration::days(3),
+            "medium".to_string(),
+        )
+        .with_todo_type(todo_type.to_string())
+    }
+
+    async fn mem() -> TodoListStore {
+        // 复用关系库的建表逻辑（todo_list 表定义在 store.rs 的 init_schema 里）
+        crate::stores::relational::RelationalStore::in_memory()
+            .await
+            .unwrap()
+            .get_todo_store()
+    }
+
+    /// P1-2③：按 todo_type 过滤——澄清类待办必须能被筛掉
+    #[tokio::test]
+    async fn filter_by_todo_type_excludes_ambiguity() {
+        let s = mem().await;
+        s.add_todo(&todo("t1", "alice", "normal", "举办读书会")).await.unwrap();
+        s.add_todo(&todo("t2", "alice", "ambiguity", "澄清: 指代对象不明确")).await.unwrap();
+        s.add_todo(&todo("t3", "alice", "reminder", "提醒: 明天交报告")).await.unwrap();
+
+        let all = s
+            .get_all_todos(OwnerType::User, "alice", None, 100, false, None, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3, "不过滤时应返回全部");
+
+        let normal = s
+            .get_all_todos(OwnerType::User, "alice", None, 100, false, None, Some("normal"))
+            .await
+            .unwrap();
+        assert_eq!(normal.len(), 1);
+        assert_eq!(normal[0].todo_id, "t1");
+        assert!(
+            normal.iter().all(|t| t.todo_type != "ambiguity"),
+            "todo_type=normal 的结果里不应出现 ambiguity"
+        );
+
+        let amb = s
+            .get_all_todos(OwnerType::User, "alice", None, 100, false, None, Some("ambiguity"))
+            .await
+            .unwrap();
+        assert_eq!(amb.len(), 1);
+        assert_eq!(amb[0].todo_id, "t2");
+    }
+
+    /// 类型过滤必须与属主过滤叠加，不能只按类型查就把别人的待办带出来
+    #[tokio::test]
+    async fn todo_type_filter_respects_owner() {
+        let s = mem().await;
+        s.add_todo(&todo("t1", "alice", "normal", "alice 的事")).await.unwrap();
+        s.add_todo(&todo("t2", "bob", "normal", "bob 的事")).await.unwrap();
+
+        let got = s
+            .get_all_todos(OwnerType::User, "alice", None, 100, false, None, Some("normal"))
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 1, "类型过滤不应破坏属主隔离");
+        assert_eq!(got[0].todo_id, "t1");
+    }
+
+    /// 类型过滤与 status 过滤可以叠加
+    #[tokio::test]
+    async fn todo_type_filter_stacks_with_status() {
+        let s = mem().await;
+        let mut done = todo("t1", "alice", "normal", "已完成的事");
+        done.status = "completed".to_string();
+        s.add_todo(&done).await.unwrap();
+        s.add_todo(&todo("t2", "alice", "normal", "待办的事")).await.unwrap();
+
+        let got = s
+            .get_all_todos(OwnerType::User, "alice", Some("pending"), 100, false, None, Some("normal"))
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].todo_id, "t2");
     }
 }

@@ -1,5 +1,74 @@
 # 变更记录
 
+## [0.7.8] 2026-11-02 — 派生产物落回调用方属主；澄清待办可区分可闭环；批量部分失败顶层可见
+
+依据 `docs/BASIC_USE_v0.7.7_2026-11-02.md` 与 `docs/FIX_P1_v0.7.7_2026-11-02.md`。
+判据：**智能体按 API 契约写入后，能否用同一套属主参数完整、干净地取回自己写入的数据及其派生数据。**
+（报告已判定"用自然语言问不出来"不算缺陷——唯一调用方是智能体，它自己组织关键词。）
+
+### P1-1 心跳产物无视调用方属主，硬编码 `default_user`
+
+智能体带 `user_id=me` 写入的对话，其派生待办落到 `default_user` 名下，按同一 `user_id` 永远取不回。
+
+根因链：`Question` 结构没有属主字段 → `executor.rs` 的 `AskUser` 支路只能写死 `default_user` →
+同一个模块里 `executor.rs:148`（提醒类，走 `get_all_todo_owners()`）和 `analyzer.rs:1201`
+（`create_ambiguity_todo`，取 `recent_convs.first().owner_id`）都取对了属主，只有这一条支路丢了。
+
+- `Question` / `AmbiguityInfo` / `ContactMergeCandidate` 增加 `owner_type` / `owner_id`，四处构造点全部补上；
+- `get_pending_ambiguities` 改为 `LEFT JOIN todo_list` 反查属主（无关联待办时退化默认属主，不漏记录）；
+- `find_contact_merge_candidates` 的 SQL 本来就 SELECT 了 owner 却没消费，现在带上；
+- `executor.rs` 的 `AskUser` 支路不再建待办（见 P1-2 ②），属主问题从根上消失。
+
+契约一致性（同一问题的另一半）：
+
+- `POST /api/todos` 缺 `user_id` 时静默兜底 `default_user` 且不告警 → 现在记一条 `WARN`；
+- `docs/API.md:322` 示例补上属主字段并说明"不带 `user_id` 不报错，但读取须用同一属主"；
+- `scripts/api_smoke_test.sh` 的待办写入改为显式带 `user_id`，不再固化"不带属主"的用法。
+
+### P1-2 澄清类待办混进普通待办列表，且一次分析生成两条
+
+一次歧义检测落**两条**待办：一条 `owner=me / todo_type=normal / 标题是 130 字整段分析`（无法筛掉），
+一条 `owner=default_user / todo_type=ambiguity`（属主错，见 P1-1）。
+
+- ① `create_ambiguity_todo` 补 `.with_todo_type("ambiguity")` 与 `.with_entity("ambiguity", ambiguity_id)`。
+  上一行刚拿到 `ambiguity_id_int` 却没用，导致 `resolve_question` 按 `resolved_todo_id` 更新时
+  `rows_affected == 0`，闭环本来就是断的（只有一行 `debug!`）。
+- ② 删掉 `executor.rs` 里重复的第二条待办：属主错、无法闭环、信息冗余。
+  问题本身仍在 question pool，`GET /api/heartbeat/pending_questions` 不受影响。
+- ③ 列表支持按类型过滤：`TodoFilter` / `ListTodosRequest` / `get_all_todos` 全链路加 `todo_type`，
+  走 bind 不拼字符串。**默认行为不变**（不传则不过滤），智能体传 `todo_type=normal` 即可拿到"真正要做的事"。
+- ④ 标题只截前 30 字，完整分析留在 `description`——不再把系统的自述文本当标题。
+- 顺带：`Question.id` 改用待办 id（原本另起一个 Uuid），使 `POST /api/heartbeat/answer` 能真正闭环。
+
+### P1-3 批量写入部分失败，顶层仍返回 `success: true`
+
+6 条里 4 条被拒（时间戳在未来），响应是 `{"success": true, "data": {"accepted": 2, "failed": 4}}`，
+失败只埋在 `items[].error` 里。程序化调用方只看顶层 `success` 决定是否重试 → **数据丢失而不自知**。
+
+- `ApiResponse` 增加顶层 `message`；`failed > 0` 时附 `message` 并在 `data` 里加 `partial: true`；
+- 不改变 `success` 语义（批处理不该因单条失败整体失败），但"存在失败"无法被忽略；
+- 未来时间戳的错误文案写明边界：`须在 2000-01-01 与 <now+1d> 之间`，便于调用方自动修正后重发。
+
+### 实测（全新实例，端口 3120，独立 data_dir）
+
+| 断言 | 结果 |
+|---|---|
+| 一次歧义检测产生的待办数 | 2 → **1** |
+| 该待办 `owner_id` | `default_user` → **`me`** |
+| 该待办 `todo_type` / `entity_type` | `normal` / NULL → **`ambiguity` / `ambiguity`** |
+| `ambiguity_log.resolved_todo_id` 能 join 到待办 | 0 → **1** |
+| `POST /api/heartbeat/answer` 后 `status` | `pending` → **`resolved`**（`resolved_at` 非空） |
+| `GET /api/todos?todo_type=normal` | 不含澄清类（4 条 normal） |
+| `GET /api/todos`（不带 `todo_type`） | 仍返回全部 5 条（向后兼容） |
+| 批量 4 条含 2 条未来时间戳 | 顶层 `message` + `partial: true`，错误写明边界 |
+| `POST /api/todos` 不带 `user_id` | `owner_id=default_user` 且记 `WARN` |
+| `POST /api/todos` 带 `user_id=me` | `owner_id=me`，按 `me` 可取回 |
+
+### 测试
+
+- 新增单测 7 个（待办类型过滤 3 个 + 歧义属主/标记/闭环 4 个），`cargo test --features gguf --lib` **134/134 通过**
+- `bash scripts/api_smoke_test.sh` **PASS=40 FAIL=0 SKIP=1**（新增 1 项 `todo_type` 过滤检查）
+
 ## [0.7.7] 2026-11-01 — 待确认合并真正生效；兜底事件标题不再从词中间切开
 
 两个在官方冒烟（39/39）里测不出来的阻塞级问题，实测才暴露。

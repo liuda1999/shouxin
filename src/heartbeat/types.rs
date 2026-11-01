@@ -25,6 +25,23 @@ pub struct Question {
     pub expires_at: Option<DateTime<Utc>>,
     pub related_contact_ids: Vec<String>,
     pub related_event_ids: Vec<String>,
+    /// 属主：产生这个问题的对话/实体属于谁。
+    ///
+    /// 之前这个结构没有属主字段，executor.rs 的 AskUser 支路只能硬编码
+    /// `default_user`，于是智能体带 `user_id=alice` 写入的对话，其派生待办
+    /// 落到了另一个属主空间，按同一 `user_id` 永远取不回。
+    #[serde(default = "default_owner_type")]
+    pub owner_type: crate::core::contact::OwnerType,
+    #[serde(default = "default_owner_id")]
+    pub owner_id: String,
+}
+
+fn default_owner_type() -> crate::core::contact::OwnerType {
+    crate::core::contact::OwnerType::User
+}
+
+fn default_owner_id() -> String {
+    crate::core::owner::DEFAULT_USER_ID.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -77,6 +94,11 @@ pub struct AmbiguityInfo {
     pub related_event_ids: Vec<String>,
     pub todo_id: Option<String>,
     pub status: AmbiguityStatus,
+    /// 属主：从关联待办（resolved_todo_id）反查得到，用于让后续提问落回同一属主空间
+    #[serde(default = "default_owner_type")]
+    pub owner_type: crate::core::contact::OwnerType,
+    #[serde(default = "default_owner_id")]
+    pub owner_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +203,11 @@ pub struct ContactMergeCandidate {
     pub shared_event_ratio: f32,
     pub confidence_score: f32,
     pub merge_type: MergeType,
+    /// 属主：两个候选联系人同属一个属主（SQL 里已按 owner 配对），原样带出
+    #[serde(default = "default_owner_type")]
+    pub owner_type: crate::core::contact::OwnerType,
+    #[serde(default = "default_owner_id")]
+    pub owner_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
