@@ -1223,7 +1223,7 @@ impl HeartbeatAnalyzer {
             &entity_ids.join(","),
             &description,
             &format!("对话分析中发现：{}", description),
-            crate::core::contact::OwnerType::User,
+            owner_type.clone(),
             &owner_id,
         ).await {
             Ok(id) => {

@@ -64,10 +64,21 @@
 | `POST /api/todos` 不带 `user_id` | `owner_id=default_user` 且记 `WARN` |
 | `POST /api/todos` 带 `user_id=me` | `owner_id=me`，按 `me` 可取回 |
 
+### 审计补漏（提交前逐项复审发现）
+
+复审 diff 时发现 P1-1 有一处没修干净：`analyzer.rs` 同函数里已经从 `recent_convs`
+算出了 `owner_type`，但调用 `create_ambiguity_todo` 时仍写死 `OwnerType::User`，
+只有 `owner_id` 是对的。属主是 `(owner_type, owner_id)` 成对生效的，写死一半时
+非 `User` 属主（如 `Group`）的待办仍会按 `(owner_type, owner_id)` 查不回来。
+已改为与 `owner_id` 同源取自对话属主。
+
 ### 测试
 
 - 新增单测 7 个（待办类型过滤 3 个 + 歧义属主/标记/闭环 4 个），`cargo test --features gguf --lib` **134/134 通过**
-- `bash scripts/api_smoke_test.sh` **PASS=40 FAIL=0 SKIP=1**（新增 1 项 `todo_type` 过滤检查）
+- `bash scripts/api_smoke_test.sh` **FAIL=0**；两项 SKIP 均为资源依赖型
+  （"抽取未产出联系人"是大模型输出波动，"无待确认合并"是本次没有可合并事件），非本次改动引入
+- 新增 1 项 `todo_type` 过滤检查，冒烟总项数 40 → 41
+- 逐项实测：三项 P1 的每一条验收断言单独跑（见上表），审计实例日志 **0 ERROR / 0 PANIC**
 
 ## [0.7.7] 2026-11-01 — 待确认合并真正生效；兜底事件标题不再从词中间切开
 
