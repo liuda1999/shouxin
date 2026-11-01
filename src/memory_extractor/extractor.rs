@@ -1641,9 +1641,12 @@ impl LlmMemoryExtractor {
         while end < chars.len() && end - kw_start < 24 && !STOP.contains(&chars[end]) {
             end += 1;
         }
-        // 超长时只截右端：从左侧收窄会再次切到词中间
+        // 超长时只截右端：从左侧收窄会再次切到词中间。
+        // 但截断不能把关键词本身切掉——关键词缺失比标题长更糟
+        // （曾出现 32 字标题里根本没有触发这次抽取的那个词）。
+        let min_end = (kw_start + kw_len).min(chars.len());
         if end - start > MAX_TITLE {
-            end = start + MAX_TITLE;
+            end = (start + MAX_TITLE).max(min_end).min(chars.len());
         }
         (start, end)
     }
@@ -2260,5 +2263,34 @@ mod title_window_tests {
         let t = "我让龙飞整理一下季度评估材料。";
         let got = window_of(t, "评估");
         assert!(got.starts_with("我让龙飞"), "实际: {:?}", got);
+    }
+
+    /// 审计补的用例：关键词位置超过 32 字时，长度截断不能把关键词本身切掉
+    ///
+    /// 第一版修复只写了 `end = start + MAX_TITLE`，标题会变成
+    /// "今天上午我和市场部的同事们一起开了很长时间的会最后决定对第三季度"——
+    /// 32 字里根本没有触发这次抽取的"评估"。关键词缺失比标题长更糟。
+    #[test]
+    fn title_always_contains_the_keyword() {
+        let t = "今天上午我和市场部的同事们一起开了很长时间的会最后决定对第三季度的整体工作做一次全面的评估";
+        let got = window_of(t, "评估");
+        assert!(
+            got.contains("评估"),
+            "标题必须包含关键词，实际: {:?}（长度 {}）",
+            got,
+            got.chars().count()
+        );
+    }
+
+    /// 标题总长有上限，但允许为了保住关键词而略微超出
+    #[test]
+    fn title_length_is_bounded_but_keyword_wins() {
+        let t = "今天上午我和市场部的同事们一起开了很长时间的会最后决定对第三季度的整体工作做一次全面的评估";
+        let got = window_of(t, "评估");
+        assert!(
+            got.chars().count() <= 64,
+            "标题不应无限膨胀，实际长度 {}",
+            got.chars().count()
+        );
     }
 }

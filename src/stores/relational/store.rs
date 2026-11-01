@@ -972,6 +972,7 @@ impl RelationalStore {
                        event_time, importance_score, is_archived, archived_at
                 FROM event_index
                 WHERE contact_ids LIKE ? AND owner_type = ? AND owner_id = ?
+                  AND COALESCE(is_merged, 0) = 0
                 ORDER BY time_range_start DESC
                 "#,
             )
@@ -1183,7 +1184,7 @@ impl RelationalStore {
     ) -> Result<Vec<TraitEventIndex>, ShouxinError> {
         let mut sql = String::from(
             "SELECT event_id, time_range_start, created_at, importance, summary, event_type, title
-             FROM event_index WHERE owner_type = ? AND owner_id = ? AND is_merged = 0"
+             FROM event_index WHERE owner_type = ? AND owner_id = ? AND COALESCE(is_merged, 0) = 0"
         );
 
         let mut params: Vec<String> = vec![
@@ -2207,7 +2208,7 @@ impl RelationalStoreTrait for RelationalStore {
         // is_merged = 0：已并入其它事件的源事件不再单独列出（合并后只显示目标事件）
         let mut sql = String::from(
             "SELECT event_id, time_range_start, created_at, importance, summary
-             FROM event_index WHERE is_merged = 0"
+             FROM event_index WHERE COALESCE(is_merged, 0) = 0"
         );
         
         if !filter.include_archived {

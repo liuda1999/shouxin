@@ -717,14 +717,19 @@ impl BackgroundTaskQueue {
                 let (auto_th, pending_th) = (auto_th as f32, pending_th as f32);
                 if best_score > pending_th {
                     // 检查目标事件在 SQLite 中是否存在（防止向量库孤儿记忆导致合并静默失败）
-                    let target_exists = state.relational
+                    //
+                    // 还要排除 is_merged=1 的事件：被合并掉的源事件仍留在向量库里，
+                    // 而它"本来就跟新事件很像"，极容易被再次选成目标。
+                    // 一旦选中，新内容会追加到一条**已对用户隐藏**的事件上，等于丢记忆。
+                    let target = state.relational
                         .get_event_by_id(&best_target_event_id).await
-                        .map(|opt| opt.is_some())
-                        .unwrap_or(false);
+                        .ok()
+                        .flatten();
+                    let target_exists = target.as_ref().map(|ev| !ev.is_merged).unwrap_or(false);
 
                     if !target_exists {
                         warn!(
-                            "[P1-7] 合并目标事件 {} 在 SQLite 中不存在（向量库孤儿记忆），跳过合并，创建新事件。来源: '{}'",
+                            "[P1-7] 合并目标事件 {} 不可用（不存在或已被合并掉），跳过合并，创建新事件。来源: '{}'",
                             best_target_event_id,
                             event_summary_for_merge.chars().take(30).collect::<String>()
                         );
