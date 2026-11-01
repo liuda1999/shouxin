@@ -94,22 +94,10 @@ fn is_punct(ch: char) -> bool {
             | '（' | '）' | '《' | '》' | '【' | '】' | '…' | '—' | '·' | '～')
 }
 
-/// 事件合并阈值（进程级，启动时由配置注入）
-///
-/// 为什么不用硬编码：相似度是**模型相关**的。e5-base 对无关中文短句的余弦相似度
-/// 本来就有 0.84–0.89（实测），旧的 0.75/0.90 阈值会把"完全不同的事件"判成相似，
-/// 导致新事件全部堆进待确认区、一条都落不了库。
-static MERGE_THRESHOLDS: std::sync::OnceLock<(f64, f64)> = std::sync::OnceLock::new();
-
-/// 注入事件合并阈值：(自动合并, 待确认)
-pub fn set_merge_thresholds(auto: f64, pending: f64) {
-    let _ = MERGE_THRESHOLDS.set((auto, pending));
-}
-
-fn merge_thresholds() -> (f64, f64) {
-    // 兜底值与配置默认值保持一致
-    *MERGE_THRESHOLDS.get().unwrap_or(&(0.96, 0.90))
-}
+// 事件合并阈值的唯一来源见 `crate::utils::merge_thresholds`：
+// 同步路径（three_library_manager）和异步路径（本文件）**必须读同一份**，
+// 否则改 config.toml 只会影响其中一条路径。
+pub use crate::utils::merge_thresholds::{merge_thresholds, set_merge_thresholds};
 
 pub struct BackgroundTaskQueue {
     sender: mpsc::UnboundedSender<ExtractionTask>,
@@ -663,12 +651,17 @@ impl BackgroundTaskQueue {
                 continue;
             }
 
-            // P1-7: 语义合并检查 (与同步路径 three_library_manager.rs:497-577 一致)
-            let event_summary_for_merge = format!(
-                "{} {}",
-                e.title.as_deref().unwrap_or(""),
-                e.description.as_str()
-            );
+            // P1-7: 语义合并检查 (与同步路径 three_library_manager.rs 一致)
+            // ⑤ description 常常以 title 开头，直接拼会把标题说两遍，抬高短文本相似度
+            let event_summary_for_merge = {
+                let title = e.title.as_deref().unwrap_or("").trim();
+                let desc = e.description.as_str().trim();
+                if !title.is_empty() && desc.starts_with(title) {
+                    desc.to_string()
+                } else {
+                    format!("{} {}", title, desc)
+                }
+            };
 
             // P1-7: 生成 embedding 用于语义合并检查；失败时跳过合并检查，仍创建新事件
             let embedding_opt = match state.embedder.embed(&event_summary_for_merge).await {
@@ -680,6 +673,8 @@ impl BackgroundTaskQueue {
             };
 
             // P1-7: 只有在 embedding 成功时才进行语义合并检查
+            // ⑥ 待确认合并的目标（目标事件 id / 内容 / 相似度），事件落库后再登记
+            let mut defer_pending_merge: Option<(String, String, f32)> = None;
             if let Some(ref embedding) = embedding_opt {
                 let mut best_score = 0.0f32;
                 let mut best_target_event_id = String::new();
@@ -753,7 +748,15 @@ impl BackgroundTaskQueue {
                             &contact_ids,
                             Some(&event_summary_for_merge),
                         ).await {
-                            Ok(()) => {
+                            Ok(0) => {
+                                // 目标事件在关系库不存在（向量库孤儿记忆）：
+                                // 不能算成功，否则源事件会被静默吞掉
+                                warn!(
+                                    "[P1-7] 自动合并未生效，目标事件 {} 不存在，回退创建新事件",
+                                    best_target_event_id
+                                );
+                            }
+                            Ok(_) => {
                                 info!(
                                     "[P1-7] 自动合并事件 '{}' -> '{}' (相似度: {:.4})",
                                     event_summary_for_merge.chars().take(30).collect::<String>(),
@@ -784,33 +787,14 @@ impl BackgroundTaskQueue {
                             }
                         }
                     } else {
-                        // 存入待确认合并区 (0.75 < score <= 0.90)
-                        let source_event_id = format!("pending_{}", uuid::Uuid::new_v4());
-                        match state.relational.insert_pending_event_merge(
-                            &source_event_id,
-                            Some(&best_target_event_id),
-                            &event_summary_for_merge,
-                            Some(&best_target_content),
+                        // ⑥ 进待确认区：先标记，等事件真正落库后再登记。
+                        // 这里不能 continue——continue 会让源事件永不写进 event_index，
+                        // 用户点"不合并"就等于永久丢弃这条记忆。
+                        defer_pending_merge = Some((
+                            best_target_event_id.clone(),
+                            best_target_content.clone(),
                             best_score,
-                            owner_type,
-                            owner_id,
-                        ).await {
-                            Ok(merge_id) => {
-                                tracker.merge_ids.push(merge_id);
-                                info!(
-                                    "[P1-7] 待确认合并: '{}' 相似度 {:.4} (阈值 {:.2}-{:.2})",
-                                    event_summary_for_merge.chars().take(30).collect::<String>(),
-                                    best_score,
-                                    pending_th,
-                                    auto_th
-                                );
-                                continue;
-                            }
-                            Err(err) => {
-                                // 插入失败同样回退创建新事件
-                                warn!("[P1-7] 插入待确认合并失败，回退创建新事件: {}", err);
-                            }
-                        }
+                        ));
                     }
                 }
             }
@@ -899,6 +883,37 @@ impl BackgroundTaskQueue {
                     .link_event_characters(&event_index.event_id, &event_character_ids)
                     .await;
             }
+
+            // ⑥ 源事件已落库，用真实 event_id 登记待确认合并
+            if let Some((target_id, target_content, score)) = defer_pending_merge.take() {
+                match state.relational.insert_pending_event_merge(
+                    &event_index.event_id,
+                    Some(&target_id),
+                    &event_summary_for_merge,
+                    Some(&target_content),
+                    score,
+                    owner_type,
+                    owner_id,
+                ).await {
+                    Ok(merge_id) => {
+                        tracker.merge_ids.push(merge_id);
+                        let (a_th, p_th) = merge_thresholds();
+                        info!(
+                            "[P1-7] 待确认合并: '{}' -> '{}' 相似度 {:.4} (阈值 {:.2}-{:.2})",
+                            event_summary_for_merge.chars().take(30).collect::<String>(),
+                            target_content.chars().take(30).collect::<String>(),
+                            score,
+                            p_th,
+                            a_th
+                        );
+                    }
+                    Err(err) => {
+                        // 事件已经落库，登记失败只告警，不能丢事件
+                        warn!("[P1-7] 插入待确认合并失败（事件已保留）: {}", err);
+                    }
+                }
+            }
+
             tracker.event_ids.push(e.event_id.clone());
 
             // P1-3/P1-7: 将事件写入向量库（复用已生成的 embedding；embedding 失败时跳过）

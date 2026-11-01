@@ -1616,25 +1616,34 @@ impl LlmMemoryExtractor {
 
     /// 计算事件标题的字符窗口：向左不越过句子边界，向右取到句子结束（上限 24 字）
     ///
-    /// 旧实现固定取"关键词前 8 字"，于是"user: 我让龙飞整理"会截成
-    /// "er: 我让龙飞整理"——既带半截前缀，又从半个词开始。
+    /// 旧实现先固定左移 16 字，再**只在这 16 字窗口内**找句读。
+    /// 关键词距句首超过 16 字且中间无标点时，窗口里找不到句读，start 就停在
+    /// `kw_start - 16`——正好从半个词开始：
+    /// "提醒我 6 月 24 号之前把年中总结交上去。" → "醒我 6 月 24 号之前把年中总结交上去"
+    ///
+    /// 真正的 bug 不是"回退多少字"，而是**搜索范围被固定窗口截断**。
+    /// 现在向左一直看到句首，找不到句读就从句子起头取：
+    /// 标题长一点没关系，从词中间切才是硬伤。
     fn event_title_window(chars: &[char], kw_start: usize, kw_len: usize) -> (usize, usize) {
         const STOP: [char; 9] = ['，', '。', '；', '！', '？', '：', '\n', '…', '、'];
-        const MAX_LEFT: usize = 16;
-        // 向左优先回到最近的句子边界：固定取 8 字会从半个词开始
-        // （"…把龙飞转正，让我准备评估材料" 曾截成 "飞转正，让我准备评估材料"）。
-        let mut start = kw_start.saturating_sub(MAX_LEFT);
-        if let Some(pos) = (start..kw_start).rev().find(|&i| STOP.contains(&chars[i])) {
-            start = pos + 1;
-        }
-        // 找不到句读时保持上面的 MAX_LEFT 回退，不要再固定左移 8 字：
-        // 8 字会正好切在词中间（"今天又和张伟确认了预算表" 变成 "天又和张伟确认了预算表"）。
+        const MAX_TITLE: usize = 32; // 只限制总长，不再限制左视距离
+
+        // 向左回到最近的句子边界；搜索范围是整句开头，不再被 MAX_LEFT 截断
+        let mut start = (0..kw_start)
+            .rev()
+            .find(|&i| STOP.contains(&chars[i]))
+            .map(|p| p + 1)
+            .unwrap_or(0);
         while start < kw_start && STOP.contains(&chars[start]) {
             start += 1;
         }
         let mut end = (kw_start + kw_len).min(chars.len());
         while end < chars.len() && end - kw_start < 24 && !STOP.contains(&chars[end]) {
             end += 1;
+        }
+        // 超长时只截右端：从左侧收窄会再次切到词中间
+        if end - start > MAX_TITLE {
+            end = start + MAX_TITLE;
         }
         (start, end)
     }
@@ -2194,5 +2203,62 @@ mod tests {
         assert!(names.contains(&"李总"), "应提取李总, 实际: {:?}", names);
         assert!(names.contains(&"小丽"), "应提取小丽, 实际: {:?}", names);
         println!("[测试4] 李总+小丽: {:?}", names);
+    }
+}
+#[cfg(test)]
+mod title_window_tests {
+    use super::*;
+
+    /// 取窗口内的文本，便于断言
+    fn window_of(text: &str, kw: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let kw_chars: Vec<char> = kw.chars().collect();
+        let kw_start = text.find(kw).map(|b| text[..b].chars().count()).unwrap();
+        let (s, e) = LlmMemoryExtractor::event_title_window(&chars, kw_start, kw_chars.len());
+        chars[s..e].iter().collect()
+    }
+
+    /// 关键词距句首超过 16 字且中间无标点——旧实现会从左视窗口边界切开
+    ///
+    /// "提醒我 6 月 24 号之前把年中总结交上去"：关键词"总结"在第 17 字左右，
+    /// 旧的 MAX_LEFT=16 回退后窗口内无句读，start 停在 1 → "醒我 6 月 24 号…"
+    #[test]
+    fn no_mid_word_cut_when_keyword_far_from_head() {
+        let t = "提醒我 6 月 24 号之前把年中总结交上去。";
+        let got = window_of(t, "总结");
+        assert!(
+            got.starts_with("提醒我"),
+            "标题必须从句子起头取，实际: {:?}",
+            got
+        );
+    }
+
+    #[test]
+    fn long_sentence_starts_at_beginning() {
+        let t = "上周三我和供应商的老陈一起开了整整两个小时的季度复盘会议，最后决定延期。";
+        let got = window_of(t, "会议");
+        assert!(
+            got.starts_with("上周三"),
+            "关键词距句首很远且无标点时应从句首取，实际: {:?}",
+            got
+        );
+    }
+
+    #[test]
+    fn stops_at_sentence_boundary() {
+        let t = "今天天气不错。提醒我 6 月 24 号之前把年中总结交上去。";
+        let got = window_of(t, "总结");
+        assert!(
+            got.starts_with("提醒我"),
+            "应停在最近句号之后，实际: {:?}",
+            got
+        );
+    }
+
+    #[test]
+    fn short_sentence_unchanged() {
+        let t = "我让龙飞整理一下季度评估材料。";
+        let got = window_of(t, "评估");
+        assert!(got.starts_with("我让龙飞"), "实际: {:?}", got);
     }
 }

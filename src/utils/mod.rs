@@ -4,8 +4,11 @@
 
 pub mod cpu_budget;
 pub mod event_meta;
+pub mod merge_thresholds;
 pub mod time_parser;
 pub mod validation;
+
+pub use merge_thresholds::{merge_thresholds, set_merge_thresholds};
 
 pub use event_meta::{analyze_sentiment, classify_importance};
 pub use time_parser::{

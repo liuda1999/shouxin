@@ -637,11 +637,22 @@ impl ThreeLibraryMemoryManager {
             }
 
             // ========== 语义合并检查 (v0.5.1) ==========
-            let event_summary_for_merge = format!(
-                "{} {}",
-                e.title.as_deref().unwrap_or(""),
-                e.description.as_str()
-            );
+            // ⑤ description 常常以 title 开头，直接拼会把标题说两遍：
+            // "写成可以直接照着改的修复清单 写成可以直接照着改的修复清单。"
+            // 短文本里自己跟自己重复会明显抬高余弦相似度，制造假合并候选。
+            let event_summary_for_merge = {
+                let title = e.title.as_deref().unwrap_or("").trim();
+                let desc = e.description.as_str().trim();
+                if !title.is_empty() && desc.starts_with(title) {
+                    desc.to_string()
+                } else {
+                    format!("{} {}", title, desc)
+                }
+            };
+
+            // ⑥ 待确认合并登记推迟到事件真正落库之后：源事件必须先存在于 event_index，
+            // 否则用户点"不合并"就是永久丢弃这条记忆。
+            let mut defer_pending_merge: Option<(String, String, f32)> = None;
 
             if let Some(vector_store) = &self.embedded_vector_store {
                 match self.embedder.embed(&event_summary_for_merge).await {
@@ -661,7 +672,10 @@ impl ThreeLibraryMemoryManager {
                                         similarity
                                     );
 
-                                    if similarity > 0.90 {
+                                    let (auto_th, pending_th) = crate::utils::merge_thresholds();
+                                    let (auto_th, pending_th) = (auto_th as f32, pending_th as f32);
+
+                                    if similarity > auto_th {
                                         // 自动合并到已有事件
                                         tracing::info!(
                                             "[Event Merge] 自动合并: '{}' -> '{}' (相似度: {:.4})",
@@ -678,31 +692,25 @@ impl ThreeLibraryMemoryManager {
                                             tracing::warn!("[Event Merge] 合并失败: {}", err);
                                         }
                                         continue;
-                                    } else if similarity > 0.75 {
-                                        // 存入待确认合并区
+                                    } else if similarity > pending_th {
+                                        // ⑥ 先标记，等事件落库后再登记待确认合并；
+                                        // 这里不能 continue——continue 会让源事件永不入库。
                                         tracing::info!(
-                                            "[Event Merge] 待确认: '{}' 相似度 {:.4} (0.75-0.90)",
+                                            "[Event Merge] 待确认: '{}' 相似度 {:.4} (阈值 {:.2}-{:.2})",
                                             event_summary_for_merge.chars().take(30).collect::<String>(),
-                                            similarity
-                                        );
-
-                                        let source_event_id = format!("pending_{}", uuid::Uuid::new_v4());
-                                        if let Err(err) = self.relational_store.insert_pending_event_merge(
-                                            &source_event_id,
-                                            Some(&best_match.material.id.to_string()),
-                                            &event_summary_for_merge,
-                                            Some(&best_match.material.content),
                                             similarity,
-                                            owner_type,
-                                            &owner_id,
-                                        ).await {
-                                            tracing::warn!("[Event Merge] 插入待确认失败: {}", err);
-                                        }
-                                        continue;
+                                            pending_th,
+                                            auto_th
+                                        );
+                                        defer_pending_merge = Some((
+                                            best_match.material.id.to_string(),
+                                            best_match.material.content.clone(),
+                                            similarity,
+                                        ));
                                     } else {
                                         tracing::debug!(
-                                            "[Event Merge] 相似度 {:.4} < 0.75，创建新事件",
-                                            similarity
+                                            "[Event Merge] 相似度 {:.4} <= {:.2}，创建新事件",
+                                            similarity, pending_th
                                         );
                                     }
                                 }
@@ -769,6 +777,21 @@ impl ThreeLibraryMemoryManager {
             };
             event_index.compute_auto_invalid_at();
             self.relational_store.insert_event_index(&event_index).await?;
+
+            // ⑥ 源事件已落库，用真实 event_id 登记待确认合并
+            if let Some((target_id, target_content, similarity)) = defer_pending_merge.take() {
+                if let Err(err) = self.relational_store.insert_pending_event_merge(
+                    &event_index.event_id,
+                    Some(&target_id),
+                    &event_summary_for_merge,
+                    Some(&target_content),
+                    similarity,
+                    owner_type,
+                    &owner_id,
+                ).await {
+                    tracing::warn!("[Event Merge] 插入待确认失败: {}", err);
+                }
+            }
 
             // Check hot table capacity
             let is_long_term = e.importance > 0.7;

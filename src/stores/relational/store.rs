@@ -1183,7 +1183,7 @@ impl RelationalStore {
     ) -> Result<Vec<TraitEventIndex>, ShouxinError> {
         let mut sql = String::from(
             "SELECT event_id, time_range_start, created_at, importance, summary, event_type, title
-             FROM event_index WHERE owner_type = ? AND owner_id = ?"
+             FROM event_index WHERE owner_type = ? AND owner_id = ? AND is_merged = 0"
         );
 
         let mut params: Vec<String> = vec![
@@ -2204,9 +2204,10 @@ impl RelationalStoreTrait for RelationalStore {
 
     #[allow(unused_assignments)]
     async fn search_events(&self, filter: &EventFilter) -> Result<Vec<TraitEventIndex>, ShouxinError> {
+        // is_merged = 0：已并入其它事件的源事件不再单独列出（合并后只显示目标事件）
         let mut sql = String::from(
             "SELECT event_id, time_range_start, created_at, importance, summary
-             FROM event_index WHERE 1=1"
+             FROM event_index WHERE is_merged = 0"
         );
         
         if !filter.include_archived {
@@ -3596,11 +3597,17 @@ impl RelationalStore {
                     Vec::new()
                 };
 
-                self.update_event_after_merge(
+                // 影响行数为 0 说明目标事件在关系库里不存在（向量库孤儿记忆 / 已删除），
+                // 必须如实报错——否则接口返回"事件已合并"而库里一个字都没变。
+                let affected = self.update_event_after_merge(
                     target_id,
                     &source_contact_ids,
                     Some(&source_summary),
                 ).await?;
+                if affected == 0 {
+                    return Err(ShouxinError::EntityNotFound(
+                        format!("目标事件 {} 不存在，合并未生效", target_id)));
+                }
 
                 // P1-8: 标记源事件为已合并（仅当源事件在 event_index 中）
                 if !source_event_id.starts_with("pending_") {
@@ -3620,7 +3627,14 @@ impl RelationalStore {
                 source_event_id.clone()
             };
 
+            // 标题不能为 NULL：列表里会渲染成空白行，用户根本认不出这是哪件事。
+            // 取第一句（句号/感叹号/问号/换行之前）作为标题。
             let summary = source_event_summary.unwrap_or(&source_summary);
+            let title = summary
+                .split(['。', '！', '？', '\n'])
+                .next()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             let event_parsed_time = crate::utils::parse_event_time(summary, Utc::now());
             
             let mut event = EventIndex {
@@ -3635,7 +3649,7 @@ impl RelationalStore {
                 created_at: Utc::now(),
                 completed_at: None,
                 summary: summary.to_string(),
-                title: None,
+                title,
                 event_type: String::new(),
                 deadline: None,
                 auto_invalid_at: None,
@@ -3727,56 +3741,67 @@ impl RelationalStore {
         Ok(())
     }
 
+    /// 合并后更新目标事件：并入联系人、把源摘要追加到目标 `summary`
+    ///
+    /// 返回**实际影响的行数**：0 表示目标事件不存在（向量库孤儿记忆 / 已被删除）。
+    /// 调用方必须据此判断，不能只看 `Ok(())`——否则会出现"接口说已合并、
+    /// 库里一个字没变"的假成功。
     pub async fn update_event_after_merge(
         &self,
         event_id: &str,
         additional_contact_ids: &[String],
         additional_description: Option<&str>,
-    ) -> Result<(), ShouxinError> {
+    ) -> Result<u64, ShouxinError> {
         let event = self.get_event_by_id(event_id).await?;
 
-        if let Some(mut event) = event {
-            if !additional_contact_ids.is_empty() {
-                let existing_contacts: Vec<String> = serde_json::from_str(&event.contact_ids)
-                    .unwrap_or_default();
-                
-                let mut all_contacts = existing_contacts;
-                for cid in additional_contact_ids {
-                    if !all_contacts.contains(cid) {
-                        all_contacts.push(cid.clone());
-                    }
-                }
-                
-                event.contact_ids = serde_json::to_string(&all_contacts).unwrap_or_default();
-            }
-
-            if let Some(desc) = additional_description {
-                if !event.event_type.is_empty() && !desc.is_empty() {
-                    event.event_type = format!("{}\n---\n合并自: {}", event.event_type, desc);
-                }
-            }
-
-            query(
-                r#"
-                UPDATE event_index
-                SET contact_ids = ?, event_type = ?, last_merge_check_at = ?
-                WHERE event_id = ?
-                "#,
-            )
-            .bind(&event.contact_ids)
-            .bind(&event.event_type)
-            .bind(Utc::now().to_rfc3339())
-            .bind(event_id)
-            .execute(&self.pool)
-            .await?;
-        } else {
+        let Some(mut event) = event else {
             tracing::warn!(
-                "update_event_after_merge: 目标事件 {} 不存在，合并被静默跳过（可能是向量库孤儿记忆）",
+                "update_event_after_merge: 目标事件 {} 不存在，合并未生效（可能是向量库孤儿记忆）",
                 event_id
             );
+            return Ok(0);
+        };
+
+        if !additional_contact_ids.is_empty() {
+            let existing_contacts: Vec<String> = serde_json::from_str(&event.contact_ids)
+                .unwrap_or_default();
+
+            let mut all_contacts = existing_contacts;
+            for cid in additional_contact_ids {
+                if !all_contacts.contains(cid) {
+                    all_contacts.push(cid.clone());
+                }
+            }
+
+            event.contact_ids = serde_json::to_string(&all_contacts).unwrap_or_default();
         }
 
-        Ok(())
+        // 合并内容必须写进 summary：
+        // 1) 旧条件是 `!event.event_type.is_empty()`，而写入路径把 event_type 写死成空串，
+        //    条件恒为假，合并内容永远写不进去（实测 10 条事件 event_type 全为空）；
+        // 2) 用户看到的描述来自 summary 列，写 event_type 也看不见。
+        if let Some(desc) = additional_description {
+            let desc = desc.trim();
+            if !desc.is_empty() && !event.summary.contains(desc) {
+                event.summary = format!("{}\n---\n合并自: {}", event.summary, desc);
+            }
+        }
+
+        let r = query(
+            r#"
+            UPDATE event_index
+            SET contact_ids = ?, summary = ?, last_merge_check_at = ?
+            WHERE event_id = ?
+            "#,
+        )
+        .bind(&event.contact_ids)
+        .bind(&event.summary)
+        .bind(Utc::now().to_rfc3339())
+        .bind(event_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(r.rows_affected())
     }
 }
 
